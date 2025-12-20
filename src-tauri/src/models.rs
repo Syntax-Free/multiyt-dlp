@@ -101,6 +101,12 @@ pub struct DownloadCompletePayload {
 }
 
 #[derive(Clone, serde::Serialize)]
+pub struct DownloadCancelledPayload {
+    #[serde(rename = "jobId")]
+    pub job_id: Uuid,
+}
+
+#[derive(Clone, serde::Serialize)]
 pub struct DownloadErrorPayload {
     #[serde(rename = "jobId")]
     pub job_id: Uuid,

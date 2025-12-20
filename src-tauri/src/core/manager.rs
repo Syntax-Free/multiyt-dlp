@@ -10,7 +10,8 @@ use std::path::PathBuf;
 use crate::models::{
     Job, JobStatus, QueuedJob, JobMessage, 
     DownloadProgressPayload, BatchProgressPayload, 
-    DownloadCompletePayload, DownloadErrorPayload
+    DownloadCompletePayload,
+    DownloadCancelledPayload
 };
 use crate::config::ConfigManager;
 use crate::core::process::run_download_process;
@@ -151,29 +152,25 @@ impl JobManagerActor {
                 }
             },
             JobMessage::CancelJob { id } => {
-                // Kill Process
+                // 1. Kill Process
                 if let Some(job) = self.jobs.get(&id) {
                     if let Some(pid) = job.pid {
                         self.kill_process(pid);
                     }
                 }
                 
-                // Update Status
+                // 2. Update Status internally
                 if let Some(job) = self.jobs.get_mut(&id) {
                     job.status = JobStatus::Cancelled;
                 }
 
-                // Clean Persistence
+                // 3. Clean Persistence
                 self.persistence_registry.remove(&id);
                 self.save_state();
 
-                // Notify Front End immediately (cancellation is urgent)
-                let _ = self.app_handle.emit_all("download-error", DownloadErrorPayload {
-                    job_id: id,
-                    error: "Cancelled by user".to_string(),
-                    exit_code: None,
-                    stderr: String::new(),
-                    logs: String::new(),
+                // 4. Notify Frontend of Cancellation (Distinct from Error)
+                let _ = self.app_handle.emit_all("download-cancelled", DownloadCancelledPayload {
+                    job_id: id
                 });
             },
             JobMessage::ProcessStarted { id, pid } => {
@@ -189,6 +186,9 @@ impl JobManagerActor {
             },
             JobMessage::UpdateProgress { id, percentage, speed, eta, filename, phase } => {
                 if let Some(job) = self.jobs.get_mut(&id) {
+                    // If cancelled, stop processing updates
+                    if job.status == JobStatus::Cancelled { return; }
+
                     job.progress = percentage;
                     // We don't emit here. We push to buffer.
                     self.pending_updates.insert(id, DownloadProgressPayload {
@@ -203,6 +203,7 @@ impl JobManagerActor {
             },
             JobMessage::JobCompleted { id, output_path } => {
                 if let Some(job) = self.jobs.get_mut(&id) {
+                    if job.status == JobStatus::Cancelled { return; }
                     job.status = JobStatus::Completed;
                     job.progress = 100.0;
                 }
@@ -216,6 +217,12 @@ impl JobManagerActor {
             },
             JobMessage::JobError { id, payload } => {
                 if let Some(job) = self.jobs.get_mut(&id) {
+                    // CRITICAL: If the job was cancelled by the user, IGNORE the error.
+                    // The kill command causes the process to exit with a non-zero code,
+                    // which triggers this message. We suppress it here.
+                    if job.status == JobStatus::Cancelled {
+                        return;
+                    }
                     job.status = JobStatus::Error;
                 }
                 // Persistence kept for retry
@@ -227,8 +234,7 @@ impl JobManagerActor {
                     self.completed_session_count += 1;
                 }
                 
-                // Release network slot conservatively (though process logic usually manages this via phase)
-                // If a worker finishes, it definitely releases network if it was holding it
+                // Release network slot conservatively
                 if self.active_network_jobs > 0 {
                     self.active_network_jobs -= 1;
                 }
@@ -347,6 +353,7 @@ impl JobManagerActor {
         {
             use nix::sys::signal::{self, Signal};
             use nix::unistd::Pid;
+            // Just fire and forget
             let _ = signal::kill(Pid::from_raw(pid as i32), Signal::SIGINT);
         }
 

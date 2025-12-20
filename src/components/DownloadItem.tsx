@@ -1,7 +1,7 @@
 import { Download } from '@/types';
 import { Progress } from './ui/Progress';
 import { Button } from './ui/Button';
-import { X, MonitorPlay, Clock, CheckCircle2, AlertCircle, Headphones, Activity, FileOutput, Tags, FileText, Image as ImageIcon, Hourglass, FolderSearch, FileCode, Copy } from 'lucide-react';
+import { X, MonitorPlay, Clock, CheckCircle2, AlertCircle, Headphones, Activity, FileOutput, Tags, FileText, Image as ImageIcon, Hourglass, FolderSearch, FileCode, Copy, Trash2 } from 'lucide-react';
 import { twMerge } from 'tailwind-merge';
 import { showInFolder, openLogFolder } from '@/api/invoke';
 import { useState } from 'react';
@@ -245,18 +245,22 @@ export function DownloadItem({ download, onCancel }: DownloadItemProps) {
 
         {/* Actions Column */}
         <div className="flex flex-col justify-center pl-2 gap-2">
-          {(isActive || isQueued || isError) && (
+          {/* Active / Queued / Error / Cancelled states */}
+          {(isActive || isQueued || isError || isCancelled) && (
              <Button 
                 variant="ghost" 
                 size="icon" 
                 onClick={() => onCancel(jobId)} 
                 className={twMerge(
                     "h-8 w-8 text-zinc-600 transition-all duration-300",
-                    isError ? "opacity-100 text-zinc-400 hover:bg-zinc-800" : "opacity-0 group-hover:opacity-100 hover:bg-theme-red hover:text-white hover:scale-110 hover:shadow-glow-red"
+                    isError || isCancelled
+                        ? "opacity-100 text-zinc-500 hover:bg-zinc-800 hover:text-red-400" // Trash icon style
+                        : "opacity-0 group-hover:opacity-100 hover:bg-theme-red hover:text-white hover:scale-110 hover:shadow-glow-red" // Cancel icon style
                 )}
-                title={isError ? "Remove" : "Cancel"}
+                title={isError || isCancelled ? "Remove from List" : "Cancel Download"}
              >
-                <X className="h-4 w-4" />
+                {/* Dynamically switch icon based on state */}
+                {(isError || isCancelled) ? <Trash2 className="h-4 w-4" /> : <X className="h-4 w-4" />}
               </Button>
           )}
 

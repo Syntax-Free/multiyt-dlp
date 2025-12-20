@@ -1,5 +1,5 @@
 import { Download } from '@/types';
-import { X, CheckCircle2, AlertCircle, Hourglass, MonitorPlay, Headphones, Tags, FileOutput, Image as ImageIcon, Activity, FolderSearch } from 'lucide-react';
+import { X, CheckCircle2, AlertCircle, Hourglass, MonitorPlay, Headphones, Tags, FileOutput, Image as ImageIcon, Activity, FolderSearch, Trash2 } from 'lucide-react';
 import { twMerge } from 'tailwind-merge';
 import { showInFolder } from '@/api/invoke';
 import { parseError } from '@/utils/errorRegistry';
@@ -20,6 +20,7 @@ export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) 
   const isActive = status === 'downloading'; 
   const isError = status === 'error';
   const isCompleted = status === 'completed';
+  const isCancelled = status === 'cancelled';
 
   const isProcessingPhase = phase?.includes('Merging') 
     || phase?.includes('Extracting') 
@@ -56,6 +57,7 @@ export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) 
   const IconComponent = () => {
     if (isError) return <AlertCircle className="h-6 w-6" />;
     if (isCompleted) return <CheckCircle2 className="h-6 w-6" />;
+    if (isCancelled) return <X className="h-6 w-6" />;
     if (isQueued) return <Hourglass className="h-6 w-6 animate-pulse" />;
     
     if (isMetaPhase) return <Tags className="h-6 w-6 animate-pulse" />;
@@ -78,7 +80,7 @@ export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) 
         className={twMerge(
             "group relative h-28 w-full rounded-xl border bg-zinc-900/40 overflow-hidden transition-all duration-300 select-none flex items-center justify-center",
             isActive ? getThemeColorClass() : "border-zinc-800 text-zinc-600",
-            isQueued && "opacity-60 bg-zinc-900/20 border-zinc-800/60"
+            (isQueued || isCancelled) && "opacity-60 bg-zinc-900/20 border-zinc-800/60"
         )}
     >
         {/* Progress Fill Layer */}
@@ -124,13 +126,19 @@ export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) 
                     </button>
                 )}
 
-                {(isActive || isQueued || isError) && (
+                {/* Cancel or Remove Button */}
+                {(isActive || isQueued || isError || isCancelled) && (
                     <button 
                         onClick={(e) => { e.stopPropagation(); onCancel(jobId); }}
-                        className="p-1.5 rounded-full bg-zinc-800 hover:bg-theme-red hover:text-white text-zinc-400 transition-colors shadow-lg"
-                        title="Cancel Download"
+                        className={twMerge(
+                            "p-1.5 rounded-full bg-zinc-800 transition-colors shadow-lg",
+                            isError || isCancelled 
+                                ? "hover:bg-zinc-700 hover:text-red-400 text-zinc-400" 
+                                : "hover:bg-theme-red hover:text-white text-zinc-400"
+                        )}
+                        title={isError || isCancelled ? "Remove from Grid" : "Cancel Download"}
                     >
-                        <X className="h-3 w-3" />
+                        {(isError || isCancelled) ? <Trash2 className="h-3 w-3" /> : <X className="h-3 w-3" />}
                     </button>
                 )}
             </div>
@@ -151,15 +159,15 @@ export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) 
                     <div className="flex flex-wrap gap-1 mt-2 mb-1">
                         <span className={twMerge(
                             "px-1 py-0.5 text-[9px] font-bold rounded uppercase",
-                            isAudio ? "bg-theme-red/20 text-theme-red" : "bg-theme-cyan/20 text-theme-cyan"
+                            isCancelled ? "bg-zinc-800 text-zinc-600" : (isAudio ? "bg-theme-red/20 text-theme-red" : "bg-theme-cyan/20 text-theme-cyan")
                         )}>
-                            {badgeText}
+                            {isCancelled ? 'CANCELLED' : badgeText}
                         </span>
                     </div>
                     
                     <div className={twMerge(
                         "text-[9px] font-mono truncate",
-                        (isProcessingPhase || isMetaPhase) ? "text-yellow-500" : "text-zinc-500"
+                        isCancelled ? "text-zinc-600 line-through" : (isProcessingPhase || isMetaPhase) ? "text-yellow-500" : "text-zinc-500"
                     )}>
                         {phase || status}
                     </div>

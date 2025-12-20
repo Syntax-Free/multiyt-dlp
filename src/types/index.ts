@@ -81,6 +81,10 @@ export interface DownloadCompletePayload {
   outputPath: string;
 }
 
+export interface DownloadCancelledPayload {
+    jobId: string;
+}
+
 export interface DownloadErrorPayload {
   jobId: string;
   error: string;

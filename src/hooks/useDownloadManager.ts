@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { Download, DownloadCompletePayload, DownloadErrorPayload, BatchProgressPayload, DownloadFormatPreset, QueuedJob } from '@/types';
+import { Download, DownloadCompletePayload, DownloadErrorPayload, BatchProgressPayload, DownloadFormatPreset, QueuedJob, DownloadCancelledPayload } from '@/types';
 import { startDownload as apiStartDownload, cancelDownload as apiCancelDownload } from '@/api/invoke';
 
 export function useDownloadManager() {
@@ -67,10 +67,21 @@ export function useDownloadManager() {
       });
     });
 
+    // NEW: Listen for Clean Cancellation
+    const unlistenCancelled = listen<DownloadCancelledPayload>('download-cancelled', (event) => {
+        updateDownload(event.payload.jobId, {
+            status: 'cancelled',
+            phase: 'Cancelled by user',
+            eta: '--',
+            speed: '--'
+        });
+    });
+
     return () => {
       unlistenProgress.then((f) => f());
       unlistenComplete.then((f) => f());
       unlistenError.then((f) => f());
+      unlistenCancelled.then((f) => f());
     };
   }, []);
 
@@ -143,16 +154,6 @@ export function useDownloadManager() {
       });
   }, []);
 
-  const cancelDownload = useCallback(async (jobId: string) => {
-    try {
-      await apiCancelDownload(jobId);
-      updateDownload(jobId, { status: 'cancelled' });
-    } catch (error) {
-      console.error('Failed to cancel download:', error);
-      updateDownload(jobId, { status: 'error', error: 'Failed to cancel.' });
-    }
-  }, []);
-
   const removeDownload = useCallback((jobId: string) => {
       setDownloads((prev) => {
           const newMap = new Map(prev);
@@ -160,6 +161,33 @@ export function useDownloadManager() {
           return newMap;
       });
   }, []);
+
+  // SMART CANCEL: If Active -> Cancel API. If Inactive -> Remove from Map.
+  const cancelDownload = useCallback(async (jobId: string) => {
+    // We need to look up the current state of the job.
+    // Since 'downloads' state is in the closure, we use functional update to ensure consistency,
+    // but here we need to READ the value to decide logic.
+    // Note: In React 18+ auto-batching helps, but technically reading `downloads` directly here 
+    // relies on the closure being fresh. `cancelDownload` includes [downloads] in dependency array.
+    
+    const job = downloads.get(jobId);
+    if (!job) return;
+
+    if (job.status === 'downloading' || job.status === 'pending') {
+        // Active: Call API to kill process.
+        try {
+            await apiCancelDownload(jobId);
+            // We can optimistically set it, but backend will send 'download-cancelled' event too.
+            updateDownload(jobId, { status: 'cancelled', phase: 'Cancelling...' });
+        } catch (error) {
+            console.error('Failed to cancel download:', error);
+            updateDownload(jobId, { status: 'error', error: 'Failed to cancel.' });
+        }
+    } else {
+        // Inactive (Completed, Error, Cancelled): Remove from UI.
+        removeDownload(jobId);
+    }
+  }, [downloads, removeDownload]);
 
   return { downloads, startDownload, cancelDownload, removeDownload, importResumedJobs };
 }
