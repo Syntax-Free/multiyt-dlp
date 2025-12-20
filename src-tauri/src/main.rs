@@ -16,7 +16,7 @@ use windows::{
 
 use crate::core::manager::JobManagerHandle;
 use crate::config::ConfigManager;
-use crate::core::logging::LogManager;
+use crate::core::logging::{LogManager, rotate_logs};
 
 mod commands;
 mod core;
@@ -25,16 +25,10 @@ mod config;
 
 fn main() {
     // Explicitly set the App User Model ID (AUMID) for the process.
-    // This ensures Windows attributes notifications to "Multiyt-dlp" and uses the app icon.
     #[cfg(target_os = "windows")]
     unsafe {
-        // This string must match the "identifier" in tauri.conf.json
         const APP_ID: &str = "net.zqil.multiyt-dlp";
-        
-        // Convert string to wide-string (UTF-16) required by Windows API
         let wide_id: Vec<u16> = APP_ID.encode_utf16().chain(std::iter::once(0)).collect();
-        
-        // Ignore error if setting fails (non-critical, but fixes visual bug)
         let _ = SetCurrentProcessExplicitAppUserModelID(PCWSTR(wide_id.as_ptr()));
     }
     // ---------------------------------------------------
@@ -45,6 +39,12 @@ fn main() {
         let _ = fs::create_dir_all(&temp_dir);
     }
 
+    // 1. Perform Log Rotation BEFORE logging initialization
+    if let Err(e) = rotate_logs() {
+        eprintln!("WARNING: Log rotation failed: {}", e);
+    }
+
+    // 2. Load Config & Init Logger
     let config_manager = Arc::new(ConfigManager::new());
     let initial_config = config_manager.get_config();
     let log_manager = LogManager::init(&initial_config.general.log_level);
@@ -134,6 +134,7 @@ fn main() {
             commands::system::get_latest_app_version, 
             commands::system::show_in_folder, 
             commands::system::open_log_folder,
+            commands::system::log_frontend_message, // REGISTER NEW COMMAND
             commands::downloader::start_download,
             commands::downloader::cancel_download,
             commands::downloader::expand_playlist,

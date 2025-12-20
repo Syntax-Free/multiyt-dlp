@@ -1,9 +1,10 @@
 use std::process::Command;
 use tauri::{AppHandle, Manager};
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 use regex::Regex;
 use crate::core::deps;
 use std::path::PathBuf;
+use tracing::{info, warn, error, debug};
 
 #[derive(Serialize, Clone)]
 pub struct DependencyInfo {
@@ -19,6 +20,29 @@ pub struct AppDependencies {
     pub ffmpeg: DependencyInfo,
     pub js_runtime: DependencyInfo,
 }
+
+#[derive(Deserialize)]
+pub enum LogLevel {
+    Info,
+    Warn,
+    Error,
+    Debug,
+}
+
+// --- LOGGING COMMAND ---
+
+#[tauri::command]
+pub fn log_frontend_message(level: LogLevel, message: String, context: Option<String>) {
+    let ctx = context.unwrap_or_else(|| "frontend".to_string());
+    match level {
+        LogLevel::Info => info!(target: "frontend", context = %ctx, "{}", message),
+        LogLevel::Warn => warn!(target: "frontend", context = %ctx, "{}", message),
+        LogLevel::Error => error!(target: "frontend", context = %ctx, "{}", message),
+        LogLevel::Debug => debug!(target: "frontend", context = %ctx, "{}", message),
+    }
+}
+
+// --- EXISTING COMMANDS ---
 
 // Helper to create a command that doesn't spawn a visible window on Windows
 fn new_silent_command(program: &str) -> Command {
@@ -137,8 +161,6 @@ pub async fn check_dependencies(app_handle: AppHandle) -> AppDependencies {
         } else {
             let runtimes = [("bun", "--version"), ("node", "--version")];
             for (bin, flag) in runtimes {
-                // Windows check handled inside resolve_binary_info via simple name passing? 
-                // We need to append .exe manually for resolve_binary_info if we want exact local check
                 let bin_name = if cfg!(windows) { format!("{}.exe", bin) } else { bin.to_string() };
                 let info = resolve_binary_info(&bin_name, flag, &bin_path);
                 if info.available {

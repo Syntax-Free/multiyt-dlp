@@ -106,3 +106,9 @@ export async function selectDirectory(): Promise<string | null> {
     }
     return selected;
 }
+
+// --- Logging API ---
+
+export async function logFrontendMessage(level: 'Info' | 'Warn' | 'Error' | 'Debug', message: string, context?: string): Promise<void> {
+    return await invoke("log_frontend_message", { level, message, context });
+}
