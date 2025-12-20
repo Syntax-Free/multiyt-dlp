@@ -1,9 +1,10 @@
 import { Download } from '@/types';
 import { Progress } from './ui/Progress';
 import { Button } from './ui/Button';
-import { X, MonitorPlay, Clock, CheckCircle2, AlertCircle, Headphones, Activity, FileOutput, Tags, FileText, Image as ImageIcon, Hourglass, FolderSearch } from 'lucide-react';
+import { X, MonitorPlay, Clock, CheckCircle2, AlertCircle, Headphones, Activity, FileOutput, Tags, FileText, Image as ImageIcon, Hourglass, FolderSearch, FileCode, Copy } from 'lucide-react';
 import { twMerge } from 'tailwind-merge';
-import { showInFolder } from '@/api/invoke';
+import { showInFolder, openLogFolder } from '@/api/invoke';
+import { useState } from 'react';
 
 interface DownloadItemProps {
   download: Download;
@@ -12,8 +13,13 @@ interface DownloadItemProps {
 
 export function DownloadItem({ download, onCancel }: DownloadItemProps) {
 
-  const { jobId, url, status, progress, speed, eta, error, filename, phase, preset, embedMetadata, embedThumbnail, outputPath } = download;
+  const { 
+    jobId, url, status, progress, speed, eta, 
+    error, filename, phase, preset, embedMetadata, 
+    embedThumbnail, outputPath, stderr, logs, exit_code 
+  } = download;
 
+  const [showLogs, setShowLogs] = useState(false);
   const displayTitle = filename || url;
   const isAudio = preset?.startsWith('audio');
 
@@ -64,6 +70,12 @@ export function DownloadItem({ download, onCancel }: DownloadItemProps) {
   const handleOpenFolder = () => {
       if (outputPath) {
           showInFolder(outputPath).catch(console.error);
+      }
+  };
+
+  const handleCopyLogs = () => {
+      if (logs) {
+          navigator.clipboard.writeText(logs);
       }
   };
 
@@ -148,6 +160,11 @@ export function DownloadItem({ download, onCancel }: DownloadItemProps) {
                             Cancelled
                         </span>
                     )}
+                    {isError && exit_code !== undefined && (
+                        <span className="text-[10px] font-mono text-theme-red bg-theme-red/10 border border-theme-red/20 px-1.5 py-0.5 rounded">
+                            Exit Code: {exit_code}
+                        </span>
+                    )}
                  </div>
             </div>
             
@@ -172,8 +189,49 @@ export function DownloadItem({ download, onCancel }: DownloadItemProps) {
                 )}
                 
                 {isError && (
-                    <div className="text-xs text-theme-red bg-theme-red/10 border border-theme-red/20 p-3 rounded font-mono whitespace-pre-wrap">
-                        {error}
+                    <div className="space-y-2">
+                        <div className="text-xs text-theme-red bg-theme-red/10 border border-theme-red/20 p-3 rounded font-mono whitespace-pre-wrap break-all">
+                            <span className="font-bold block mb-1">Error: {error}</span>
+                            {stderr && (
+                                <div className="mt-2 pt-2 border-t border-theme-red/20 opacity-90 text-[10px] max-h-32 overflow-y-auto">
+                                    {stderr}
+                                </div>
+                            )}
+                        </div>
+                        <div className="flex gap-2">
+                            {logs && (
+                                <Button 
+                                    size="sm" 
+                                    variant="outline" 
+                                    className="h-7 text-xs border-theme-red/30 text-theme-red hover:bg-theme-red/10"
+                                    onClick={() => setShowLogs(!showLogs)}
+                                >
+                                    <FileCode className="h-3 w-3 mr-2" />
+                                    {showLogs ? 'Hide Logs' : 'View Logs'}
+                                </Button>
+                            )}
+                             <Button 
+                                size="sm" 
+                                variant="outline" 
+                                className="h-7 text-xs border-zinc-700 text-zinc-400 hover:text-zinc-200"
+                                onClick={() => openLogFolder()}
+                            >
+                                Open Log Folder
+                            </Button>
+                        </div>
+                        
+                        {showLogs && logs && (
+                             <div className="relative mt-2 p-3 bg-zinc-950 border border-zinc-800 rounded font-mono text-[10px] text-zinc-400 h-40 overflow-y-auto">
+                                <pre>{logs}</pre>
+                                <button 
+                                    onClick={handleCopyLogs}
+                                    className="absolute top-2 right-2 p-1.5 bg-zinc-800 hover:bg-zinc-700 rounded text-zinc-300 transition-colors"
+                                    title="Copy to Clipboard"
+                                >
+                                    <Copy className="h-3 w-3" />
+                                </button>
+                             </div>
+                        )}
                     </div>
                 )}
 
@@ -192,17 +250,16 @@ export function DownloadItem({ download, onCancel }: DownloadItemProps) {
 
         {/* Actions Column */}
         <div className="flex flex-col justify-center pl-2 gap-2">
-          {(isActive || isQueued) && (
+          {(isActive || isQueued || isError) && (
              <Button 
                 variant="ghost" 
                 size="icon" 
                 onClick={() => onCancel(jobId)} 
                 className={twMerge(
                     "h-8 w-8 text-zinc-600 transition-all duration-300",
-                    "opacity-0 group-hover:opacity-100", 
-                    "hover:bg-theme-red hover:text-white hover:scale-110 hover:shadow-glow-red"
+                    isError ? "opacity-100 text-zinc-400 hover:bg-zinc-800" : "opacity-0 group-hover:opacity-100 hover:bg-theme-red hover:text-white hover:scale-110 hover:shadow-glow-red"
                 )}
-                title="Cancel"
+                title={isError ? "Remove" : "Cancel"}
              >
                 <X className="h-4 w-4" />
               </Button>

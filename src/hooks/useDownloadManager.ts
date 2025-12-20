@@ -33,7 +33,6 @@ export function useDownloadManager() {
   };
 
   useEffect(() => {
-    // UPDATED: Listen for Batch Events instead of single events
     const unlistenProgress = listen<BatchProgressPayload>('download-progress-batch', (event) => {
         const updates = event.payload.updates.map(u => ({
             jobId: u.jobId,
@@ -62,6 +61,9 @@ export function useDownloadManager() {
       updateDownload(event.payload.jobId, {
         status: 'error',
         error: event.payload.error,
+        exit_code: event.payload.exit_code,
+        stderr: event.payload.stderr,
+        logs: event.payload.logs,
       });
     });
 

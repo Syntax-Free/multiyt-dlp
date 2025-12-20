@@ -1,7 +1,9 @@
-use tauri::{State};
+use tauri::{State, AppHandle};
 use uuid::Uuid;
 use std::process::Command;
+use std::sync::Arc;
 
+use crate::config::ConfigManager;
 use crate::core::{
     error::AppError,
     manager::{JobManagerHandle},
@@ -9,12 +11,42 @@ use crate::core::{
 use crate::models::{DownloadFormatPreset, QueuedJob, PlaylistResult, PlaylistEntry};
 
 // Helper: Probes the URL to see if it's a playlist or single video
-fn probe_url(url: &str) -> Result<Vec<PlaylistEntry>, AppError> {
-    let mut cmd = Command::new("yt-dlp");
+// Now accepts AppHandle and ConfigManager to resolve binary paths and cookies correctly
+fn probe_url(url: &str, app: &AppHandle, config_manager: &Arc<ConfigManager>) -> Result<Vec<PlaylistEntry>, AppError> {
+    let config = config_manager.get_config().general;
+
+    // 1. Resolve Binary Path
+    let app_dir = app.path_resolver().app_data_dir().unwrap();
+    let bin_dir = app_dir.join("bin");
+    
+    let mut yt_dlp_cmd = "yt-dlp".to_string();
+    let local_exe = bin_dir.join(if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" });
+    if local_exe.exists() { 
+        yt_dlp_cmd = local_exe.to_string_lossy().to_string(); 
+    }
+
+    let mut cmd = Command::new(yt_dlp_cmd);
+
+    // 2. Inject Environment Path (for dependencies)
+    if let Ok(current_path) = std::env::var("PATH") {
+        let new_path = format!("{}{}{}", bin_dir.to_string_lossy(), if cfg!(windows) { ";" } else { ":" }, current_path);
+        cmd.env("PATH", new_path);
+    } else {
+        cmd.env("PATH", bin_dir.to_string_lossy().to_string());
+    }
+
+    // 3. Configure Command
     cmd.arg("--flat-playlist")
        .arg("--dump-single-json")
        .arg("--no-warnings")
        .arg(url);
+
+    // 4. Inject Cookies
+    if let Some(path) = config.cookies_path {
+        if !path.trim().is_empty() { cmd.arg("--cookies").arg(path); }
+    } else if let Some(browser) = config.cookies_from_browser {
+        if !browser.trim().is_empty() && browser != "none" { cmd.arg("--cookies-from-browser").arg(browser); }
+    }
 
     #[cfg(target_os = "windows")]
     {
@@ -59,13 +91,25 @@ fn probe_url(url: &str) -> Result<Vec<PlaylistEntry>, AppError> {
 }
 
 #[tauri::command]
-pub async fn expand_playlist(url: String) -> Result<PlaylistResult, AppError> {
-    let entries = probe_url(&url)?;
+pub async fn expand_playlist(
+    app: AppHandle,
+    url: String,
+    config: State<'_, Arc<ConfigManager>>,
+) -> Result<PlaylistResult, AppError> {
+    let app_handle = app.clone();
+    let config_manager = config.inner().clone();
+    
+    // Spawn blocking to avoid freezing the async runtime
+    let entries = tauri::async_runtime::spawn_blocking(move || {
+        probe_url(&url, &app_handle, &config_manager)
+    }).await.map_err(|e| AppError::IoError(e.to_string()))??;
+
     Ok(PlaylistResult { entries })
 }
 
 #[tauri::command]
 pub async fn start_download(
+    app: AppHandle,
     url: String,
     download_path: Option<String>,
     format_preset: DownloadFormatPreset,
@@ -74,6 +118,7 @@ pub async fn start_download(
     embed_thumbnail: bool,
     filename_template: String,
     restrict_filenames: Option<bool>,
+    config: State<'_, Arc<ConfigManager>>,
     manager: State<'_, JobManagerHandle>, 
 ) -> Result<Vec<Uuid>, AppError> { 
     
@@ -90,9 +135,18 @@ pub async fn start_download(
         filename_template
     };
 
-    let entries = probe_url(&url)?;
+    let app_handle = app.clone();
+    let config_manager = config.inner().clone();
+    let url_clone = url.clone();
+
+    // 1. Probe URL (Blocking Operation)
+    let entries = tauri::async_runtime::spawn_blocking(move || {
+        probe_url(&url_clone, &app_handle, &config_manager)
+    }).await.map_err(|e| AppError::IoError(e.to_string()))??;
+
     let mut created_job_ids = Vec::new();
 
+    // 2. Create Jobs
     for entry in entries {
         let job_id = Uuid::new_v4();
         

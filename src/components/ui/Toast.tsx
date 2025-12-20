@@ -1,17 +1,33 @@
 import { useEffect, useState } from 'react';
 import { useAppContext } from '@/contexts/AppContext';
-import { X, Download, PartyPopper, PlayCircle, Trash2 } from 'lucide-react';
-import { openExternalLink, getPendingJobs, resumePendingJobs, clearPendingJobs } from '@/api/invoke';
+import { X, Download, PartyPopper, PlayCircle, Trash2, AlertTriangle, FileText } from 'lucide-react';
+import { openExternalLink, getPendingJobs, resumePendingJobs, clearPendingJobs, openLogFolder } from '@/api/invoke';
 import { Button } from './Button';
 import { useDownloadManager } from '@/hooks/useDownloadManager';
 
 export function Toast() {
     const { isUpdateAvailable, latestVersion, currentVersion } = useAppContext();
-    const { importResumedJobs } = useDownloadManager();
+    const { importResumedJobs, downloads } = useDownloadManager();
     
     const [visible, setVisible] = useState(false);
-    const [mode, setMode] = useState<'update' | 'resume' | null>(null);
+    const [mode, setMode] = useState<'update' | 'resume' | 'error' | null>(null);
     const [pendingCount, setPendingCount] = useState(0);
+
+    const errorCount = Array.from(downloads.values()).filter(d => d.status === 'error').length;
+
+    // Check for errors in real-time
+    useEffect(() => {
+        if (errorCount > 0 && mode !== 'error') {
+             // Only switch to error mode if we aren't already viewing something critical
+             // But actually, update/resume usually happens on mount. Errors happen later.
+             // We can prioritize errors.
+             setMode('error');
+             setVisible(true);
+        } else if (errorCount === 0 && mode === 'error') {
+            setVisible(false);
+            setMode(null);
+        }
+    }, [errorCount, mode]);
 
     useEffect(() => {
         // Check for Resume first
@@ -60,13 +76,29 @@ export function Toast() {
         setVisible(false);
     };
 
+    const handleOpenLogs = async () => {
+        await openLogFolder();
+        // Don't close toast, user might want to see context
+    };
+
     return (
         <div className="fixed bottom-6 right-6 z-50 animate-fade-in">
-            <div className="bg-zinc-900 border border-theme-cyan/50 shadow-[0_0_20px_-5px_rgba(0,242,234,0.3)] rounded-lg p-4 w-80 flex flex-col gap-3">
+            <div className={`bg-zinc-900 border rounded-lg p-4 w-80 flex flex-col gap-3 shadow-2xl ${
+                mode === 'error' ? 'border-theme-red/50 shadow-[0_0_20px_-5px_rgba(255,0,80,0.2)]' : 'border-theme-cyan/50 shadow-[0_0_20px_-5px_rgba(0,242,234,0.3)]'
+            }`}>
                 <div className="flex justify-between items-start">
-                    <div className="flex items-center gap-2 text-theme-cyan font-bold">
-                        {mode === 'update' ? <PartyPopper className="h-5 w-5" /> : <PlayCircle className="h-5 w-5" />}
-                        <span>{mode === 'update' ? 'Update Available' : 'Incomplete Downloads'}</span>
+                    <div className={`flex items-center gap-2 font-bold ${
+                        mode === 'error' ? 'text-theme-red' : 'text-theme-cyan'
+                    }`}>
+                        {mode === 'update' && <PartyPopper className="h-5 w-5" />}
+                        {mode === 'resume' && <PlayCircle className="h-5 w-5" />}
+                        {mode === 'error' && <AlertTriangle className="h-5 w-5" />}
+                        
+                        <span>
+                            {mode === 'update' && 'Update Available'}
+                            {mode === 'resume' && 'Incomplete Downloads'}
+                            {mode === 'error' && `${errorCount} Failed Download${errorCount > 1 ? 's' : ''}`}
+                        </span>
                     </div>
                     <button 
                         onClick={() => setVisible(false)} 
@@ -76,7 +108,7 @@ export function Toast() {
                     </button>
                 </div>
                 
-                {mode === 'update' ? (
+                {mode === 'update' && (
                     <>
                         <div className="text-sm text-zinc-300">
                             A new version of Multiyt-dlp is available!
@@ -108,7 +140,9 @@ export function Toast() {
                             </Button>
                         </div>
                     </>
-                ) : (
+                )}
+                
+                {mode === 'resume' && (
                     <>
                         <div className="text-sm text-zinc-300">
                             Found <b>{pendingCount}</b> interrupted downloads from a previous session.
@@ -132,6 +166,33 @@ export function Toast() {
                             >
                                 <Trash2 className="h-3 w-3 mr-2" />
                                 Discard
+                            </Button>
+                        </div>
+                    </>
+                )}
+
+                {mode === 'error' && (
+                    <>
+                         <div className="text-sm text-zinc-300">
+                            Downloads failed. Check logs for details about missing runtimes or auth issues.
+                        </div>
+                        <div className="flex gap-2 mt-1">
+                             <Button 
+                                size="sm" 
+                                variant="secondary" 
+                                className="w-full h-8 text-xs border-zinc-700 hover:text-white"
+                                onClick={handleOpenLogs}
+                            >
+                                <FileText className="h-3 w-3 mr-2" />
+                                Open Logs
+                            </Button>
+                            <Button 
+                                size="sm" 
+                                variant="secondary" 
+                                className="w-full h-8 text-xs"
+                                onClick={() => setVisible(false)}
+                            >
+                                Dismiss
                             </Button>
                         </div>
                     </>

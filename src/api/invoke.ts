@@ -30,6 +30,10 @@ export async function showInFolder(path: string): Promise<void> {
     return await invoke("show_in_folder", { path });
 }
 
+export async function openLogFolder(): Promise<void> {
+    return await invoke("open_log_folder");
+}
+
 // --- Config API ---
 
 export async function getAppConfig(): Promise<AppConfig> {

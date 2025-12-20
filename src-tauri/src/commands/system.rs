@@ -211,8 +211,6 @@ pub async fn get_latest_app_version() -> Result<String, String> {
 
 #[tauri::command]
 pub fn show_in_folder(path: String) -> Result<(), String> {
-    println!("DEBUG: [show_in_folder] Processing path: '{}'", path);
-
     let path_obj = std::path::Path::new(&path);
     if !path_obj.exists() {
         return Err(format!("File not found: {}", path));
@@ -220,7 +218,7 @@ pub fn show_in_folder(path: String) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        use std::os::windows::process::CommandExt; // Required for raw_arg
+        use std::os::windows::process::CommandExt; 
 
         let normalized_path = path.replace("/", "\\");
         
@@ -231,10 +229,7 @@ pub fn show_in_folder(path: String) -> Result<(), String> {
 
         match command {
             Ok(_) => Ok(()),
-            Err(e) => {
-                println!("DEBUG: [show_in_folder] Failed to spawn explorer: {}", e);
-                Err(e.to_string())
-            }
+            Err(e) => Err(e.to_string())
         }
     }
 
@@ -259,4 +254,40 @@ pub fn show_in_folder(path: String) -> Result<(), String> {
             Err("Could not determine parent directory".to_string())
         }
     }
+}
+
+#[tauri::command]
+pub fn open_log_folder() -> Result<(), String> {
+    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    let log_dir = home.join(".multiyt-dlp").join("logs");
+
+    if !log_dir.exists() {
+        std::fs::create_dir_all(&log_dir).map_err(|e| e.to_string())?;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("explorer")
+            .arg(&log_dir)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(&log_dir)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        Command::new("xdg-open")
+            .arg(&log_dir)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    
+    Ok(())
 }

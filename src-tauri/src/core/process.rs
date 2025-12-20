@@ -11,7 +11,7 @@ use std::fs;
 use serde::Deserialize;
 
 use crate::config::ConfigManager;
-use crate::models::{DownloadFormatPreset, QueuedJob, JobMessage};
+use crate::models::{DownloadFormatPreset, QueuedJob, JobMessage, DownloadErrorPayload};
 use crate::commands::system::get_js_runtime_info;
 
 // --- Regex Definitions ---
@@ -64,6 +64,19 @@ fn format_eta(seconds: u64) -> String {
     else { format!("{:02}:{:02}", m, s) }
 }
 
+fn construct_error(job_id: uuid::Uuid, msg: String, exit_code: Option<i32>, stderr: String, logs: Vec<String>) -> JobMessage {
+    JobMessage::JobError {
+        id: job_id,
+        payload: DownloadErrorPayload {
+            job_id,
+            error: msg,
+            exit_code,
+            stderr,
+            logs: logs.join("\n"),
+        }
+    }
+}
+
 // --- Main Process Logic ---
 
 pub async fn run_download_process(
@@ -99,7 +112,7 @@ pub async fn run_download_process(
             match tauri::api::path::download_dir() {
                 Some(path) => path,
                 None => {
-                    let _ = tx_actor.send(JobMessage::JobError { id: job_id, error: "Missing download dir".into() }).await;
+                    let _ = tx_actor.send(construct_error(job_id, "Missing download dir".into(), None, String::new(), vec![])).await;
                     let _ = tx_actor.send(JobMessage::WorkerFinished).await;
                     return;
                 }
@@ -190,7 +203,7 @@ pub async fn run_download_process(
         let mut child = match cmd.spawn() {
             Ok(child) => child,
             Err(e) => {
-                let _ = tx_actor.send(JobMessage::JobError { id: job_id, error: e.to_string() }).await;
+                let _ = tx_actor.send(construct_error(job_id, format!("Failed to spawn process: {}", e), None, e.to_string(), vec![])).await;
                 let _ = tx_actor.send(JobMessage::WorkerFinished).await;
                 return;
             }
@@ -209,20 +222,20 @@ pub async fn run_download_process(
 
         let stdout = child.stdout.take().expect("Failed to capture stdout");
         let stderr = child.stderr.take().expect("Failed to capture stderr");
-        let (tx, mut rx) = mpsc::channel::<String>(100);
+        
+        // Channel sends (line, is_stderr)
+        let (tx, mut rx) = mpsc::channel::<(String, bool)>(100);
 
         let tx_out = tx.clone();
-        // FIX: Use tauri::async_runtime::spawn
         tauri::async_runtime::spawn(async move {
             let mut reader = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = reader.next_line().await { if tx_out.send(line).await.is_err() { break; } }
+            while let Ok(Some(line)) = reader.next_line().await { if tx_out.send((line, false)).await.is_err() { break; } }
         });
 
         let tx_err = tx.clone();
-        // FIX: Use tauri::async_runtime::spawn
         tauri::async_runtime::spawn(async move {
             let mut reader = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = reader.next_line().await { if tx_err.send(line).await.is_err() { break; } }
+            while let Ok(Some(line)) = reader.next_line().await { if tx_err.send((line, true)).await.is_err() { break; } }
         });
         drop(tx);
 
@@ -230,7 +243,10 @@ pub async fn run_download_process(
         let mut state_final_filename: Option<String> = None; 
         let mut state_percentage: f32 = 0.0;
         let mut state_phase: String = "Initializing".to_string();
-        let mut captured_logs = Vec::new();
+        
+        // Logs
+        let mut captured_logs = Vec::new(); // Combined Logs
+        let mut captured_stderr = Vec::new(); // Pure Stderr for error reporting
         
         let extract_filename_from_path = |path_str: &str| -> Option<String> {
             Path::new(path_str).file_name().map(|os| os.to_string_lossy().to_string())
@@ -243,11 +259,18 @@ pub async fn run_download_process(
              None
         };
 
-        while let Some(line) = rx.recv().await {
+        while let Some((line, is_stderr)) = rx.recv().await {
             let trimmed = line.trim();
             if trimmed.is_empty() { continue; }
+            
+            // Keep track of logs
             captured_logs.push(trimmed.to_string());
             if captured_logs.len() > 100 { captured_logs.remove(0); }
+            
+            if is_stderr {
+                captured_stderr.push(trimmed.to_string());
+                if captured_stderr.len() > 50 { captured_stderr.remove(0); }
+            }
 
             let mut emit_update = false;
             let mut speed_str = "N/A".to_string();
@@ -354,31 +377,38 @@ pub async fn run_download_process(
                             break;
                         },
                         Err(e) => {
-                            let _ = tx_actor.send(JobMessage::JobError { id: job_id, error: format!("Move failed: {}", e) }).await;
+                            let _ = tx_actor.send(construct_error(job_id, format!("File move failed: {}", e), status.code(), e.to_string(), captured_logs)).await;
                             break;
                         }
                     }
                 } else {
-                     let _ = tx_actor.send(JobMessage::JobError { id: job_id, error: "Output missing in temp dir".into() }).await;
+                     let _ = tx_actor.send(construct_error(job_id, "Output file missing in temp directory".into(), status.code(), "File not found at destination".into(), captured_logs)).await;
                      break;
                 }
             } else {
-                let _ = tx_actor.send(JobMessage::JobError { id: job_id, error: "Filename undetermined".into() }).await;
+                let _ = tx_actor.send(construct_error(job_id, "Could not determine filename".into(), status.code(), "Filename parser failed".into(), captured_logs)).await;
                 break;
             }
         } else {
             let log_blob = captured_logs.join("\n");
-            let is_filesystem_error = FILESYSTEM_ERROR_REGEX.is_match(&log_blob);
+            let stderr_blob = captured_stderr.join("\n");
             
+            // Auto Retry logic for filename issues
+            let is_filesystem_error = FILESYSTEM_ERROR_REGEX.is_match(&log_blob);
             if !job_data.restrict_filenames && is_filesystem_error {
                 job_data.restrict_filenames = true;
                 continue; // Retry Loop
             }
 
-            let _ = tx_actor.send(JobMessage::JobError { 
-                id: job_id, 
-                error: format!("Exit Code {}. Logs: {}", status.code().unwrap_or(-1), log_blob) 
-            }).await;
+            let short_msg = if stderr_blob.contains("No supported JavaScript runtime") {
+                "Missing JS Runtime".to_string()
+            } else if stderr_blob.contains("Sign in to confirm") {
+                "Authentication Required".to_string()
+            } else {
+                format!("Process Failed (Exit Code {})", status.code().unwrap_or(-1))
+            };
+
+            let _ = tx_actor.send(construct_error(job_id, short_msg, status.code(), stderr_blob, captured_logs)).await;
             break;
         }
     }

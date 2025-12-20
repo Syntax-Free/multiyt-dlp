@@ -72,7 +72,6 @@ export interface DownloadProgressPayload {
   phase?: string;    
 }
 
-// NEW BATCH PAYLOAD
 export interface BatchProgressPayload {
     updates: DownloadProgressPayload[];
 }
@@ -85,6 +84,9 @@ export interface DownloadCompletePayload {
 export interface DownloadErrorPayload {
   jobId: string;
   error: string;
+  exit_code?: number;
+  stderr: string;
+  logs: string;
 }
 
 export type DownloadStatus = 'pending' | 'downloading' | 'completed' | 'error' | 'cancelled';
@@ -100,6 +102,11 @@ export interface Download {
   error?: string;
   filename?: string;
   phase?: string;
+  
+  // Error Details
+  exit_code?: number;
+  stderr?: string;
+  logs?: string;
   
   preset?: DownloadFormatPreset; 
   videoResolution?: string;

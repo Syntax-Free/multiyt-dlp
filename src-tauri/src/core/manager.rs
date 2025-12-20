@@ -170,7 +170,10 @@ impl JobManagerActor {
                 // Notify Front End immediately (cancellation is urgent)
                 let _ = self.app_handle.emit_all("download-error", DownloadErrorPayload {
                     job_id: id,
-                    error: "Cancelled by user".to_string()
+                    error: "Cancelled by user".to_string(),
+                    exit_code: None,
+                    stderr: String::new(),
+                    logs: String::new(),
                 });
             },
             JobMessage::ProcessStarted { id, pid } => {
@@ -211,15 +214,12 @@ impl JobManagerActor {
                     output_path,
                 });
             },
-            JobMessage::JobError { id, error } => {
+            JobMessage::JobError { id, payload } => {
                 if let Some(job) = self.jobs.get_mut(&id) {
                     job.status = JobStatus::Error;
                 }
                 // Persistence kept for retry
-                let _ = self.app_handle.emit_all("download-error", DownloadErrorPayload {
-                    job_id: id,
-                    error,
-                });
+                let _ = self.app_handle.emit_all("download-error", payload);
             },
             JobMessage::WorkerFinished => {
                 if self.active_process_instances > 0 {

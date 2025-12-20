@@ -133,6 +133,7 @@ fn main() {
             commands::system::close_splash,
             commands::system::get_latest_app_version, 
             commands::system::show_in_folder, 
+            commands::system::open_log_folder,
             commands::downloader::start_download,
             commands::downloader::cancel_download,
             commands::downloader::expand_playlist,

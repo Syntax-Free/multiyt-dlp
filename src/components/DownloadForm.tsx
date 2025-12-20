@@ -16,7 +16,7 @@ interface DownloadFormProps {
       embedMeta: boolean,
       embedThumbnail: boolean,
       filenameTemplate: string
-    ) => Promise<void>; // Changed to Promise to support loading state
+    ) => Promise<void>; 
 }
 
 type DownloadMode = 'video' | 'audio';
@@ -91,6 +91,7 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
   
   const [url, setUrl] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -105,11 +106,11 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
     }
 
     setIsProcessing(true);
+    setError(null);
 
     try {
         const template = getTemplateString();
         
-        // Just call onDownload. The backend now handles expansion/probing.
         await onDownload(
             url, 
             defaultDownloadPath || undefined, 
@@ -121,9 +122,15 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
         );
 
         setUrl('');
-    } catch (err) {
+    } catch (err: any) {
         console.error("Failed to start download", err);
-        // Error is logged by hook, potentially show alert here
+        
+        // If it's a Rust/Tauri error object, turn it into a readable string
+        const msg = typeof err === 'object' 
+            ? JSON.stringify(err) 
+            : String(err);
+            
+        setError(msg);
     } finally {
         setIsProcessing(false);
     }
@@ -192,17 +199,27 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
                 <input
                     type="text"
                     value={url}
-                    onChange={(e) => setUrl(e.target.value)}
+                    onChange={(e) => { setUrl(e.target.value); setError(null); }}
                     disabled={isProcessing}
                     placeholder="https://youtube.com/watch?v=... or Playlist URL"
                     className={twMerge(
                         "relative w-full bg-surfaceHighlight border rounded-md pl-10 pr-4 py-2.5 text-sm text-zinc-100 placeholder-zinc-700 focus:outline-none focus:ring-1 transition-all",
-                        isYoutube && isJsRuntimeMissing 
-                            ? "border-amber-500/50 focus:border-amber-500 focus:ring-amber-500" 
-                            : "border-border focus:ring-theme-cyan focus:border-theme-cyan"
+                        error 
+                            ? "border-theme-red focus:ring-theme-red focus:border-theme-red"
+                            : isYoutube && isJsRuntimeMissing 
+                                ? "border-amber-500/50 focus:border-amber-500 focus:ring-amber-500" 
+                                : "border-border focus:ring-theme-cyan focus:border-theme-cyan"
                     )}
                 />
             </div>
+            
+            {/* Inline Error Message */}
+            {error && (
+                <div className="animate-fade-in text-xs text-theme-red flex items-center gap-2 bg-theme-red/5 p-2 rounded border border-theme-red/10">
+                    <AlertTriangle className="h-3 w-3 flex-shrink-0" />
+                    <span>{error}</span>
+                </div>
+            )}
           </div>
           
           <div className="grid grid-cols-1 gap-5">
@@ -329,7 +346,12 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
                 type="submit" 
                 variant="default"
                 disabled={!isValidUrl || isProcessing} 
-                className="w-full h-12 text-base uppercase tracking-wide font-black shadow-lg shadow-theme-cyan/20"
+                className={twMerge(
+                    "w-full h-12 text-base uppercase tracking-wide font-black shadow-lg",
+                    isProcessing 
+                        ? "shadow-none cursor-wait opacity-80" 
+                        : "shadow-theme-cyan/20 hover:shadow-theme-cyan/40"
+                )}
             >
                 {isProcessing ? (
                     <>

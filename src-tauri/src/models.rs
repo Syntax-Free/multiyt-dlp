@@ -105,6 +105,9 @@ pub struct DownloadErrorPayload {
     #[serde(rename = "jobId")]
     pub job_id: Uuid,
     pub error: String,
+    pub exit_code: Option<i32>,
+    pub stderr: String,
+    pub logs: String,
 }
 
 // --- Actor Messages ---
@@ -133,7 +136,7 @@ pub enum JobMessage {
     JobCompleted { id: Uuid, output_path: String },
 
     /// Process failed or error occurred
-    JobError { id: Uuid, error: String },
+    JobError { id: Uuid, payload: DownloadErrorPayload },
 
     /// Worker thread finished (cleanup slot)
     WorkerFinished,
