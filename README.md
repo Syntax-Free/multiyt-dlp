@@ -123,5 +123,5 @@ You can configure **Concurrency limits** (how many downloads run at once) and **
 ---
 
 <div align="center">
-  <sub>Built with ❤️ & 🤖 by Zqil</sub>
+  <sub>Built with ❤️ by Syntax-Free & 🤖</sub>
 </div>
