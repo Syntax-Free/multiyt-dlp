@@ -1,15 +1,11 @@
-import React, { useRef } from 'react';
+import React, { useRef, useEffect } from 'react';
 import { Modal } from '../ui/Modal';
 import { GeneralSettings } from './GeneralSettings';
 import { YtdlpSettings } from './YtdlpSettings';
 import { AboutSettings } from './AboutSettings';
 import { Settings, Youtube, Info, ChevronRight } from 'lucide-react';
 import { twMerge } from 'tailwind-merge';
-
-interface SettingsModalProps {
-    isOpen: boolean;
-    onClose: () => void;
-}
+import { useAppContext } from '@/contexts/AppContext';
 
 type TabId = 'general' | 'ytdlp' | 'about';
 
@@ -51,15 +47,45 @@ const TABS: TabConfig[] = [
         id: 'about', 
         label: 'About', 
         icon: Info, 
-        // Changed from animate-bounce to custom animate-float to fix jumpiness
         animationClass: 'group-hover:animate-float',
-        subs: []
+        subs: [
+            { id: 'section-deps', label: 'System Dependencies' }
+        ]
     },
 ];
 
-export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
-    const [activeTab, setActiveTab] = React.useState<TabId>('general');
+export function SettingsModal() {
+    const { 
+        isSettingsOpen, 
+        closeSettings, 
+        settingsActiveTab, 
+        setSettingsActiveTab,
+        settingsActiveSection 
+    } = useAppContext();
+
     const contentRef = useRef<HTMLDivElement>(null);
+    // FIX: Use ReturnType<typeof setTimeout> instead of NodeJS.Timeout
+    const scrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    // Auto-Scroll Logic
+    useEffect(() => {
+        if (isSettingsOpen && settingsActiveSection && contentRef.current) {
+            // Wait for content render
+            if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
+            
+            scrollTimeoutRef.current = setTimeout(() => {
+                const element = document.getElementById(settingsActiveSection);
+                if (element) {
+                    element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    // Highlight effect
+                    element.classList.add('bg-theme-cyan/5', 'ring-1', 'ring-theme-cyan/20', 'rounded-lg');
+                    setTimeout(() => {
+                        element.classList.remove('bg-theme-cyan/5', 'ring-1', 'ring-theme-cyan/20', 'rounded-lg');
+                    }, 2000);
+                }
+            }, 150); // Small delay to allow tab content mount
+        }
+    }, [isSettingsOpen, settingsActiveTab, settingsActiveSection]);
 
     const scrollToSection = (sectionId: string) => {
         const element = document.getElementById(sectionId);
@@ -68,16 +94,18 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         }
     };
 
-    const handleTabChange = (id: TabId) => {
-        setActiveTab(id);
-        // Reset scroll position when changing main tabs
+    const handleTabChange = (id: string) => {
+        setSettingsActiveTab(id);
         if (contentRef.current) {
             contentRef.current.scrollTop = 0;
         }
     };
 
+    // Cast the string from context to TabId for strict checking if needed, or just allow string
+    const activeTab = settingsActiveTab as TabId;
+
     return (
-        <Modal isOpen={isOpen} onClose={onClose} title="Settings">
+        <Modal isOpen={isSettingsOpen} onClose={closeSettings} title="Settings">
             <div className="flex flex-col md:flex-row gap-6 -mx-2 min-h-[500px]">
                 
                 {/* Sticky Sidebar */}
@@ -105,7 +133,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                         )}
                                     </button>
 
-                                    {/* Sub-tabs Animation Container */}
+                                    {/* Sub-tabs */}
                                     <div 
                                         className={twMerge(
                                             "grid transition-all duration-300 ease-in-out pl-9 overflow-hidden",

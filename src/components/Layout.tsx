@@ -1,4 +1,4 @@
-import { ReactNode, useState } from 'react';
+import { ReactNode } from 'react';
 import { Settings, AlertTriangle } from 'lucide-react';
 import { Button } from './ui/Button';
 import { SettingsModal } from './settings/SettingsModal';
@@ -11,14 +11,13 @@ interface LayoutProps {
 }
 
 export function Layout({ SidebarContent, MainContent }: LayoutProps) {
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const { isJsRuntimeMissing } = useAppContext();
+  const { isJsRuntimeMissing, openSettings } = useAppContext();
 
   return (
     <div className="flex h-screen overflow-hidden bg-zinc-900 text-zinc-100">
-      <SettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
+      <SettingsModal />
       
-      {/* Toast Notification Layer (Handles Updates & Resume) */}
+      {/* Toast Notification Layer */}
       <Toast />
       
       {/* Sidebar */}
@@ -37,7 +36,7 @@ export function Layout({ SidebarContent, MainContent }: LayoutProps) {
                 size="icon" 
                 title="Settings" 
                 className="text-zinc-500 hover:text-white"
-                onClick={() => setIsSettingsOpen(true)}
+                onClick={() => openSettings('general')}
             >
                 <Settings className="h-5 w-5" />
             </Button>

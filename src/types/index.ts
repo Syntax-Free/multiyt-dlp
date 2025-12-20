@@ -147,3 +147,17 @@ export interface PlaylistEntry {
 export interface PlaylistResult {
     entries: PlaylistEntry[];
 }
+
+// --- ERROR HANDLING SYSTEM ---
+
+export type ErrorActionType = 'OPEN_SETTINGS' | 'OPEN_URL' | 'RETRY_WITH_AUTH';
+
+export interface ErrorPattern {
+  id: string;
+  pattern: RegExp;
+  title: string;
+  description: string;
+  actionLabel?: string;
+  actionType?: ErrorActionType;
+  actionTarget?: string; // e.g. 'ytdlp:section-cookies'
+}

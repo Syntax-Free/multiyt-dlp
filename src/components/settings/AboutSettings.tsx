@@ -121,7 +121,7 @@ export function AboutSettings() {
     }
 
     return (
-        <div className="space-y-6 animate-fade-in">
+        <div className="space-y-6 animate-fade-in pb-10">
             {/* Header Area */}
             <div className="flex items-center gap-5 pb-4 border-b border-zinc-800">
                 <img src={icon} className="w-16 h-16 rounded-xl shadow-glow-cyan" alt="App Icon" />
@@ -197,7 +197,7 @@ export function AboutSettings() {
             </div>
 
             {/* Dependencies Grid */}
-            <div className="space-y-3 pt-4 border-t border-zinc-800">
+            <div id="section-deps" className="space-y-3 pt-4 border-t border-zinc-800 scroll-mt-6">
                 <div className="flex items-center gap-2 text-sm text-zinc-400 font-medium">
                     <Cpu className="h-4 w-4" />
                     <span>System Dependencies</span>

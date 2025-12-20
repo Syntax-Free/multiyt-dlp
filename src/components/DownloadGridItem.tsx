@@ -2,6 +2,7 @@ import { Download } from '@/types';
 import { X, CheckCircle2, AlertCircle, Hourglass, MonitorPlay, Headphones, Tags, FileOutput, Image as ImageIcon, Activity, FolderSearch } from 'lucide-react';
 import { twMerge } from 'tailwind-merge';
 import { showInFolder } from '@/api/invoke';
+import { parseError } from '@/utils/errorRegistry';
 
 interface DownloadGridItemProps {
   download: Download;
@@ -9,7 +10,7 @@ interface DownloadGridItemProps {
 }
 
 export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) {
-  const { jobId, status, progress, error, phase, preset, embedThumbnail, embedMetadata, filename, url, outputPath } = download;
+  const { jobId, status, progress, error, phase, preset, embedThumbnail, filename, url, outputPath, stderr } = download;
 
   const isAudio = preset?.startsWith('audio');
   const displayTitle = filename || url;
@@ -28,13 +29,20 @@ export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) 
 
   const isMetaPhase = phase?.includes('Metadata') || phase?.includes('Thumbnail');
 
+  // Friendly error summary for tooltip
+  let friendlyError = error;
+  if (isError) {
+      const parsed = parseError(stderr, error);
+      friendlyError = `${parsed.title}: ${parsed.description}`;
+  }
+
   // Determine base color based on type/status
   const getThemeColorClass = () => {
       if (isError) return "text-theme-red border-theme-red shadow-glow-red";
       if (isCompleted) return "text-emerald-500 border-emerald-500";
       if (isProcessingPhase || isMetaPhase) return "text-yellow-500 border-yellow-500";
       if (isAudio) return "text-theme-red border-theme-red shadow-glow-red";
-      return "text-theme-cyan border-theme-cyan shadow-glow-cyan"; // Video/Default
+      return "text-theme-cyan border-theme-cyan shadow-glow-cyan"; 
   };
   
   const getBgFillColor = () => {
@@ -73,7 +81,7 @@ export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) 
             isQueued && "opacity-60 bg-zinc-900/20 border-zinc-800/60"
         )}
     >
-        {/* Progress Fill Layer (Bottom to Top) */}
+        {/* Progress Fill Layer */}
         {isActive && (
             <div 
                 className={twMerge("absolute bottom-0 left-0 right-0 transition-all duration-300 opacity-20", getBgFillColor())}
@@ -81,7 +89,6 @@ export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) 
             />
         )}
         
-        {/* Indeterminate Stripe overlay for Queued/Processing */}
         {(isQueued || isProcessingPhase) && (
             <div className="absolute inset-0 w-full h-full bg-[linear-gradient(45deg,transparent_25%,rgba(255,255,255,0.03)_25%,rgba(255,255,255,0.03)_50%,transparent_50%,transparent_75%,rgba(255,255,255,0.03)_75%,rgba(255,255,255,0.03)_100%)] bg-[length:20px_20px] animate-[progress-stripes_2s_linear_infinite] pointer-events-none" />
         )}
@@ -136,7 +143,7 @@ export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) 
             {/* Error Message specific display */}
             {isError ? (
                  <div className="text-[9px] text-red-400 font-mono leading-tight mt-1 line-clamp-3">
-                    {error}
+                    {friendlyError}
                  </div>
             ) : (
                 <>
@@ -148,19 +155,8 @@ export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) 
                         )}>
                             {badgeText}
                         </span>
-                        {embedMetadata && (
-                             <span className="px-1 py-0.5 text-[9px] font-bold rounded bg-zinc-800 text-zinc-400" title="Tags">
-                                TAGS
-                             </span>
-                        )}
-                        {embedThumbnail && (
-                             <span className="px-1 py-0.5 text-[9px] font-bold rounded bg-zinc-800 text-zinc-400" title="Art">
-                                ART
-                             </span>
-                        )}
                     </div>
                     
-                    {/* Phase / Status Text */}
                     <div className={twMerge(
                         "text-[9px] font-mono truncate",
                         (isProcessingPhase || isMetaPhase) ? "text-yellow-500" : "text-zinc-500"

@@ -9,6 +9,14 @@ interface AppContextType {
   isJsRuntimeMissing: boolean;
   setIsJsRuntimeMissing: (missing: boolean) => void;
 
+  // Settings Modal State (Global)
+  isSettingsOpen: boolean;
+  settingsActiveTab: string;
+  settingsActiveSection: string | null;
+  openSettings: (tab?: string, sectionId?: string) => void;
+  closeSettings: () => void;
+  setSettingsActiveTab: (tab: string) => void;
+
   // General Config
   defaultDownloadPath: string | null;
   setDefaultDownloadPath: (path: string) => void;
@@ -66,6 +74,11 @@ export const AppProvider = ({ children }: { children: React.ReactNode }) => {
   const [isConfigLoaded, setIsConfigLoaded] = useState(false);
   const [isJsRuntimeMissing, setIsJsRuntimeMissing] = useState(false);
 
+  // Settings Modal State
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [settingsActiveTab, setSettingsActiveTab] = useState('general');
+  const [settingsActiveSection, setSettingsActiveSection] = useState<string | null>(null);
+
   // Config State
   const [defaultDownloadPath, _setDownloadPath] = useState<string | null>(null);
   const [filenameTemplateBlocks, _setTemplateBlocks] = useState<TemplateBlock[]>(DEFAULT_TEMPLATE_BLOCKS);
@@ -87,6 +100,20 @@ export const AppProvider = ({ children }: { children: React.ReactNode }) => {
   const [isUpdateAvailable, setIsUpdateAvailable] = useState(false);
   const [latestVersion, setLatestVersion] = useState<string | null>(null);
   const [currentVersion, setCurrentVersion] = useState<string | null>(null);
+
+  // --- Settings Navigation Logic ---
+  const openSettings = useCallback((tab?: string, sectionId?: string) => {
+    if (tab) setSettingsActiveTab(tab);
+    if (sectionId) setSettingsActiveSection(sectionId);
+    else setSettingsActiveSection(null);
+    setIsSettingsOpen(true);
+  }, []);
+
+  const closeSettings = useCallback(() => {
+    setIsSettingsOpen(false);
+    // Reset section but keep tab
+    setSettingsActiveSection(null);
+  }, []);
 
   const checkAppUpdate = async () => {
     try {
@@ -199,14 +226,12 @@ export const AppProvider = ({ children }: { children: React.ReactNode }) => {
 
   const setCookiesPath = (path: string | null) => {
       _setCookiesPath(path);
-      // If setting a file, clear the browser selection to avoid conflict ambiguity logic in backend (though backend prioritizes file)
       if (path) _setCookiesBrowser(null); 
       saveGeneral(defaultDownloadPath, filenameTemplateBlocks, maxConcurrentDownloads, maxTotalInstances, logLevel, checkForUpdates, path, path ? null : cookiesBrowser);
   };
 
   const setCookiesBrowser = (browser: string | null) => {
       _setCookiesBrowser(browser);
-      // If setting a browser, clear the file path
       if (browser && browser !== 'none') _setCookiesPath(null);
       saveGeneral(defaultDownloadPath, filenameTemplateBlocks, maxConcurrentDownloads, maxTotalInstances, logLevel, checkForUpdates, browser && browser !== 'none' ? null : cookiesPath, browser);
   };
@@ -242,6 +267,12 @@ export const AppProvider = ({ children }: { children: React.ReactNode }) => {
     isConfigLoaded,
     isJsRuntimeMissing,
     setIsJsRuntimeMissing,
+    isSettingsOpen,
+    settingsActiveTab,
+    settingsActiveSection,
+    openSettings,
+    closeSettings,
+    setSettingsActiveTab,
     defaultDownloadPath,
     setDefaultDownloadPath,
     filenameTemplateBlocks,

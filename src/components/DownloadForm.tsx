@@ -6,6 +6,8 @@ import { selectDirectory } from '@/api/invoke';
 import { DownloadFormatPreset, PreferenceConfig } from '@/types';
 import { useAppContext } from '@/contexts/AppContext';
 import { twMerge } from 'tailwind-merge';
+import { SmartError } from './ui/SmartError';
+import { extractErrorDetails } from '@/utils/errorRegistry';
 
 interface DownloadFormProps {
   onDownload: (
@@ -91,7 +93,9 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
   
   const [url, setUrl] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  
+  // Store full error details, not just string
+  const [errorDetails, setErrorDetails] = useState<{ message: string, stderr?: string } | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -106,7 +110,7 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
     }
 
     setIsProcessing(true);
-    setError(null);
+    setErrorDetails(null);
 
     try {
         const template = getTemplateString();
@@ -124,13 +128,9 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
         setUrl('');
     } catch (err: any) {
         console.error("Failed to start download", err);
-        
-        // If it's a Rust/Tauri error object, turn it into a readable string
-        const msg = typeof err === 'object' 
-            ? JSON.stringify(err) 
-            : String(err);
-            
-        setError(msg);
+        // Use the extractor to handle JSON blobs
+        const extracted = extractErrorDetails(err);
+        setErrorDetails(extracted);
     } finally {
         setIsProcessing(false);
     }
@@ -199,12 +199,12 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
                 <input
                     type="text"
                     value={url}
-                    onChange={(e) => { setUrl(e.target.value); setError(null); }}
+                    onChange={(e) => { setUrl(e.target.value); setErrorDetails(null); }}
                     disabled={isProcessing}
                     placeholder="https://youtube.com/watch?v=... or Playlist URL"
                     className={twMerge(
                         "relative w-full bg-surfaceHighlight border rounded-md pl-10 pr-4 py-2.5 text-sm text-zinc-100 placeholder-zinc-700 focus:outline-none focus:ring-1 transition-all",
-                        error 
+                        errorDetails
                             ? "border-theme-red focus:ring-theme-red focus:border-theme-red"
                             : isYoutube && isJsRuntimeMissing 
                                 ? "border-amber-500/50 focus:border-amber-500 focus:ring-amber-500" 
@@ -213,11 +213,13 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
                 />
             </div>
             
-            {/* Inline Error Message */}
-            {error && (
-                <div className="animate-fade-in text-xs text-theme-red flex items-center gap-2 bg-theme-red/5 p-2 rounded border border-theme-red/10">
-                    <AlertTriangle className="h-3 w-3 flex-shrink-0" />
-                    <span>{error}</span>
+            {/* Replaced inline Alert with SmartError */}
+            {errorDetails && (
+                <div className="animate-fade-in">
+                    <SmartError 
+                        error={errorDetails.message} 
+                        stderr={errorDetails.stderr} 
+                    />
                 </div>
             )}
           </div>

@@ -5,6 +5,7 @@ import { X, MonitorPlay, Clock, CheckCircle2, AlertCircle, Headphones, Activity,
 import { twMerge } from 'tailwind-merge';
 import { showInFolder, openLogFolder } from '@/api/invoke';
 import { useState } from 'react';
+import { SmartError } from './ui/SmartError';
 
 interface DownloadItemProps {
   download: Download;
@@ -23,7 +24,6 @@ export function DownloadItem({ download, onCancel }: DownloadItemProps) {
   const displayTitle = filename || url;
   const isAudio = preset?.startsWith('audio');
 
-  // Determine State Flags
   const isQueued = status === 'pending';
   const isActive = status === 'downloading'; 
   const isError = status === 'error';
@@ -190,14 +190,9 @@ export function DownloadItem({ download, onCancel }: DownloadItemProps) {
                 
                 {isError && (
                     <div className="space-y-2">
-                        <div className="text-xs text-theme-red bg-theme-red/10 border border-theme-red/20 p-3 rounded font-mono whitespace-pre-wrap break-all">
-                            <span className="font-bold block mb-1">Error: {error}</span>
-                            {stderr && (
-                                <div className="mt-2 pt-2 border-t border-theme-red/20 opacity-90 text-[10px] max-h-32 overflow-y-auto">
-                                    {stderr}
-                                </div>
-                            )}
-                        </div>
+                        {/* New Smart Error Component */}
+                        <SmartError error={error} stderr={stderr} />
+                        
                         <div className="flex gap-2">
                             {logs && (
                                 <Button 
