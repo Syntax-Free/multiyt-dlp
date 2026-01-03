@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Button } from './ui/Button';
 import { Card, CardContent } from './ui/Card';
-import { Download, FolderOpen, Link2, MonitorPlay, Headphones, FileText, Image as ImageIcon, AlertTriangle, Loader2, ChevronDown, History, CheckCheck, RefreshCw } from 'lucide-react';
+import { Download, FolderOpen, Link2, MonitorPlay, Headphones, FileText, Image as ImageIcon, AlertTriangle, Loader2, ChevronDown, CheckCheck, RefreshCw, Filter } from 'lucide-react';
 import { selectDirectory } from '@/api/invoke';
 import { DownloadFormatPreset, PreferenceConfig, StartDownloadResponse } from '@/types';
 import { useAppContext } from '@/contexts/AppContext';
@@ -295,36 +295,41 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
                 </div>
             )}
 
-            {/* Skipped Items Feedback */}
+            {/* Skipped Items Feedback - REDESIGNED */}
             {skipInfo && (
-                <div className="animate-fade-in p-3 rounded border bg-blue-500/10 border-blue-500/30 text-zinc-300 text-xs">
+                <div className="animate-fade-in p-3 rounded-lg border bg-zinc-900 border-zinc-800 text-zinc-300">
                     <div className="flex items-start gap-3">
-                        <History className="h-5 w-5 text-blue-400 flex-shrink-0 mt-0.5" />
-                        <div className="flex-1">
-                            <div className="font-bold text-blue-400 mb-1">
+                        <div className="p-2 bg-zinc-800 rounded text-zinc-400">
+                             <Filter className="h-4 w-4" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                            <div className="text-xs font-semibold text-zinc-200">
                                 {skipInfo.skipped === skipInfo.total 
-                                    ? "All items skipped" 
-                                    : `${skipInfo.skipped} item${skipInfo.skipped > 1 ? 's' : ''} skipped`}
+                                    ? "All items already in history" 
+                                    : `${skipInfo.skipped} item${skipInfo.skipped > 1 ? 's' : ''} filtered from queue`}
                             </div>
-                            <div className="opacity-90 leading-relaxed mb-2">
+                            <div className="text-[11px] text-zinc-500 mt-0.5 mb-2 leading-tight">
                                 {skipInfo.skipped === skipInfo.total 
-                                    ? "This video (or playlist) is already in your download history."
-                                    : `Queued ${skipInfo.total - skipInfo.skipped} new items. The rest were found in your download history.`
+                                    ? "These URLs match entries in your download archive."
+                                    : `${skipInfo.total - skipInfo.skipped} new items were queued. Duplicates were skipped.`
                                 }
                             </div>
                             
-                            <div className="flex gap-2">
-                                <button 
+                            <div className="flex items-center gap-2">
+                                <Button
                                     type="button"
                                     onClick={handleDownloadSkipped}
-                                    className="px-3 py-1.5 bg-blue-500/20 hover:bg-blue-500/30 border border-blue-500/30 rounded text-blue-300 font-medium transition-colors flex items-center gap-2"
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-7 text-[10px] border-zinc-700 bg-zinc-800/50 hover:bg-zinc-700 hover:text-white"
                                 >
-                                    <RefreshCw className="h-3.5 w-3.5" />
-                                    Download Skipped Items
-                                </button>
+                                    <RefreshCw className="h-3 w-3 mr-1.5" />
+                                    Download Skipped
+                                </Button>
+                                
                                 {skipInfo.skipped < skipInfo.total && (
-                                     <div className="flex items-center gap-1.5 px-2 py-1.5 text-emerald-500">
-                                         <CheckCheck className="h-4 w-4" />
+                                     <div className="flex items-center gap-1.5 px-2 py-1 text-[10px] text-emerald-500 font-medium bg-emerald-500/5 rounded border border-emerald-500/10">
+                                         <CheckCheck className="h-3 w-3" />
                                          <span>Others Queued</span>
                                      </div>
                                 )}

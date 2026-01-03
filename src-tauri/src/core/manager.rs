@@ -17,8 +17,6 @@ use crate::config::ConfigManager;
 use crate::core::process::run_download_process;
 use crate::core::native;
 
-/// The "Handle" is what we pass around in the Tauri state.
-/// It sends messages to the running Actor loop.
 #[derive(Clone)]
 pub struct JobManagerHandle {
     sender: mpsc::Sender<JobMessage>,
@@ -26,11 +24,8 @@ pub struct JobManagerHandle {
 
 impl JobManagerHandle {
     pub fn new(app_handle: AppHandle) -> Self {
-        // Increased channel capacity from 100 to 1000 to prevent backpressure 
-        // during high-frequency log updates from multiple concurrent downloads.
         let (sender, receiver) = mpsc::channel(1000);
         let actor = JobManagerActor::new(app_handle, receiver, sender.clone());
-        // FIX: Use tauri::async_runtime::spawn instead of tokio::spawn to ensure runtime context
         tauri::async_runtime::spawn(actor.run());
         
         Self { sender }
@@ -117,8 +112,10 @@ impl JobManagerActor {
     }
 
     async fn run(mut self) {
-        // Tick for UI updates (200ms) to prevent frontend flooding
-        let mut interval = time::interval(Duration::from_millis(200));
+        // Set to 100ms. 
+        // 50ms was too aggressive (event flooding), 200ms felt sluggish.
+        // The Frontend now handles the "Instant" feel via Optimistic UI, so 100ms is safe for batching.
+        let mut interval = time::interval(Duration::from_millis(100));
 
         loop {
             tokio::select! {
