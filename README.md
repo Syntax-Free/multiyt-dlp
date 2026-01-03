@@ -21,7 +21,7 @@
   Built with <b>Rust</b> and <b>Tauri</b> because I wanted a masterpiece, but didn't want to write the code myself.
 </p>
 
-> **Syn:** `he didn't even read the rust docs. i had to explain the borrow checker to him for three hours using only hand gestures and signs. please help.`
+> **Syn:** `he didn't even read the rust docs.`
 
 </div>
 
@@ -68,7 +68,7 @@ If you enjoy suffering and want to read error logs, go ahead. I’m not stopping
     npm run tauri dev
     ```
 
-> **Syn:** `it took him 40 tries to get the build script to run. he blamed the ai every single time. i am so tired.`
+> **Syn:** `it took him 40 tries to get the build script to run.`
 
 ---
 
