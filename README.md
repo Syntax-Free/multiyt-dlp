@@ -8,8 +8,8 @@
 <a href="https://github.com/yt-dlp/yt-dlp">
     <img src="https://img.shields.io/badge/Powered%20By-yt--dlp-red?style=for-the-badge&logo=youtube" alt="Powered by yt-dlp" />
 </a>
-<img src="https://img.shields.io/badge/Backend-Rust%20(Prompted)-orange?style=for-the-badge&logo=rust" alt="Rust" />
-<img src="https://img.shields.io/badge/Frontend-React%20(Vibed)-blue?style=for-the-badge&logo=react" alt="React" />
+<img src="https://img.shields.io/badge/Backend-Rust%20-orange?style=for-the-badge&logo=rust" alt="Rust" />
+<img src="https://img.shields.io/badge/Frontend-React%20-blue?style=for-the-badge&logo=react" alt="React" />
 <br/>
 <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="License" />
 <img src="https://img.shields.io/badge/Architecture-AI%20Managed-lightgrey?style=flat-square" alt="AI Managed" />
