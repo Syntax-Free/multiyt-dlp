@@ -41,7 +41,7 @@
 ### 🎨 The Aesthetic (even I'm embarrassed of this)
 *   **Cyber-Glass UI:** A futuristic interface designed to hide the fact that I’m coding in my bedroom.
 *   **State Awareness:** Visual indicators for when the app is "Dying."
-*   **Syn Squad Integration:** The UI actually respects the intern (sometimes)
+*   **Syn Squad Integration:** The UI actually respects the intern (sometimes).
 
 ---
 
