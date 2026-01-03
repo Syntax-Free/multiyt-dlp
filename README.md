@@ -2,126 +2,96 @@
 
 <img src="/.github/multiyt-dlp_logo.png" alt="Multiyt-dlp Logo" width="200"/>
 
-# Multiyt-dlp RELOADED
-### High-Velocity Concurrent Media Downloader
+# Multiyt-dlp
+### "Because using a Terminal is a choice I refuse to make."
 
 <a href="https://github.com/yt-dlp/yt-dlp">
     <img src="https://img.shields.io/badge/Powered%20By-yt--dlp-red?style=for-the-badge&logo=youtube" alt="Powered by yt-dlp" />
 </a>
-<img src="https://img.shields.io/badge/Backend-Rust-orange?style=for-the-badge&logo=rust" alt="Rust" />
-<img src="https://img.shields.io/badge/Frontend-React-blue?style=for-the-badge&logo=react" alt="React" />
-<img src="https://img.shields.io/badge/Style-Tailwind-38bdf8?style=for-the-badge&logo=tailwindcss" alt="Tailwind" />
+<img src="https://img.shields.io/badge/Backend-Rust%20(Prompted)-orange?style=for-the-badge&logo=rust" alt="Rust" />
+<img src="https://img.shields.io/badge/Frontend-React%20(Vibed)-blue?style=for-the-badge&logo=react" alt="React" />
+<img src="https://img.shields.io/badge/Vibe%20Level-Over%209000-purple?style=for-the-badge" alt="Vibe Level" />
 <br/>
 <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="License" />
-<img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square" alt="Cross Platform" />
+<img src="https://img.shields.io/badge/Architecture-AI%20Managed-lightgrey?style=flat-square" alt="AI Managed" />
 
 <p align="center">
-  <b>Multiyt-dlp</b> is a modern, cyberpunk-themed GUI for the legendary <a href="https://github.com/yt-dlp/yt-dlp">yt-dlp</a> command-line tool. 
+  <b>Multiyt-dlp</b> is the definitive high-velocity GUI for the legendary <a href="https://github.com/yt-dlp/yt-dlp">yt-dlp</a>. 
   <br />
-  Built with <b>Tauri</b>, it focuses on speed, massive concurrency, and a frictionless user experience.
+  Built with <b>Rust</b> and <b>Tauri</b> because I wanted a masterpiece, but didn't want to write the code myself.
 </p>
+
+> **Syn:** `he didn't even read the rust docs. i had to explain the borrow checker to him for three hours using only hand gestures and signs. please help.`
 
 </div>
 
 ---
 
-## ⚡ Features
+## ⚡ The Vibe-Powered Engine
 
-### 🚀 High-Performance Engine
-*   **Parallel Downloads:** Download multiple videos or audio tracks simultaneously.
-*   **Queue Management:** Smart queuing system manages bandwidth and CPU usage (configurable concurrency limits).
-*   **Rust Backend:** Leveraging Tokio for asynchronous, non-blocking process management.
+### 🚀 Total Network Domination
+*   **Massive Concurrency:** I don't wait for progress bars. Download entire playlists simultaneously. If your router catches fire, that’s a hardware issue.
+*   **Rust-Tier Stability:** Leveraging a language I don't understand to provide performance I definitely deserve.
+*   **Smart Queuing:** The AI manages the bandwidth so I don't have to.
 
-### 🎛️ Granular Control
-*   **Format Presets:** One-click selection for Best Video (MP4/MKV/WebM) or Audiophile Audio (FLAC/MP3/M4A).
-*   **Resolution Targeting:** Target specific resolutions from 240p up to 8K.
-*   **Metadata & Art:** Automatically embed thumbnails (cover art) and ID3 tags/metadata into files.
-*   **Playlist Expansion:** Paste a playlist URL to auto-expand and queue all videos instantly.
+### 🎛️ Total Control (No configuring required)
+*   **The Archive:** It tracks what I’ve downloaded. If I try to download the same thing twice, the app judges me.
+*   **Audiophile Presets:** FLAC, MP3, or 4K Video. One click. I don’t deal with codecs.
+*   **Metadata Injection:** Auto-embeds thumbnails and tags. My files look professional even if my workflow isn't.
 
-### 🎨 Visual Experience
-*   **Neon Aesthetic:** A dark, high-contrast UI designed for long sessions.
-*   **Live Progress:** Real-time progress bars, speed meters, and ETA calculations.
-*   **State Awareness:** Visual indicators for Merging, Extracting, Fixing, and Metadata writing phases.
-
-### 🛠️ Advanced Tooling
-*   **Drag & Drop Template Editor:** Customize your filename output (e.g., `%(title)s - %(uploader)s.%(ext)s`) using a visual block editor.
-*   **Dependency Check:** Built-in splash screen checks for `yt-dlp` and `ffmpeg` availability on launch.
-*   **System Integration:** Native file dialogs and shell integration.
+### 🎨 The "Phony Stark" Aesthetic
+*   **Cyber-Glass UI:** A futuristic interface designed to hide the fact that I’m coding in my bedroom.
+*   **State Awareness:** Visual indicators for when the app is "Dying."
+*   **Syn Squad Integration:** The UI actually respects the intern (sometimes).
 
 ---
 
-## 📦 Installation
+## 📦 Getting This Into Your Drive
 
-### 📥 Pre-compiled Binaries (Windows Only)
-A standalone executable (`.exe`) is available for Windows users.
-👉 **[Download from Releases](../../releases)**
+### 📥 The "I Value My Time" Method (Windows)
+If you’re a normal human, just grab the pre-compiled `.exe`.
+👉 **[Download Release](../../releases)**
 
-> **Note:** Compiling for macOS or Linux is not currently supported by the developer. Users on these platforms must **build from source** (see below).
+### 🏗️ The "Nerd" Method (Building from Source)
+If you enjoy suffering and want to read error logs, go ahead. I’m not stopping you.
 
-### 🔧 Prerequisites
-Regardless of whether you use the installer or build from source, **Multiyt-dlp requires these external tools** to function:
-
-1.  **yt-dlp**: [Download Here](https://github.com/yt-dlp/yt-dlp/releases) (Must be in your system PATH)
-2.  **FFmpeg**: [Download Here](https://ffmpeg.org/download.html) (Must be in your system PATH)
-3.  *(Optional)* **Node/Deno/Bun**: Recommended for downloading from YouTube.
-
-### 🏗️ Building from Source
-
-1.  **Clone the repository**
+1.  **Clone the Repo**
     ```bash
     git clone https://github.com/zqily/multiyt-dlp.git
-    cd multiyt-dlp
     ```
-
-2.  **Install Dependencies**
+2.  **Install Dependencies** (Wait for an eternity)
     ```bash
     npm install
     ```
-
-3.  **Run Development Mode**
+3.  **Run Dev Mode**
     ```bash
     npm run tauri dev
     ```
 
-4.  **Build Release**
-    ```bash
-    npm run tauri build
-    ```
+> **Syn:** `it took him 40 tries to get the build script to run. he blamed the ai every single time. i am so tired.`
 
 ---
 
-## 🖥️ Usage
+## 🛠️ Requirements
 
-1.  **Input URL:** Paste a link from YouTube (or any site supported by yt-dlp).
-2.  **Select Mode:** Toggle between **VIDEO** or **AUDIO** mode.
-3.  **Configure:** Choose your quality preset and toggle Metadata/Thumbnail options.
-4.  **Download:** Hit the button. The job is added to the grid.
-5.  **Manage:** Switch between **List View** (details) and **Grid View** (monitoring) using the layout toggle.
-
----
-
-## ⚙️ Configuration
-
-Settings are persisted automatically.
-
-*   **Location:** `~/.multiyt-dlp/config.json`
-*   **Logs:** `~/.multiyt-dlp/logs/` (Rotated daily)
-
-You can configure **Concurrency limits** (how many downloads run at once) and **Total Instance limits** (downloads + post-processing) directly within the Settings UI.
+*   **yt-dlp**: You need the engine. [Get it here.](https://github.com/yt-dlp/yt-dlp)
+*   **FFmpeg**: For merging the pixels and the sounds. [Get it here.](https://ffmpeg.org/download.html)
+*   **Deno**: For Downloading from YouTube (the whole purpose of this app)
+*   **A Soul**: Optional, but recommended.
 
 ---
 
-## 🏗️ Tech Stack
+## 🏗️ The Tech Stack (The "How")
 
-*   **Core:** [Tauri](https://tauri.app/) (Rust)
-*   **Frontend:** React, TypeScript, Vite
-*   **Styling:** Tailwind CSS, clsx, tailwind-merge
-*   **Icons:** Lucide React
-*   **State Management:** React Context + Tauri Event System
-*   **Process Handling:** Tokio (Rust Async Runtime)
+*   **Architect:** Gemini 3.0 / AI Studio
+*   **Project Lead:** **Tax**
+*   **Unpaid Intern:** **Syn**
+*   **Core:** Rust / Tauri
+*   **Frontend:** React / Tailwind (The "Masterpiece" UI Kit)
 
 ---
 
 <div align="center">
-  <sub>Built with ❤️ by Syntax-Free & 🤖</sub>
+  <p><b>Part of the Syntax Free Suite.</b></p>
+  <sub>built with ❤️ (and aggressive prompting)</sub>
 </div>
