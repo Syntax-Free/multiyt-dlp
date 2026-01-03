@@ -1,0 +1,36 @@
+name: 💡 I have a better idea than Tax
+description: Suggest a new feature or improvement.
+title: "[FEATURE]: "
+labels: ["enhancement", "presumptuous"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ### 🧠 The Idea Box
+        Tax usually ignores these, but if it's good, he might steal it and take credit.
+
+  - type: textarea
+    id: pitch
+    attributes:
+      label: The Pitch
+      description: What do you want the app to do?
+      placeholder: "Make the app download faster than light speed..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Why?
+      description: Why is the current version not good enough for you?
+      placeholder: "Because I am impatient..."
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: agreement
+    attributes:
+      label: Terms of Service
+      options:
+        - label: I understand that if I implement this myself via PR, Tax will likely claim he built it.
+          required: true

@@ -1,0 +1,55 @@
+name: 🐛 I found a Bug (It's Syn's Fault)
+description: Report an error, crash, or hallucination.
+title: "[BUG]: "
+labels: ["bug", "syn's fault"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ### 🚨 STOP!
+        Before you report this, did you install **Deno**? 
+        If not, Tax is judging you right now.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What broke?
+      description: Describe how you managed to break my perfect code.
+      placeholder: "I tried to download a 400-video playlist and my RAM started to catch smoke."
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: How can I make this happen on my machine?
+      placeholder: |
+        1. Open App
+        2. Click 'Download'
+        3. Cry
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      options:
+        - Windows (The intended way)
+        - macOS (Why?)
+        - Linux (You should know how to fix this yourself)
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: The "I'm Not Stupid" Checklist
+      options:
+        - label: I have installed yt-dlp, FFmpeg, and Deno (or other JS runtimes)
+          required: true
+        - label: I am not trying to download a restricted or unavailable video.
+          required: true
+        - label: I agree that this is Syn's fault, not Tax's.
+          required: true
