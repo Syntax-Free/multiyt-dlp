@@ -4,6 +4,7 @@ import { Button } from './ui/Button';
 import { SettingsModal } from './settings/SettingsModal';
 import { useAppContext } from '@/contexts/AppContext';
 import { Toast } from './ui/Toast';
+import { SFIcon } from './icons/SFIcon';
 
 interface LayoutProps {
   SidebarContent: ReactNode;
@@ -22,13 +23,19 @@ export function Layout({ SidebarContent, MainContent }: LayoutProps) {
       
       {/* Sidebar */}
       <aside className="w-80 flex-shrink-0 bg-zinc-900/50 border-r border-zinc-800 p-4 overflow-y-auto flex flex-col">
-        <div className="flex items-center justify-between px-2 mb-8 mt-4">
-            <div>
-                <h1 className="text-lg font-bold tracking-tight text-white">
-                    Multiyt-dlp
-                </h1>
-                <div className="text-xs text-zinc-500 mt-1">
-                    Concurrent Video Downloader
+        <div className="flex items-center justify-between px-2 mb-8 mt-4 group">
+            <div className="flex items-center gap-3">
+                {/* Icon with Scale Animation Only */}
+                <SFIcon className="w-10 h-10 transition-transform duration-300 group-hover:scale-110" />
+                
+                <div>
+                    <h1 className="text-lg font-bold tracking-tight text-white leading-none">
+                        Multiyt-dlp
+                    </h1>
+                    {/* Reverted Text */}
+                    <div className="text-xs text-zinc-500 mt-1">
+                        SYN SQUAD
+                    </div>
                 </div>
             </div>
             <Button 
