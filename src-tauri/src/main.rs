@@ -134,13 +134,16 @@ fn main() {
             commands::system::get_latest_app_version, 
             commands::system::show_in_folder, 
             commands::system::open_log_folder,
-            commands::system::log_frontend_message, // REGISTER NEW COMMAND
+            commands::system::log_frontend_message, 
             commands::downloader::start_download,
             commands::downloader::cancel_download,
             commands::downloader::expand_playlist,
             commands::downloader::get_pending_jobs,
             commands::downloader::resume_pending_jobs,
             commands::downloader::clear_pending_jobs,
+            commands::downloader::clear_download_history, 
+            commands::downloader::get_download_history, // NEW
+            commands::downloader::save_download_history, // NEW
             commands::config::get_app_config,
             commands::config::save_general_config,
             commands::config::save_preference_config,

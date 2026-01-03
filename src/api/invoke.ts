@@ -90,7 +90,6 @@ export async function getPendingJobs(): Promise<number> {
     return await invoke("get_pending_jobs");
 }
 
-// Returns full QueuedJob array now
 export async function resumePendingJobs(): Promise<QueuedJob[]> {
     return await invoke("resume_pending_jobs");
 }
@@ -109,6 +108,22 @@ export async function selectDirectory(): Promise<string | null> {
         return selected[0];
     }
     return selected;
+}
+
+// --- History API ---
+
+export async function clearDownloadHistory(): Promise<void> {
+    return await invoke("clear_download_history");
+}
+
+// Function to read the history file content
+export async function getDownloadHistory(): Promise<string> {
+    return await invoke("get_download_history");
+}
+
+// Function to save edited content back to the file
+export async function saveDownloadHistory(content: string): Promise<void> {
+    return await invoke("save_download_history", { content });
 }
 
 // --- Logging API ---

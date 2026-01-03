@@ -509,7 +509,7 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
                         <div>
                             <div className="text-sm font-bold text-zinc-200">Force Download</div>
                             <div className="text-xs text-zinc-500 mt-0.5">
-                                Bypass download history check. Useful for re-downloading playlists or updated videos.
+                                Bypass download history check.
                             </div>
                         </div>
                     </button>

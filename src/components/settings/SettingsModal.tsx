@@ -30,6 +30,7 @@ const TABS: TabConfig[] = [
         animationClass: 'group-hover:animate-[spin_3s_linear_infinite]',
         subs: [
             { id: 'section-queue', label: 'Queue Management' },
+            { id: 'section-history', label: 'History Management' },
             { id: 'section-logging', label: 'Logging' },
         ]
     },

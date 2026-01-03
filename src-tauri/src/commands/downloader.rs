@@ -229,8 +229,8 @@ pub async fn start_download(
             video_resolution: video_resolution.clone(),
             embed_metadata,
             embed_thumbnail,
-            filename_template: safe_template.clone(),
             restrict_filenames: restrict_filenames.unwrap_or(false),
+            filename_template: safe_template.clone(),
         };
 
         match manager.add_job(job_data).await {
@@ -288,4 +288,37 @@ pub async fn resume_pending_jobs(
 pub async fn clear_pending_jobs(manager: State<'_, JobManagerHandle>) -> Result<(), String> {
     manager.clear_pending().await;
     Ok(())
+}
+
+#[tauri::command]
+pub fn clear_download_history() -> Result<(), String> {
+    let path = get_history_file_path();
+    if path.exists() {
+        // Truncate the file to size 0
+        File::create(path).map_err(|e| format!("Failed to clear history: {}", e))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_download_history() -> Result<String, String> {
+    let path = get_history_file_path();
+    if !path.exists() {
+        return Ok(String::new());
+    }
+    std::fs::read_to_string(path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn save_download_history(content: String) -> Result<(), String> {
+    let path = get_history_file_path();
+    
+    // Ensure parent dir exists
+    if let Some(parent) = path.parent() {
+        if !parent.exists() {
+             let _ = std::fs::create_dir_all(parent);
+        }
+    }
+    
+    std::fs::write(path, content).map_err(|e| e.to_string())
 }
