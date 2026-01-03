@@ -81,7 +81,7 @@ If you enjoy suffering and want to read error logs, go ahead. I’m not stopping
 
 ---
 
-## 🏗️ The Tech Stack (The "How")
+## 🏗️ The Tech Stack
 
 *   **Architect:** Gemini 3.0 / AI Studio
 *   **Project Lead:** **Tax**
