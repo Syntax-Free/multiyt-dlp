@@ -93,7 +93,8 @@ export function useDownloadManager() {
     embedMetadata: boolean = false,
     embedThumbnail: boolean = false,
     filenameTemplate: string,
-    restrictFilenames: boolean = false
+    restrictFilenames: boolean = false,
+    forceDownload: boolean = false
   ) => {
     try {
       const jobIds = await apiStartDownload(
@@ -104,7 +105,8 @@ export function useDownloadManager() {
           embedMetadata, 
           embedThumbnail,
           filenameTemplate,
-          restrictFilenames
+          restrictFilenames,
+          forceDownload
       ); 
       
       setDownloads((prev) => {

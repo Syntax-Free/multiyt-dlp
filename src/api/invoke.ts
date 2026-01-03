@@ -62,7 +62,8 @@ export async function startDownload(
   embedMetadata: boolean,
   embedThumbnail: boolean,
   filenameTemplate: string,
-  restrictFilenames: boolean = false
+  restrictFilenames: boolean = false,
+  forceDownload: boolean = false
 ): Promise<string[]> { 
   return await invoke("start_download", { 
     url, 
@@ -72,7 +73,8 @@ export async function startDownload(
     embedMetadata,
     embedThumbnail,
     filenameTemplate,
-    restrictFilenames
+    restrictFilenames,
+    forceDownload
   });
 }
 

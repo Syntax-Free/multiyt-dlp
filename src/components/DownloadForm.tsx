@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Button } from './ui/Button';
 import { Card, CardContent } from './ui/Card';
 import { Download, FolderOpen, Link2, MonitorPlay, Headphones, FileText, Image as ImageIcon, AlertTriangle, Loader2, ChevronDown } from 'lucide-react';
@@ -17,7 +17,9 @@ interface DownloadFormProps {
       videoResolution: string,
       embedMeta: boolean,
       embedThumbnail: boolean,
-      filenameTemplate: string
+      filenameTemplate: string,
+      restrictFilenames: boolean,
+      forceDownload: boolean
     ) => Promise<void>; 
 }
 
@@ -93,12 +95,24 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
   
   const [url, setUrl] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [showForceOptions, setShowForceOptions] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
   
   // Store full error details, not just string
   const [errorDetails, setErrorDetails] = useState<{ message: string, stderr?: string } | null>(null);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setShowForceOptions(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [dropdownRef]);
+
+  const handleSubmit = async (e: React.FormEvent | React.MouseEvent, force: boolean = false) => {
+    if (e) e.preventDefault();
     if (!url.trim()) return;
 
     const isYoutube = url.includes('youtube.com') || url.includes('youtu.be');
@@ -111,6 +125,7 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
 
     setIsProcessing(true);
     setErrorDetails(null);
+    setShowForceOptions(false); // Close dropdown
 
     try {
         const template = getTemplateString();
@@ -122,13 +137,14 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
             preferences.video_resolution,
             preferences.embed_metadata, 
             preferences.embed_thumbnail, 
-            template
+            template,
+            false, // restrictFilenames default
+            force  // forceDownload
         );
 
         setUrl('');
     } catch (err: any) {
         console.error("Failed to start download", err);
-        // Use the extractor to handle JSON blobs
         const extracted = extractErrorDetails(err);
         setErrorDetails(extracted);
     } finally {
@@ -176,11 +192,13 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
   const currentMode = preferences.mode as DownloadMode;
   
   const filteredPresets = formatPresets.filter(p => p.mode === currentMode);
+  
+  const isSubmitDisabled = !isValidUrl || isProcessing;
 
   return (
     <Card className="bg-transparent border-0 shadow-none p-0">
       <CardContent className="p-0">
-        <form onSubmit={handleSubmit} className="flex flex-col gap-6">
+        <form onSubmit={(e) => handleSubmit(e, false)} className="flex flex-col gap-6">
           
           {/* URL Input */}
           <div className="space-y-2">
@@ -213,7 +231,6 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
                 />
             </div>
             
-            {/* Replaced inline Alert with SmartError */}
             {errorDetails && (
                 <div className="animate-fade-in">
                     <SmartError 
@@ -343,30 +360,67 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
               </div>
           </div>
 
-          <div className="pt-2">
-            <Button 
-                type="submit" 
-                variant="default"
-                disabled={!isValidUrl || isProcessing} 
-                className={twMerge(
-                    "w-full h-12 text-base uppercase tracking-wide font-black shadow-lg",
-                    isProcessing 
-                        ? "shadow-none cursor-wait opacity-80" 
-                        : "shadow-theme-cyan/20 hover:shadow-theme-cyan/40"
-                )}
-            >
-                {isProcessing ? (
-                    <>
-                        <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                        Analyzing...
-                    </>
-                ) : (
-                    <>
-                        <Download className="mr-2 h-5 w-5" />
-                        Initialize Download
-                    </>
-                )}
-            </Button>
+          <div className="pt-2 relative" ref={dropdownRef}>
+            <div className={twMerge(
+                "flex w-full h-12 rounded-md overflow-hidden transition-shadow",
+                isSubmitDisabled 
+                    ? "shadow-none" 
+                    : "shadow-lg shadow-theme-cyan/20 hover:shadow-theme-cyan/40"
+            )}>
+                <Button 
+                    type="submit" 
+                    variant="default"
+                    disabled={isSubmitDisabled} 
+                    className={twMerge(
+                        "flex-grow h-full text-base uppercase tracking-wide font-black rounded-r-none border-r border-black/20",
+                        isProcessing 
+                            ? "cursor-wait opacity-80" 
+                            : ""
+                    )}
+                >
+                    {isProcessing ? (
+                        <>
+                            <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                            Analyzing...
+                        </>
+                    ) : (
+                        <>
+                            <Download className="mr-2 h-5 w-5" />
+                            Initialize Download
+                        </>
+                    )}
+                </Button>
+                <Button
+                    type="button"
+                    variant="default"
+                    disabled={isSubmitDisabled}
+                    onClick={() => setShowForceOptions(!showForceOptions)}
+                    className="w-12 h-full rounded-l-none px-0 flex items-center justify-center bg-theme-cyan/90 hover:bg-theme-cyan/80"
+                    title="Download Options"
+                >
+                    <ChevronDown className={twMerge("h-5 w-5 transition-transform", showForceOptions ? "rotate-180" : "")} />
+                </Button>
+            </div>
+
+            {showForceOptions && (
+                <div className="absolute top-full left-0 right-0 mt-2 z-50 bg-zinc-900 border border-zinc-700 rounded-lg shadow-xl overflow-hidden animate-fade-in">
+                    <button
+                        type="button"
+                        onClick={(e) => handleSubmit(e, true)}
+                        className="w-full text-left px-4 py-3 flex items-start gap-3 hover:bg-zinc-800 transition-colors group"
+                    >
+                        <div className="p-2 rounded bg-zinc-800 group-hover:bg-zinc-700 text-theme-cyan mt-0.5">
+                            <Download className="h-4 w-4" />
+                        </div>
+                        <div>
+                            <div className="text-sm font-bold text-zinc-200">Force Download</div>
+                            <div className="text-xs text-zinc-500 mt-0.5">
+                                Bypass download history check. Useful for re-downloading playlists or updated videos.
+                            </div>
+                        </div>
+                    </button>
+                </div>
+            )}
           </div>
 
         </form>

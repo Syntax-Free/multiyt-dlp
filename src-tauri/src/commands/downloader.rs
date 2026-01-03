@@ -2,6 +2,10 @@ use tauri::{State, AppHandle};
 use uuid::Uuid;
 use std::process::Command;
 use std::sync::Arc;
+use std::collections::HashSet;
+use std::fs::{OpenOptions, File};
+use std::io::{BufRead, BufReader, Write};
+use std::path::PathBuf;
 
 use crate::config::ConfigManager;
 use crate::core::{
@@ -10,8 +14,49 @@ use crate::core::{
 };
 use crate::models::{DownloadFormatPreset, QueuedJob, PlaylistResult, PlaylistEntry};
 
-// Helper: Probes the URL to see if it's a playlist or single video
-// Now accepts AppHandle and ConfigManager to resolve binary paths and cookies correctly
+// --- History Management Helpers ---
+
+fn get_history_file_path() -> PathBuf {
+    let home = dirs::home_dir().expect("Could not find home directory");
+    home.join(".multiyt-dlp").join("downloads.txt")
+}
+
+fn load_history() -> HashSet<String> {
+    let path = get_history_file_path();
+    let mut set = HashSet::new();
+    if path.exists() {
+        if let Ok(file) = File::open(path) {
+            let reader = BufReader::new(file);
+            for line in reader.lines() {
+                if let Ok(l) = line {
+                    if !l.trim().is_empty() {
+                        set.insert(l.trim().to_string());
+                    }
+                }
+            }
+        }
+    }
+    set
+}
+
+fn append_history(urls: Vec<String>) {
+    let path = get_history_file_path();
+    // Ensure directory exists
+    if let Some(parent) = path.parent() {
+        if !parent.exists() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+    }
+
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        for url in urls {
+            let _ = writeln!(file, "{}", url);
+        }
+    }
+}
+
+// --- Probe Helper ---
+
 fn probe_url(url: &str, app: &AppHandle, config_manager: &Arc<ConfigManager>) -> Result<Vec<PlaylistEntry>, AppError> {
     let config = config_manager.get_config().general;
 
@@ -118,6 +163,7 @@ pub async fn start_download(
     embed_thumbnail: bool,
     filename_template: String,
     restrict_filenames: Option<bool>,
+    force_download: Option<bool>,
     config: State<'_, Arc<ConfigManager>>,
     manager: State<'_, JobManagerHandle>, 
 ) -> Result<Vec<Uuid>, AppError> { 
@@ -138,21 +184,31 @@ pub async fn start_download(
     let app_handle = app.clone();
     let config_manager = config.inner().clone();
     let url_clone = url.clone();
+    let is_forced = force_download.unwrap_or(false);
 
     // 1. Probe URL (Blocking Operation)
     let entries = tauri::async_runtime::spawn_blocking(move || {
         probe_url(&url_clone, &app_handle, &config_manager)
     }).await.map_err(|e| AppError::IoError(e.to_string()))??;
 
-    let mut created_job_ids = Vec::new();
+    // 2. Load History for Deduplication (Blocking)
+    let history = tauri::async_runtime::spawn_blocking(load_history).await.map_err(|e| AppError::IoError(e.to_string()))?;
 
-    // 2. Create Jobs
+    let mut created_job_ids = Vec::new();
+    let mut urls_to_archive = Vec::new();
+
+    // 3. Filter and Queue Jobs
     for entry in entries {
+        // If not forced, skip if already in history
+        if !is_forced && history.contains(&entry.url) {
+            continue;
+        }
+
         let job_id = Uuid::new_v4();
         
         let job_data = QueuedJob {
             id: job_id,
-            url: entry.url,
+            url: entry.url.clone(),
             download_path: download_path.clone(),
             format_preset: format_preset.clone(),
             video_resolution: video_resolution.clone(),
@@ -166,6 +222,19 @@ pub async fn start_download(
             .map_err(|e| AppError::ValidationFailed(e))?;
             
         created_job_ids.push(job_id);
+
+        // Prepare for history append
+        // We only append if it wasn't already in history to avoid massive duplicate writes in the text file
+        if !history.contains(&entry.url) {
+            urls_to_archive.push(entry.url);
+        }
+    }
+
+    // 4. Append New URLs to History (Blocking)
+    if !urls_to_archive.is_empty() {
+        tauri::async_runtime::spawn_blocking(move || {
+            append_history(urls_to_archive);
+        });
     }
 
     Ok(created_job_ids)

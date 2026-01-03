@@ -56,6 +56,7 @@ function App() {
         
         // Start a fresh download with preserved settings
         // FORCE restrictFilenames to true for manual retries
+        // FORCE forceDownload to true to bypass history check (since it failed but might have been added to history)
         startDownload(
             job.url,
             job.downloadPath,
@@ -64,7 +65,8 @@ function App() {
             job.embedMetadata || false,
             job.embedThumbnail || false,
             job.filenameTemplate || "%(title)s.%(ext)s",
-            true // <--- FORCE SAFE FILENAMES ON MANUAL RETRY
+            true, // restrictFilenames
+            true  // forceDownload
         );
     });
   };
