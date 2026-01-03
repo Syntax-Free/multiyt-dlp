@@ -67,7 +67,7 @@ If you enjoy suffering and want to read error logs, go ahead. I’m not stopping
     npm run tauri dev
     ```
 
-> **Syn:** `it took him 40 tries to get the build script to run.`
+> **Syn:** `he's too lazy to learn how to compile for macos and linux.`
 
 ---
 
