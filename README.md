@@ -10,7 +10,6 @@
 </a>
 <img src="https://img.shields.io/badge/Backend-Rust%20(Prompted)-orange?style=for-the-badge&logo=rust" alt="Rust" />
 <img src="https://img.shields.io/badge/Frontend-React%20(Vibed)-blue?style=for-the-badge&logo=react" alt="React" />
-<img src="https://img.shields.io/badge/Vibe%20Level-Over%209000-purple?style=for-the-badge" alt="Vibe Level" />
 <br/>
 <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="License" />
 <img src="https://img.shields.io/badge/Architecture-AI%20Managed-lightgrey?style=flat-square" alt="AI Managed" />
