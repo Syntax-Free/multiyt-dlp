@@ -3,64 +3,20 @@ use uuid::Uuid;
 use std::process::Command;
 use std::sync::Arc;
 use std::collections::HashSet;
-use std::fs::{OpenOptions, File};
-use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
 
 use crate::config::ConfigManager;
 use crate::core::{
     error::AppError,
-    manager::{JobManagerHandle},
+    manager::JobManagerHandle,
+    history::HistoryManager,
 };
 use crate::models::{DownloadFormatPreset, QueuedJob, PlaylistResult, PlaylistEntry, StartDownloadResponse};
-
-// --- History Management Helpers ---
-
-fn get_history_file_path() -> PathBuf {
-    let home = dirs::home_dir().expect("Could not find home directory");
-    home.join(".multiyt-dlp").join("downloads.txt")
-}
-
-fn load_history() -> HashSet<String> {
-    let path = get_history_file_path();
-    let mut set = HashSet::new();
-    if path.exists() {
-        if let Ok(file) = File::open(path) {
-            let reader = BufReader::new(file);
-            for line in reader.lines() {
-                if let Ok(l) = line {
-                    if !l.trim().is_empty() {
-                        set.insert(l.trim().to_string());
-                    }
-                }
-            }
-        }
-    }
-    set
-}
-
-fn append_history(urls: Vec<String>) {
-    let path = get_history_file_path();
-    // Ensure directory exists
-    if let Some(parent) = path.parent() {
-        if !parent.exists() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-    }
-
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
-        for url in urls {
-            let _ = writeln!(file, "{}", url);
-        }
-    }
-}
 
 // --- Probe Helper ---
 
 fn probe_url(url: &str, app: &AppHandle, config_manager: &Arc<ConfigManager>) -> Result<Vec<PlaylistEntry>, AppError> {
     let config = config_manager.get_config().general;
 
-    // 1. Resolve Binary Path
     let app_dir = app.path_resolver().app_data_dir().unwrap();
     let bin_dir = app_dir.join("bin");
     
@@ -72,7 +28,6 @@ fn probe_url(url: &str, app: &AppHandle, config_manager: &Arc<ConfigManager>) ->
 
     let mut cmd = Command::new(yt_dlp_cmd);
 
-    // 2. Inject Environment Path (for dependencies)
     if let Ok(current_path) = std::env::var("PATH") {
         let new_path = format!("{}{}{}", bin_dir.to_string_lossy(), if cfg!(windows) { ";" } else { ":" }, current_path);
         cmd.env("PATH", new_path);
@@ -80,13 +35,11 @@ fn probe_url(url: &str, app: &AppHandle, config_manager: &Arc<ConfigManager>) ->
         cmd.env("PATH", bin_dir.to_string_lossy().to_string());
     }
 
-    // 3. Configure Command
     cmd.arg("--flat-playlist")
        .arg("--dump-single-json")
        .arg("--no-warnings")
        .arg(url);
 
-    // 4. Inject Cookies
     if let Some(path) = config.cookies_path {
         if !path.trim().is_empty() { cmd.arg("--cookies").arg(path); }
     } else if let Some(browser) = config.cookies_from_browser {
@@ -144,7 +97,6 @@ pub async fn expand_playlist(
     let app_handle = app.clone();
     let config_manager = config.inner().clone();
     
-    // Spawn blocking to avoid freezing the async runtime
     let entries = tauri::async_runtime::spawn_blocking(move || {
         probe_url(&url, &app_handle, &config_manager)
     }).await.map_err(|e| AppError::IoError(e.to_string()))??;
@@ -167,6 +119,7 @@ pub async fn start_download(
     url_whitelist: Option<Vec<String>>,
     config: State<'_, Arc<ConfigManager>>,
     manager: State<'_, JobManagerHandle>, 
+    history: State<'_, HistoryManager>, // NEW: Injected History Manager
 ) -> Result<StartDownloadResponse, AppError> { 
     
     if !url.starts_with("http://") && !url.starts_with("https://") {
@@ -194,27 +147,23 @@ pub async fn start_download(
 
     let total_found = entries.len() as u32;
 
-    // 2. Load History for Deduplication (Blocking)
-    let history = tauri::async_runtime::spawn_blocking(load_history).await.map_err(|e| AppError::IoError(e.to_string()))?;
-
     let mut created_job_ids = Vec::new();
-    let mut urls_to_archive = Vec::new();
     let mut skipped_urls = Vec::new();
+    let mut urls_to_add = Vec::new();
 
     let whitelist_set: Option<HashSet<String>> = url_whitelist.map(|list| list.into_iter().collect());
 
-    // 3. Filter and Queue Jobs
+    // 2. Filter and Queue Jobs
     for entry in entries {
-        // WHITELIST CHECK: If whitelist is active, skip anything NOT in it
+        // WHITELIST CHECK
         if let Some(ref wl) = whitelist_set {
             if !wl.contains(&entry.url) {
                 continue;
             }
         }
 
-        // HISTORY CHECK:
-        // If not forced AND not whitelisted (assuming whitelist implies intent), check history
-        if !is_forced && history.contains(&entry.url) {
+        // HISTORY CHECK (O(1) in-memory)
+        if !is_forced && history.exists(&entry.url) {
             skipped_urls.push(entry.url.clone());
             continue;
         }
@@ -236,22 +185,24 @@ pub async fn start_download(
         match manager.add_job(job_data).await {
             Ok(_) => {
                 created_job_ids.push(job_id);
-                // Only prepare for history append if it wasn't there
-                if !history.contains(&entry.url) {
-                    urls_to_archive.push(entry.url);
+                // Queue for async append to file
+                if !history.exists(&entry.url) {
+                    urls_to_add.push(entry.url);
                 }
             },
             Err(e) => {
-                // If duplicate active job, just ignore
                 println!("Job ignored (Duplicate/Error): {}", e);
             }
         }
     }
 
-    // 4. Append New URLs to History (Blocking)
-    if !urls_to_archive.is_empty() {
-        tauri::async_runtime::spawn_blocking(move || {
-            append_history(urls_to_archive);
+    // 3. Update History Asynchronously
+    if !urls_to_add.is_empty() {
+        let history_handle = history.inner().clone();
+        tauri::async_runtime::spawn(async move {
+            for url in urls_to_add {
+                let _ = history_handle.add(&url).await;
+            }
         });
     }
 
@@ -288,37 +239,4 @@ pub async fn resume_pending_jobs(
 pub async fn clear_pending_jobs(manager: State<'_, JobManagerHandle>) -> Result<(), String> {
     manager.clear_pending().await;
     Ok(())
-}
-
-#[tauri::command]
-pub fn clear_download_history() -> Result<(), String> {
-    let path = get_history_file_path();
-    if path.exists() {
-        // Truncate the file to size 0
-        File::create(path).map_err(|e| format!("Failed to clear history: {}", e))?;
-    }
-    Ok(())
-}
-
-#[tauri::command]
-pub fn get_download_history() -> Result<String, String> {
-    let path = get_history_file_path();
-    if !path.exists() {
-        return Ok(String::new());
-    }
-    std::fs::read_to_string(path).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn save_download_history(content: String) -> Result<(), String> {
-    let path = get_history_file_path();
-    
-    // Ensure parent dir exists
-    if let Some(parent) = path.parent() {
-        if !parent.exists() {
-             let _ = std::fs::create_dir_all(parent);
-        }
-    }
-    
-    std::fs::write(path, content).map_err(|e| e.to_string())
 }

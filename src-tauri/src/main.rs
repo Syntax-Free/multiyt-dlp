@@ -7,7 +7,6 @@ use tokio::sync::mpsc;
 use std::time::Duration;
 use std::fs;
 
-// --- WINDOWS SPECIFIC IMPORTS ---
 #[cfg(target_os = "windows")]
 use windows::{
     core::PCWSTR,
@@ -17,6 +16,7 @@ use windows::{
 use crate::core::manager::JobManagerHandle;
 use crate::config::ConfigManager;
 use crate::core::logging::{LogManager, rotate_logs};
+use crate::core::history::HistoryManager; // New Import
 
 mod commands;
 mod core;
@@ -24,14 +24,12 @@ mod models;
 mod config;
 
 fn main() {
-    // Explicitly set the App User Model ID (AUMID) for the process.
     #[cfg(target_os = "windows")]
     unsafe {
         const APP_ID: &str = "net.zqil.multiyt-dlp";
         let wide_id: Vec<u16> = APP_ID.encode_utf16().chain(std::iter::once(0)).collect();
         let _ = SetCurrentProcessExplicitAppUserModelID(PCWSTR(wide_id.as_ptr()));
     }
-    // ---------------------------------------------------
 
     let home = dirs::home_dir().expect("Could not find home directory");
     let temp_dir = home.join(".multiyt-dlp").join("temp_downloads");
@@ -39,17 +37,17 @@ fn main() {
         let _ = fs::create_dir_all(&temp_dir);
     }
 
-    // 1. Perform Log Rotation BEFORE logging initialization
     if let Err(e) = rotate_logs() {
         eprintln!("WARNING: Log rotation failed: {}", e);
     }
 
-    // 2. Load Config & Init Logger
     let config_manager = Arc::new(ConfigManager::new());
     let initial_config = config_manager.get_config();
     let log_manager = LogManager::init(&initial_config.general.log_level);
+    
+    // Initialize History Manager (Loads file synchronously on init)
+    let history_manager = HistoryManager::new();
 
-    // Persistence config auto-save channel
     let config_manager_setup = config_manager.clone();
     let config_manager_event = config_manager.clone();
     let config_manager_saver = config_manager.clone();
@@ -58,8 +56,8 @@ fn main() {
     tauri::Builder::default()
         .manage(config_manager)
         .manage(log_manager)
+        .manage(history_manager) // Register History State
         .setup(move |app| {
-            // Initialize the Actor Handle here
             let job_manager_handle = JobManagerHandle::new(app.handle());
             app.manage(job_manager_handle);
 
@@ -141,12 +139,13 @@ fn main() {
             commands::downloader::get_pending_jobs,
             commands::downloader::resume_pending_jobs,
             commands::downloader::clear_pending_jobs,
-            commands::downloader::clear_download_history, 
-            commands::downloader::get_download_history, // NEW
-            commands::downloader::save_download_history, // NEW
             commands::config::get_app_config,
             commands::config::save_general_config,
             commands::config::save_preference_config,
+            // New History Commands
+            commands::history::get_download_history,
+            commands::history::save_download_history,
+            commands::history::clear_download_history,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

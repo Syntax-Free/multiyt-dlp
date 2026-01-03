@@ -76,7 +76,10 @@ export async function startDownload(
     filenameTemplate,
     restrictFilenames,
     forceDownload,
-    url_whitelist: urlWhitelist
+    // FIX: Tauri expects camelCase keys for arguments to map to snake_case Rust arguments.
+    // Passing 'url_whitelist' explicitly failed the mapping, resulting in None being passed to Rust.
+    // Changed to 'urlWhitelist' to ensure correct mapping to 'url_whitelist' in Rust.
+    urlWhitelist 
   });
 }
 
