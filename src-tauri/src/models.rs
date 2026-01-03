@@ -74,6 +74,16 @@ pub struct PlaylistEntry {
     pub title: String,
 }
 
+// --- Download Responses ---
+
+#[derive(Debug, Serialize)]
+pub struct StartDownloadResponse {
+    pub job_ids: Vec<Uuid>,
+    pub skipped_count: u32,
+    pub total_found: u32,
+    pub skipped_urls: Vec<String>,
+}
+
 // --- Event Payloads ---
 
 #[derive(Clone, serde::Serialize)]

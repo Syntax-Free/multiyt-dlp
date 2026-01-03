@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { Download, DownloadCompletePayload, DownloadErrorPayload, BatchProgressPayload, DownloadFormatPreset, QueuedJob, DownloadCancelledPayload } from '@/types';
+import { Download, DownloadCompletePayload, DownloadErrorPayload, BatchProgressPayload, DownloadFormatPreset, QueuedJob, DownloadCancelledPayload, StartDownloadResponse } from '@/types';
 import { startDownload as apiStartDownload, cancelDownload as apiCancelDownload } from '@/api/invoke';
 
 export function useDownloadManager() {
@@ -94,10 +94,11 @@ export function useDownloadManager() {
     embedThumbnail: boolean = false,
     filenameTemplate: string,
     restrictFilenames: boolean = false,
-    forceDownload: boolean = false
-  ) => {
+    forceDownload: boolean = false,
+    urlWhitelist?: string[]
+  ): Promise<StartDownloadResponse> => {
     try {
-      const jobIds = await apiStartDownload(
+      const response = await apiStartDownload(
           url, 
           downloadPath, 
           formatPreset,
@@ -106,12 +107,13 @@ export function useDownloadManager() {
           embedThumbnail,
           filenameTemplate,
           restrictFilenames,
-          forceDownload
+          forceDownload,
+          urlWhitelist
       ); 
       
       setDownloads((prev) => {
         const newMap = new Map(prev);
-        jobIds.forEach(jobId => {
+        response.job_ids.forEach(jobId => {
             newMap.set(jobId, {
               jobId,
               url,
@@ -128,6 +130,8 @@ export function useDownloadManager() {
         });
         return newMap;
       });
+
+      return response;
     } catch (error) {
       console.error('Failed to start download:', error);
       throw error;

@@ -1,9 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Button } from './ui/Button';
 import { Card, CardContent } from './ui/Card';
-import { Download, FolderOpen, Link2, MonitorPlay, Headphones, FileText, Image as ImageIcon, AlertTriangle, Loader2, ChevronDown } from 'lucide-react';
+import { Download, FolderOpen, Link2, MonitorPlay, Headphones, FileText, Image as ImageIcon, AlertTriangle, Loader2, ChevronDown, History, CheckCheck, RefreshCw } from 'lucide-react';
 import { selectDirectory } from '@/api/invoke';
-import { DownloadFormatPreset, PreferenceConfig } from '@/types';
+import { DownloadFormatPreset, PreferenceConfig, StartDownloadResponse } from '@/types';
 import { useAppContext } from '@/contexts/AppContext';
 import { twMerge } from 'tailwind-merge';
 import { SmartError } from './ui/SmartError';
@@ -19,8 +19,9 @@ interface DownloadFormProps {
       embedThumbnail: boolean,
       filenameTemplate: string,
       restrictFilenames: boolean,
-      forceDownload: boolean
-    ) => Promise<void>; 
+      forceDownload: boolean,
+      urlWhitelist?: string[]
+    ) => Promise<StartDownloadResponse>; 
 }
 
 type DownloadMode = 'video' | 'audio';
@@ -100,6 +101,7 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
   
   // Store full error details, not just string
   const [errorDetails, setErrorDetails] = useState<{ message: string, stderr?: string } | null>(null);
+  const [skipInfo, setSkipInfo] = useState<{ skipped: number, total: number, url: string, skippedUrls: string[] } | null>(null);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -123,15 +125,18 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
         if (!confirmed) return;
     }
 
+    const currentUrl = url;
+
     setIsProcessing(true);
     setErrorDetails(null);
-    setShowForceOptions(false); // Close dropdown
+    setSkipInfo(null);
+    setShowForceOptions(false);
 
     try {
         const template = getTemplateString();
         
-        await onDownload(
-            url, 
+        const response = await onDownload(
+            currentUrl, 
             defaultDownloadPath || undefined, 
             preferences.format_preset as DownloadFormatPreset,
             preferences.video_resolution,
@@ -142,6 +147,15 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
             force  // forceDownload
         );
 
+        if (response.skipped_count > 0) {
+            setSkipInfo({
+                skipped: response.skipped_count,
+                total: response.total_found,
+                url: currentUrl,
+                skippedUrls: response.skipped_urls
+            });
+        }
+
         setUrl('');
     } catch (err: any) {
         console.error("Failed to start download", err);
@@ -150,6 +164,46 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
     } finally {
         setIsProcessing(false);
     }
+  };
+
+  const handleDownloadSkipped = () => {
+      if (skipInfo?.url && skipInfo.skippedUrls.length > 0) {
+          const retryUrl = skipInfo.url;
+          const urlsToRetry = skipInfo.skippedUrls;
+          
+          setIsProcessing(true);
+          setSkipInfo(null);
+          setErrorDetails(null);
+          
+          const template = getTemplateString();
+          onDownload(
+            retryUrl, 
+            defaultDownloadPath || undefined, 
+            preferences.format_preset as DownloadFormatPreset,
+            preferences.video_resolution,
+            preferences.embed_metadata, 
+            preferences.embed_thumbnail, 
+            template,
+            false,
+            true, // FORCE TRUE to bypass history check
+            urlsToRetry // WHITELIST ONLY SKIPPED to bypass active downloads check and target specific items
+          ).then((res) => {
+              if (res.skipped_count > 0) {
+                   setSkipInfo({ 
+                       skipped: res.skipped_count, 
+                       total: res.total_found, 
+                       url: retryUrl, 
+                       skippedUrls: res.skipped_urls 
+                   });
+              }
+              setUrl('');
+          }).catch((err: any) => {
+               const extracted = extractErrorDetails(err);
+               setErrorDetails(extracted);
+          }).finally(() => {
+              setIsProcessing(false);
+          });
+      }
   };
 
   const handleSelectDirectory = async () => {
@@ -217,7 +271,7 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
                 <input
                     type="text"
                     value={url}
-                    onChange={(e) => { setUrl(e.target.value); setErrorDetails(null); }}
+                    onChange={(e) => { setUrl(e.target.value); setErrorDetails(null); setSkipInfo(null); }}
                     disabled={isProcessing}
                     placeholder="https://youtube.com/watch?v=... or Playlist URL"
                     className={twMerge(
@@ -231,12 +285,52 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
                 />
             </div>
             
+            {/* Error Feedback */}
             {errorDetails && (
                 <div className="animate-fade-in">
                     <SmartError 
                         error={errorDetails.message} 
                         stderr={errorDetails.stderr} 
                     />
+                </div>
+            )}
+
+            {/* Skipped Items Feedback */}
+            {skipInfo && (
+                <div className="animate-fade-in p-3 rounded border bg-blue-500/10 border-blue-500/30 text-zinc-300 text-xs">
+                    <div className="flex items-start gap-3">
+                        <History className="h-5 w-5 text-blue-400 flex-shrink-0 mt-0.5" />
+                        <div className="flex-1">
+                            <div className="font-bold text-blue-400 mb-1">
+                                {skipInfo.skipped === skipInfo.total 
+                                    ? "All items skipped" 
+                                    : `${skipInfo.skipped} item${skipInfo.skipped > 1 ? 's' : ''} skipped`}
+                            </div>
+                            <div className="opacity-90 leading-relaxed mb-2">
+                                {skipInfo.skipped === skipInfo.total 
+                                    ? "This video (or playlist) is already in your download history."
+                                    : `Queued ${skipInfo.total - skipInfo.skipped} new items. The rest were found in your download history.`
+                                }
+                            </div>
+                            
+                            <div className="flex gap-2">
+                                <button 
+                                    type="button"
+                                    onClick={handleDownloadSkipped}
+                                    className="px-3 py-1.5 bg-blue-500/20 hover:bg-blue-500/30 border border-blue-500/30 rounded text-blue-300 font-medium transition-colors flex items-center gap-2"
+                                >
+                                    <RefreshCw className="h-3.5 w-3.5" />
+                                    Download Skipped Items
+                                </button>
+                                {skipInfo.skipped < skipInfo.total && (
+                                     <div className="flex items-center gap-1.5 px-2 py-1.5 text-emerald-500">
+                                         <CheckCheck className="h-4 w-4" />
+                                         <span>Others Queued</span>
+                                     </div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
                 </div>
             )}
           </div>

@@ -142,13 +142,22 @@ impl JobManagerActor {
                 if self.jobs.contains_key(&job.id) {
                     let _ = resp.send(Err("Job already exists".into()));
                 } else {
-                    let j = Job::new(job.id, job.url.clone());
-                    self.jobs.insert(job.id, j);
-                    self.persistence_registry.insert(job.id, job.clone());
-                    self.queue.push_back(job);
-                    self.save_state();
-                    self.process_queue();
-                    let _ = resp.send(Ok(()));
+                    // Check for duplicate active URL (Pending or Downloading)
+                    let is_duplicate_active = self.jobs.values().any(|j| {
+                        j.url == job.url && (j.status == JobStatus::Pending || j.status == JobStatus::Downloading)
+                    });
+
+                    if is_duplicate_active {
+                        let _ = resp.send(Err("URL is already in queue".into()));
+                    } else {
+                        let j = Job::new(job.id, job.url.clone());
+                        self.jobs.insert(job.id, j);
+                        self.persistence_registry.insert(job.id, job.clone());
+                        self.queue.push_back(job);
+                        self.save_state();
+                        self.process_queue();
+                        let _ = resp.send(Ok(()));
+                    }
                 }
             },
             JobMessage::CancelJob { id } => {

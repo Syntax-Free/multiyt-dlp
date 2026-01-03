@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/tauri";
 import { open } from "@tauri-apps/api/dialog";
-import { DownloadFormatPreset, AppDependencies, AppConfig, GeneralConfig, PreferenceConfig, PlaylistResult, QueuedJob } from '@/types';
+import { DownloadFormatPreset, AppDependencies, AppConfig, GeneralConfig, PreferenceConfig, PlaylistResult, QueuedJob, StartDownloadResponse } from '@/types';
 
 export async function checkDependencies(): Promise<AppDependencies> {
     return await invoke("check_dependencies");
@@ -63,8 +63,9 @@ export async function startDownload(
   embedThumbnail: boolean,
   filenameTemplate: string,
   restrictFilenames: boolean = false,
-  forceDownload: boolean = false
-): Promise<string[]> { 
+  forceDownload: boolean = false,
+  urlWhitelist?: string[]
+): Promise<StartDownloadResponse> { 
   return await invoke("start_download", { 
     url, 
     downloadPath, 
@@ -74,7 +75,8 @@ export async function startDownload(
     embedThumbnail,
     filenameTemplate,
     restrictFilenames,
-    forceDownload
+    forceDownload,
+    url_whitelist: urlWhitelist
   });
 }
 

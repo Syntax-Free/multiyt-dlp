@@ -12,7 +12,7 @@ use crate::core::{
     error::AppError,
     manager::{JobManagerHandle},
 };
-use crate::models::{DownloadFormatPreset, QueuedJob, PlaylistResult, PlaylistEntry};
+use crate::models::{DownloadFormatPreset, QueuedJob, PlaylistResult, PlaylistEntry, StartDownloadResponse};
 
 // --- History Management Helpers ---
 
@@ -164,9 +164,10 @@ pub async fn start_download(
     filename_template: String,
     restrict_filenames: Option<bool>,
     force_download: Option<bool>,
+    url_whitelist: Option<Vec<String>>,
     config: State<'_, Arc<ConfigManager>>,
     manager: State<'_, JobManagerHandle>, 
-) -> Result<Vec<Uuid>, AppError> { 
+) -> Result<StartDownloadResponse, AppError> { 
     
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return Err(AppError::ValidationFailed("Invalid URL provided.".into()));
@@ -191,16 +192,30 @@ pub async fn start_download(
         probe_url(&url_clone, &app_handle, &config_manager)
     }).await.map_err(|e| AppError::IoError(e.to_string()))??;
 
+    let total_found = entries.len() as u32;
+
     // 2. Load History for Deduplication (Blocking)
     let history = tauri::async_runtime::spawn_blocking(load_history).await.map_err(|e| AppError::IoError(e.to_string()))?;
 
     let mut created_job_ids = Vec::new();
     let mut urls_to_archive = Vec::new();
+    let mut skipped_urls = Vec::new();
+
+    let whitelist_set: Option<HashSet<String>> = url_whitelist.map(|list| list.into_iter().collect());
 
     // 3. Filter and Queue Jobs
     for entry in entries {
-        // If not forced, skip if already in history
+        // WHITELIST CHECK: If whitelist is active, skip anything NOT in it
+        if let Some(ref wl) = whitelist_set {
+            if !wl.contains(&entry.url) {
+                continue;
+            }
+        }
+
+        // HISTORY CHECK:
+        // If not forced AND not whitelisted (assuming whitelist implies intent), check history
         if !is_forced && history.contains(&entry.url) {
+            skipped_urls.push(entry.url.clone());
             continue;
         }
 
@@ -218,15 +233,18 @@ pub async fn start_download(
             restrict_filenames: restrict_filenames.unwrap_or(false),
         };
 
-        manager.add_job(job_data).await
-            .map_err(|e| AppError::ValidationFailed(e))?;
-            
-        created_job_ids.push(job_id);
-
-        // Prepare for history append
-        // We only append if it wasn't already in history to avoid massive duplicate writes in the text file
-        if !history.contains(&entry.url) {
-            urls_to_archive.push(entry.url);
+        match manager.add_job(job_data).await {
+            Ok(_) => {
+                created_job_ids.push(job_id);
+                // Only prepare for history append if it wasn't there
+                if !history.contains(&entry.url) {
+                    urls_to_archive.push(entry.url);
+                }
+            },
+            Err(e) => {
+                // If duplicate active job, just ignore
+                println!("Job ignored (Duplicate/Error): {}", e);
+            }
         }
     }
 
@@ -237,7 +255,12 @@ pub async fn start_download(
         });
     }
 
-    Ok(created_job_ids)
+    Ok(StartDownloadResponse {
+        job_ids: created_job_ids,
+        skipped_count: skipped_urls.len() as u32,
+        total_found,
+        skipped_urls,
+    })
 }
 
 #[tauri::command]

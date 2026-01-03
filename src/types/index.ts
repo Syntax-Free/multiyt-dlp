@@ -63,6 +63,13 @@ export type DownloadFormatPreset =
   | 'audio_flac'
   | 'audio_m4a';
 
+export interface StartDownloadResponse {
+    job_ids: string[];
+    skipped_count: number;
+    total_found: number;
+    skipped_urls: string[];
+}
+
 export interface DownloadProgressPayload {
   jobId: string;
   percentage: number;
