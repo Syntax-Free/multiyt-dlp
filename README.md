@@ -26,7 +26,7 @@
 
 ---
 
-## ⚡ The Vibe-Powered Engine
+## ⚡ The Engine
 
 ### 🚀 Total Network Domination
 *   **Massive Concurrency:** I don't wait for progress bars. Download entire playlists simultaneously. If your router catches fire, that’s a hardware issue.
@@ -38,7 +38,7 @@
 *   **Audiophile Presets:** FLAC, MP3, or 4K Video. One click. I don’t deal with codecs.
 *   **Metadata Injection:** Auto-embeds thumbnails and tags. My files look professional even if my workflow isn't.
 
-### 🎨 The "Phony Stark" Aesthetic
+### 🎨 The Aesthetic (even I'm embarrassed of this)
 *   **Cyber-Glass UI:** A futuristic interface designed to hide the fact that I’m coding in my bedroom.
 *   **State Awareness:** Visual indicators for when the app is "Dying."
 *   **Syn Squad Integration:** The UI actually respects the intern (sometimes).
