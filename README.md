@@ -75,7 +75,7 @@ If you enjoy suffering and want to read error logs, go ahead. I’m not stopping
 
 *   **yt-dlp**: You need the engine. [Get it here.](https://github.com/yt-dlp/yt-dlp)
 *   **FFmpeg**: For merging the pixels and the sounds. [Get it here.](https://ffmpeg.org/download.html)
-*   **Deno**: For Downloading from YouTube. yt-dlp now requires this, so [don't ask why.](https://github.com/yt-dlp/yt-dlp/issues/15012)
+*   **Deno**: For downloading from YouTube. yt-dlp now requires this, so [don't ask why.](https://github.com/yt-dlp/yt-dlp/issues/15012)
 *   **A Soul**: Optional, but recommended.
 
 ---
