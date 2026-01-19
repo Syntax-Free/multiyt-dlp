@@ -32,6 +32,38 @@ pub struct Job {
     pub status: JobStatus,
     pub progress: f32,
     pub output_path: Option<String>,
+    
+    // Add missing fields for UI Sync
+    pub speed: Option<String>,
+    pub eta: Option<String>,
+    pub filename: Option<String>,
+    pub phase: Option<String>,
+    pub error: Option<String>,
+    pub exit_code: Option<i32>,
+    pub stderr: Option<String>,
+    pub logs: Option<String>,
+    pub preset: Option<DownloadFormatPreset>,
+    
+    #[serde(rename = "videoResolution")]
+    pub video_resolution: Option<String>,
+    
+    #[serde(rename = "downloadPath")]
+    pub download_path: Option<String>,
+    
+    #[serde(rename = "filenameTemplate")]
+    pub filename_template: Option<String>,
+    
+    #[serde(rename = "embedMetadata")]
+    pub embed_metadata: Option<bool>,
+    
+    #[serde(rename = "embedThumbnail")]
+    pub embed_thumbnail: Option<bool>,
+    
+    #[serde(rename = "restrictFilenames")]
+    pub restrict_filenames: Option<bool>,
+    
+    #[serde(rename = "liveFromStart")]
+    pub live_from_start: Option<bool>,
 }
 
 impl Job {
@@ -43,8 +75,64 @@ impl Job {
             status: JobStatus::Pending,
             progress: 0.0,
             output_path: None,
+            speed: None,
+            eta: None,
+            filename: None,
+            phase: None,
+            error: None,
+            exit_code: None,
+            stderr: None,
+            logs: None,
+            preset: None,
+            video_resolution: None,
+            download_path: None,
+            filename_template: None,
+            embed_metadata: None,
+            embed_thumbnail: None,
+            restrict_filenames: None,
+            live_from_start: None,
         }
     }
+}
+
+// Used for API response of sync_download_state
+#[derive(Serialize)]
+pub struct Download {
+    pub job_id: Uuid,
+    pub url: String,
+    pub status: JobStatus,
+    pub progress: f32,
+    pub speed: Option<String>,
+    pub eta: Option<String>,
+    pub output_path: Option<String>,
+    pub error: Option<String>,
+    pub filename: Option<String>,
+    pub phase: Option<String>,
+    pub exit_code: Option<i32>,
+    pub stderr: Option<String>,
+    pub logs: Option<String>,
+    pub preset: Option<DownloadFormatPreset>,
+    
+    #[serde(rename = "videoResolution")]
+    pub video_resolution: Option<String>,
+    
+    #[serde(rename = "downloadPath")]
+    pub download_path: Option<String>,
+    
+    #[serde(rename = "filenameTemplate")]
+    pub filename_template: Option<String>,
+    
+    #[serde(rename = "embedMetadata")]
+    pub embed_metadata: Option<bool>,
+    
+    #[serde(rename = "embedThumbnail")]
+    pub embed_thumbnail: Option<bool>,
+    
+    #[serde(rename = "restrictFilenames")]
+    pub restrict_filenames: Option<bool>,
+    
+    #[serde(rename = "liveFromStart")]
+    pub live_from_start: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,8 +149,6 @@ pub struct QueuedJob {
     pub live_from_start: bool,
 }
 
-// --- Playlist Expansion ---
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PlaylistResult {
     pub entries: Vec<PlaylistEntry>,
@@ -75,8 +161,6 @@ pub struct PlaylistEntry {
     pub title: String,
 }
 
-// --- Download Responses ---
-
 #[derive(Debug, Serialize)]
 pub struct StartDownloadResponse {
     pub job_ids: Vec<Uuid>,
@@ -84,8 +168,6 @@ pub struct StartDownloadResponse {
     pub total_found: u32,
     pub skipped_urls: Vec<String>,
 }
-
-// --- Event Payloads ---
 
 #[derive(Clone, serde::Serialize)]
 pub struct DownloadProgressPayload {
@@ -127,16 +209,9 @@ pub struct DownloadErrorPayload {
     pub logs: String,
 }
 
-// --- Actor Messages ---
-
 pub enum JobMessage {
-    /// Add a new job to the queue
     AddJob { job: QueuedJob, resp: oneshot::Sender<Result<(), String>> },
-    
-    /// User requested cancellation
     CancelJob { id: Uuid },
-
-    /// Update status/progress from the process thread
     UpdateProgress { 
         id: Uuid, 
         percentage: f32, 
@@ -145,25 +220,12 @@ pub enum JobMessage {
         filename: Option<String>, 
         phase: String 
     },
-
-    /// Process started, link PID
     ProcessStarted { id: Uuid, pid: u32 },
-
-    /// Process finished successfully
     JobCompleted { id: Uuid, output_path: String },
-
-    /// Process failed or error occurred
     JobError { id: Uuid, payload: DownloadErrorPayload },
-
-    /// Worker thread finished (cleanup slot)
     WorkerFinished,
-
-    /// Request a snapshot of pending jobs (for persistence check)
     GetPendingCount(oneshot::Sender<u32>),
-
-    /// Request resume of all persistence jobs
     ResumePending(oneshot::Sender<Vec<QueuedJob>>),
-
-    /// Clear persistence
     ClearPending,
+    SyncState(oneshot::Sender<Vec<Download>>),
 }

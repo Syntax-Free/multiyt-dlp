@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/tauri";
 import { open } from "@tauri-apps/api/dialog";
-import { DownloadFormatPreset, AppDependencies, AppConfig, GeneralConfig, PreferenceConfig, PlaylistResult, QueuedJob, StartDownloadResponse } from '@/types';
+import { DownloadFormatPreset, AppDependencies, AppConfig, GeneralConfig, PreferenceConfig, PlaylistResult, QueuedJob, StartDownloadResponse, Download } from '@/types';
 
 export async function checkDependencies(): Promise<AppDependencies> {
     return await invoke("check_dependencies");
@@ -86,6 +86,10 @@ export async function cancelDownload(jobId: string): Promise<void> {
   return await invoke("cancel_download", { jobId });
 }
 
+export async function syncDownloadState(): Promise<Download[]> {
+    return await invoke("sync_download_state");
+}
+
 // --- Persistence API ---
 
 export async function getPendingJobs(): Promise<number> {
@@ -118,12 +122,10 @@ export async function clearDownloadHistory(): Promise<void> {
     return await invoke("clear_download_history");
 }
 
-// Function to read the history file content
 export async function getDownloadHistory(): Promise<string> {
     return await invoke("get_download_history");
 }
 
-// Function to save edited content back to the file
 export async function saveDownloadHistory(content: string): Promise<void> {
     return await invoke("save_download_history", { content });
 }

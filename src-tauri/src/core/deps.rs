@@ -8,8 +8,6 @@ use reqwest::{Client, header};
 use std::process::Command;
 use async_trait::async_trait;
 
-// ... [Existing imports and constants remain unchanged] ...
-
 #[cfg(target_os = "windows")]
 const YT_DLP_URL: &str = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe";
 #[cfg(target_os = "macos")]
@@ -31,8 +29,6 @@ const DENO_URL: &str = "https://github.com/denoland/deno/releases/latest/downloa
 #[cfg(target_os = "linux")]
 const DENO_URL: &str = "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip";
 
-// ... [Existing structs and InstallProgressPayload remain unchanged] ...
-
 #[derive(Clone, Serialize)]
 struct InstallProgressPayload {
     name: String,
@@ -47,16 +43,15 @@ pub trait DependencyProvider: Send + Sync {
     async fn install(&self, app_handle: AppHandle, target_dir: PathBuf) -> Result<(), String>;
 }
 
-// --- Network Helpers ---
-
 fn get_http_client() -> Result<Client, String> {
     Client::builder()
         .user_agent("Multiyt-dlp/2.0 (github.com/zqil/multiyt-dlp)")
+        // Timeout needed to fail fast in offline mode
+        .connect_timeout(std::time::Duration::from_secs(5)) 
         .build()
         .map_err(|e| e.to_string())
 }
 
-// CHANGED: Made public via `pub` so system.rs can use it
 pub async fn get_latest_github_tag(repo: &str) -> Result<String, String> {
     let client = get_http_client()?;
     let url = format!("https://api.github.com/repos/{}/releases/latest", repo);
@@ -96,7 +91,6 @@ async fn download_file(url: &str, dest: &PathBuf, name: &str, app_handle: &AppHa
 
         if total_size > 0 {
             let percentage = (downloaded * 100) / total_size;
-            // Emit every 5% or when done to reduce IPC traffic
             if percentage >= last_emit + 5 || percentage == 100 {
                 last_emit = percentage;
                 let _ = app_handle.emit_all("install-progress", InstallProgressPayload {
@@ -110,19 +104,12 @@ async fn download_file(url: &str, dest: &PathBuf, name: &str, app_handle: &AppHa
     Ok(())
 }
 
-// ... [The rest of the file (extract helpers, providers, manager logic) remains exactly as is] ...
-// To be concise, I will assume the rest of this file is present as previously provided.
-// The critical change is `pub async fn get_latest_github_tag`.
-
-// [Include rest of file content below logic helpers...]
-
-// Helper to create a command that doesn't spawn a visible window on Windows
 fn new_silent_command(program: &str) -> Command {
     let mut cmd = Command::new(program);
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        cmd.creation_flags(0x08000000); 
     }
     cmd
 }
@@ -189,7 +176,6 @@ fn extract_tar_xz_finding_binary(tar_path: &PathBuf, target_dir: &PathBuf, binar
     }
     Ok(())
 }
-
 
 pub struct YtDlpProvider;
 #[async_trait]
@@ -272,6 +258,7 @@ pub async fn auto_update_yt_dlp(app_handle: AppHandle, bin_dir: PathBuf) -> Resu
     let binary_name = provider.get_binaries()[0];
     let local_path = bin_dir.join(binary_name);
 
+    // Try to get remote tag. If network fails, proceed silently if local exists.
     let remote_tag = match get_latest_github_tag("yt-dlp/yt-dlp").await {
         Ok(t) => t,
         Err(e) => {
@@ -296,20 +283,15 @@ pub async fn auto_update_yt_dlp(app_handle: AppHandle, bin_dir: PathBuf) -> Resu
 }
 
 pub async fn manage_js_runtime(app_handle: AppHandle, bin_dir: PathBuf) -> Result<(), String> {
-    if new_silent_command("deno").arg("--version").output().is_ok() {
-        return Ok(());
-    }
-    if new_silent_command("bun").arg("--version").output().is_ok() {
-        return Ok(());
-    }
-    if new_silent_command("node").arg("--version").output().is_ok() {
-        return Ok(());
-    }
+    if new_silent_command("deno").arg("--version").output().is_ok() { return Ok(()); }
+    if new_silent_command("bun").arg("--version").output().is_ok() { return Ok(()); }
+    if new_silent_command("node").arg("--version").output().is_ok() { return Ok(()); }
 
     let provider = DenoProvider;
     let binary_name = provider.get_binaries()[0];
     let local_path = bin_dir.join(binary_name);
 
+    // Offline Handling
     let remote_tag = match get_latest_github_tag("denoland/deno").await {
         Ok(t) => t,
         Err(e) => {
@@ -376,7 +358,6 @@ pub async fn install_dep(name: String, app_handle: AppHandle) -> Result<(), Stri
     provider.install(app_handle.clone(), bin_dir).await?;
 
     let installed_name = provider.get_name();
-
     let _ = app_handle.emit_all("install-progress", InstallProgressPayload {
         name: installed_name, 
         percentage: 100, 

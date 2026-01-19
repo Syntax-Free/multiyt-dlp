@@ -1,12 +1,13 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { Download, DownloadCompletePayload, DownloadErrorPayload, BatchProgressPayload, DownloadFormatPreset, QueuedJob, DownloadCancelledPayload, StartDownloadResponse } from '@/types';
-import { startDownload as apiStartDownload, cancelDownload as apiCancelDownload } from '@/api/invoke';
+import { startDownload as apiStartDownload, cancelDownload as apiCancelDownload, syncDownloadState } from '@/api/invoke';
 import { useAppContext } from '@/contexts/AppContext';
 
 export function useDownloadManager() {
   const { maxConcurrentDownloads } = useAppContext();
   const [downloads, setDownloads] = useState<Map<string, Download>>(new Map());
+  const hasSynced = useRef(false);
 
   // Consolidated update function for batching
   const updateDownloadsBatch = (updates: { jobId: string, data: Partial<Download> }[]) => {
@@ -16,7 +17,6 @@ export function useDownloadManager() {
             const existing = newMap.get(update.jobId);
             if (existing) {
                 // Determine if we should ignore a 'pending' update if we are already 'downloading'
-                // This prevents race conditions where an old backend message reverts our optimistic UI
                 if (existing.status === 'downloading' && update.data.status === 'pending') {
                     return; 
                 }
@@ -41,6 +41,20 @@ export function useDownloadManager() {
   };
 
   useEffect(() => {
+    // 1. Recover state on mount (UI Refresh resilience)
+    if (!hasSynced.current) {
+        hasSynced.current = true;
+        syncDownloadState().then((recovered) => {
+            if (recovered && recovered.length > 0) {
+                setDownloads(prev => {
+                    const newMap = new Map(prev);
+                    recovered.forEach(d => newMap.set(d.jobId, d));
+                    return newMap;
+                });
+            }
+        }).catch(console.error);
+    }
+
     const unlistenProgress = listen<BatchProgressPayload>('download-progress-batch', (event) => {
         const updates = event.payload.updates.map(u => ({
             jobId: u.jobId,
@@ -123,9 +137,6 @@ export function useDownloadManager() {
       setDownloads((prev) => {
         const newMap = new Map(prev);
         
-        // --- Optimistic UI Update ---
-        // Calculate how many jobs are currently active to determine which new jobs
-        // should be displayed as "Initializing" vs "Queued".
         const currentActiveCount = Array.from(prev.values()).filter(d => 
             d.status === 'downloading'
         ).length;
@@ -136,7 +147,6 @@ export function useDownloadManager() {
             let initialStatus: 'pending' | 'downloading' = 'pending';
             let initialPhase: string | undefined = undefined;
 
-            // If we have slots, optimistically set to downloading/initializing
             if (availableSlots > 0) {
                 initialStatus = 'downloading';
                 initialPhase = 'Initializing Process...';
@@ -167,7 +177,7 @@ export function useDownloadManager() {
       console.error('Failed to start download:', error);
       throw error;
     }
-  }, [maxConcurrentDownloads]); // Added dependency
+  }, [maxConcurrentDownloads]);
 
   const importResumedJobs = useCallback((jobs: QueuedJob[]) => {
       setDownloads((prev) => {

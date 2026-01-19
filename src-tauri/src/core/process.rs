@@ -9,20 +9,18 @@ use tokio::sync::mpsc;
 use std::path::{Path, PathBuf};
 use std::fs;
 use serde::Deserialize;
+use std::time::Duration;
 
 use crate::config::ConfigManager;
 use crate::models::{DownloadFormatPreset, QueuedJob, JobMessage, DownloadErrorPayload};
 use crate::commands::system::get_js_runtime_info;
 
 // --- Regex Definitions ---
-static DESTINATION_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\[download\]\s+Destination:\s+(?P<filename>.+)$").unwrap());
-static ALREADY_DOWNLOADED_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"\[download\]\s+(?:Destination:\s+)?(?P<filename>.+?)\s+has already been downloaded").unwrap());
 static MERGER_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r#"\[Merger\]\s+Merging formats into\s+"?(?P<filename>.+?)"?$"#).unwrap());
 static EXTRACT_AUDIO_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\[ExtractAudio\]\s+Destination:\s+(?P<filename>.+)$").unwrap());
 static METADATA_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\[Metadata\]\s+Adding metadata to:\s+(?P<filename>.+)$").unwrap());
 static THUMBNAIL_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\[(?:Thumbnails|EmbedThumbnail)\]").unwrap());
 static FIXUP_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\[(?:Fixup\w+)\]").unwrap());
-static TITLE_CLEANER_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s\[[a-zA-Z0-9_-]{11}\]\.(?:f[0-9]+\.)?[a-z0-9]+$").unwrap());
 static FILESYSTEM_ERROR_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)(No such file|Invalid argument|cannot be written|WinError 123|Postprocessing: Error opening input files)").unwrap());
 
 #[derive(Deserialize, Debug)]
@@ -35,15 +33,64 @@ struct YtDlpJsonProgress {
     filename: Option<String>,
 }
 
-// --- Helpers ---
+// --- Windows Job Object Support ---
+#[cfg(target_os = "windows")]
+mod win_job {
+    use windows::Win32::System::JobObjects::{
+        CreateJobObjectW, AssignProcessToJobObject, SetInformationJobObject,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    use windows::Win32::Foundation::{HANDLE, CloseHandle};
 
-fn robust_move_file(src: &Path, dest: &Path) -> Result<(), std::io::Error> {
-    if let Err(_) = fs::rename(src, dest) {
-        fs::copy(src, dest)?;
-        fs::remove_file(src)?;
+    pub struct JobObject(HANDLE);
+
+    impl JobObject {
+        pub fn new() -> Result<Self, String> {
+            unsafe {
+                // CreateJobObjectW returns Result<HANDLE> in windows 0.48
+                let job = CreateJobObjectW(None, None).map_err(|e| e.to_string())?;
+                
+                let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+
+                // SetInformationJobObject returns BOOL
+                let success = SetInformationJobObject(
+                    job,
+                    JobObjectExtendedLimitInformation,
+                    &info as *const _ as *const _,
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                );
+
+                if !success.as_bool() {
+                    let _ = CloseHandle(job);
+                    return Err("Failed to set job object information".to_string());
+                }
+
+                Ok(Self(job))
+            }
+        }
+
+        pub fn assign_process(&self, process_handle: std::os::windows::io::RawHandle) -> Result<(), String> {
+            unsafe {
+                // AssignProcessToJobObject returns BOOL
+                let success = AssignProcessToJobObject(self.0, HANDLE(process_handle as isize));
+                if !success.as_bool() {
+                    return Err("Failed to assign process to job object".to_string());
+                }
+                Ok(())
+            }
+        }
     }
-    Ok(())
+
+    impl Drop for JobObject {
+        fn drop(&mut self) {
+            unsafe { let _ = CloseHandle(self.0); }
+        }
+    }
 }
+
+// --- Helpers ---
 
 fn format_speed(bytes_per_sec: f64) -> String {
     if bytes_per_sec.is_nan() || bytes_per_sec.is_infinite() { return "N/A".to_string(); }
@@ -73,6 +120,28 @@ fn construct_error(job_id: uuid::Uuid, msg: String, exit_code: Option<i32>, stde
             exit_code,
             stderr,
             logs: logs.join("\n"),
+        }
+    }
+}
+
+async fn robust_move_file(src: &Path, dest: &Path) -> Result<(), std::io::Error> {
+    let mut attempts = 0;
+    loop {
+        match fs::rename(src, dest) {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                attempts += 1;
+                if attempts > 5 {
+                    // Fallback to copy-delete
+                    if let Ok(_) = fs::copy(src, dest) {
+                        let _ = fs::remove_file(src);
+                        return Ok(());
+                    }
+                    return Err(e);
+                }
+                // Exponential backoff
+                tokio::time::sleep(Duration::from_millis(50 * 2u64.pow(attempts))).await;
+            }
         }
     }
 }
@@ -130,16 +199,23 @@ pub async fn run_download_process(
 
         let mut cmd = Command::new(yt_dlp_cmd);
         
+        // Environment Setup
         if let Ok(current_path) = std::env::var("PATH") {
             let new_path = format!("{}{}{}", bin_dir.to_string_lossy(), if cfg!(windows) { ";" } else { ":" }, current_path);
             cmd.env("PATH", new_path);
         } else {
             cmd.env("PATH", bin_dir.to_string_lossy().to_string());
         }
-        
         cmd.env("PYTHONUTF8", "1");
         cmd.env("PYTHONIOENCODING", "utf-8");
         cmd.current_dir(&temp_dir);
+
+        // Unix Process Group
+        #[cfg(not(target_os = "windows"))]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
 
         if let Some((name, path)) = get_js_runtime_info(&bin_dir) {
             cmd.arg("--js-runtimes").arg(format!("{}:{}", name, path));
@@ -151,6 +227,7 @@ pub async fn run_download_process(
             if !browser.trim().is_empty() && browser != "none" { cmd.arg("--cookies-from-browser").arg(browser); }
         }
 
+        // Standard Arguments
         cmd.arg(&url)
             .arg("-o").arg(&job_data.filename_template) 
             .arg("--no-playlist")
@@ -158,13 +235,16 @@ pub async fn run_download_process(
             .arg("--newline")
             .arg("--windows-filenames")
             .arg("--encoding").arg("utf-8")
-            .arg("--progress-template").arg("download:%(progress)j");
+            .arg("--progress-template").arg("download:%(progress)j")
+            // CRITICAL FIX: Print the final filepath to stdout for reliable capture
+            .arg("--print").arg("after_move:filepath");
 
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
+        // Windows Job Object Flag
         #[cfg(target_os = "windows")]
-        { cmd.creation_flags(0x08000000); }
+        { cmd.creation_flags(0x08000000); } // CREATE_NO_WINDOW
 
         if job_data.restrict_filenames {
             cmd.arg("--restrict-filenames").arg("--trim-filenames").arg("200");
@@ -213,6 +293,19 @@ pub async fn run_download_process(
             }
         };
 
+        // --- Attach Job Object (Windows) ---
+        #[cfg(target_os = "windows")]
+        let _job_object = {
+            if let Ok(job) = win_job::JobObject::new() {
+                if let Some(handle) = child.raw_handle() {
+                     let _ = job.assign_process(handle);
+                }
+                Some(job)
+            } else {
+                None
+            }
+        };
+
         if let Some(pid) = child.id() {
              let _ = tx_actor.send(JobMessage::ProcessStarted { id: job_id, pid }).await;
         }
@@ -227,8 +320,7 @@ pub async fn run_download_process(
         let stdout = child.stdout.take().expect("Failed to capture stdout");
         let stderr = child.stderr.take().expect("Failed to capture stderr");
         
-        // Channel sends (line, is_stderr)
-        let (tx, mut rx) = mpsc::channel::<(String, bool)>(100);
+        let (tx, mut rx) = mpsc::channel::<(String, bool)>(1000);
 
         let tx_out = tx.clone();
         tauri::async_runtime::spawn(async move {
@@ -243,37 +335,37 @@ pub async fn run_download_process(
         });
         drop(tx);
 
-        let mut state_clean_title: Option<String> = None;
-        let mut state_final_filename: Option<String> = None; 
         let mut state_percentage: f32 = 0.0;
         let mut state_phase: String = "Initializing".to_string();
+        // This variable now holds the ABSOLUTE path from yt-dlp --print
+        let mut detected_output_path: Option<String> = None;
+        let mut detected_filename_only: Option<String> = None;
         
-        // Logs
-        let mut captured_logs = Vec::new(); // Combined Logs
-        let mut captured_stderr = Vec::new(); // Pure Stderr for error reporting
+        let mut captured_logs = Vec::new();
+        let mut captured_stderr = Vec::new();
         
-        let extract_filename_from_path = |path_str: &str| -> Option<String> {
-            Path::new(path_str).file_name().map(|os| os.to_string_lossy().to_string())
-        };
-        let extract_clean_title = |path_str: &str| -> Option<String> {
-             if let Some(fname) = extract_filename_from_path(path_str) {
-                let cleaned = TITLE_CLEANER_REGEX.replace(&fname, "");
-                return Some(cleaned.to_string());
-             }
-             None
-        };
-
         while let Some((line, is_stderr)) = rx.recv().await {
             let trimmed = line.trim();
             if trimmed.is_empty() { continue; }
             
-            // Keep track of logs
             captured_logs.push(trimmed.to_string());
             if captured_logs.len() > 100 { captured_logs.remove(0); }
             
             if is_stderr {
                 captured_stderr.push(trimmed.to_string());
                 if captured_stderr.len() > 50 { captured_stderr.remove(0); }
+            }
+
+            // Check for Absolute Filepath print (priority detection)
+            if !is_stderr {
+                let potential_path = PathBuf::from(trimmed);
+                if potential_path.is_absolute() && potential_path.starts_with(&temp_dir) {
+                    detected_output_path = Some(trimmed.to_string());
+                    if let Some(name) = potential_path.file_name() {
+                        detected_filename_only = Some(name.to_string_lossy().to_string());
+                    }
+                    continue; 
+                }
             }
 
             let mut emit_update = false;
@@ -288,9 +380,8 @@ pub async fn run_download_process(
                 if let Some(s) = progress_json.speed { speed_str = format_speed(s); }
                 if let Some(e) = progress_json.eta { eta_str = format_eta(e); }
                 if let Some(f) = progress_json.filename {
-                     if let Some(n) = extract_filename_from_path(&f) {
-                         if state_clean_title.is_none() { state_clean_title = extract_clean_title(&n); }
-                         state_final_filename = Some(n);
+                     if let Some(n) = Path::new(&f).file_name() {
+                         detected_filename_only = detected_filename_only.or(Some(n.to_string_lossy().to_string()));
                      }
                 }
                 
@@ -299,8 +390,7 @@ pub async fn run_download_process(
                 }
                 emit_update = true;
             } else {
-                if let Some(caps) = METADATA_REGEX.captures(trimmed) {
-                    if let Some(f) = caps.name("filename") { state_final_filename = extract_filename_from_path(f.as_str()); }
+                if let Some(_caps) = METADATA_REGEX.captures(trimmed) {
                     state_phase = "Writing Metadata".to_string();
                     state_percentage = 99.0;
                     emit_update = true;
@@ -310,21 +400,13 @@ pub async fn run_download_process(
                     state_percentage = 99.0;
                     emit_update = true;
                 }
-                else if let Some(caps) = MERGER_REGEX.captures(trimmed) {
-                    if let Some(f) = caps.name("filename") {
-                        state_final_filename = extract_filename_from_path(f.as_str());
-                        state_clean_title = extract_clean_title(f.as_str()).or(state_clean_title);
-                    }
+                else if let Some(_caps) = MERGER_REGEX.captures(trimmed) {
                     state_phase = "Merging Formats".to_string();
                     state_percentage = 100.0;
                     eta_str = "Done".to_string();
                     emit_update = true;
                 }
-                else if let Some(caps) = EXTRACT_AUDIO_REGEX.captures(trimmed) {
-                    if let Some(f) = caps.name("filename") {
-                        state_final_filename = extract_filename_from_path(f.as_str());
-                        state_clean_title = extract_clean_title(f.as_str()).or(state_clean_title);
-                    }
+                else if let Some(_caps) = EXTRACT_AUDIO_REGEX.captures(trimmed) {
                     state_phase = "Extracting Audio".to_string();
                     state_percentage = 100.0;
                     eta_str = "Done".to_string();
@@ -334,25 +416,6 @@ pub async fn run_download_process(
                     state_phase = "Fixing Container".to_string();
                     emit_update = true;
                 }
-                else if let Some(caps) = ALREADY_DOWNLOADED_REGEX.captures(trimmed) {
-                    if let Some(f) = caps.name("filename") {
-                        state_final_filename = extract_filename_from_path(f.as_str());
-                        state_clean_title = extract_clean_title(f.as_str()).or(state_clean_title);
-                    }
-                    state_phase = "Finished".to_string();
-                    state_percentage = 100.0;
-                    eta_str = "Done".to_string();
-                    emit_update = true;
-                }
-                else if let Some(caps) = DESTINATION_REGEX.captures(trimmed) {
-                    if let Some(f) = caps.name("filename") {
-                        let full_path_str = f.as_str();
-                        if state_clean_title.is_none() { state_clean_title = extract_clean_title(full_path_str); }
-                        state_final_filename = extract_filename_from_path(full_path_str);
-                        state_phase = "Downloading".to_string();
-                        emit_update = true;
-                    }
-                }
             }
 
             if emit_update {
@@ -361,7 +424,7 @@ pub async fn run_download_process(
                     percentage: state_percentage,
                     speed: speed_str,
                     eta: eta_str,
-                    filename: state_clean_title.clone(),
+                    filename: detected_filename_only.clone(),
                     phase: state_phase.clone()
                 }).await;
             }
@@ -370,34 +433,52 @@ pub async fn run_download_process(
         let status = child.wait().await.expect("Child process error");
 
         if status.success() {
-            if let Some(filename) = state_final_filename {
-                let src_path = temp_dir.join(&filename);
-                let dest_path = target_dir.join(&filename);
-                
-                if src_path.exists() {
-                    match robust_move_file(&src_path, &dest_path) {
-                        Ok(_) => {
-                            let _ = tx_actor.send(JobMessage::JobCompleted { id: job_id, output_path: dest_path.to_string_lossy().to_string() }).await;
-                            break;
-                        },
-                        Err(e) => {
-                            let _ = tx_actor.send(construct_error(job_id, format!("File move failed: {}", e), status.code(), e.to_string(), captured_logs)).await;
-                            break;
-                        }
+            // Determine source file via multiple strategies
+            let mut final_src_path: Option<PathBuf> = None;
+
+            // Strategy 1: Explicit --print detection (Most reliable)
+            if let Some(p) = detected_output_path {
+                let path = PathBuf::from(p);
+                if path.exists() {
+                    final_src_path = Some(path);
+                }
+            }
+
+            // Strategy 2: Scan temp dir for the file matching the detected filename (Fallback)
+            if final_src_path.is_none() {
+                if let Some(fname) = detected_filename_only {
+                    let path = temp_dir.join(&fname);
+                    if path.exists() {
+                        final_src_path = Some(path);
                     }
-                } else {
-                     let _ = tx_actor.send(construct_error(job_id, "Output file missing in temp directory".into(), status.code(), "File not found at destination".into(), captured_logs)).await;
-                     break;
+                }
+            }
+
+            if let Some(src_path) = final_src_path {
+                // Ensure target directory exists
+                if !target_dir.exists() { let _ = std::fs::create_dir_all(&target_dir); }
+
+                let file_name = src_path.file_name().unwrap();
+                let dest_path = target_dir.join(file_name);
+                
+                match robust_move_file(&src_path, &dest_path).await {
+                    Ok(_) => {
+                        let _ = tx_actor.send(JobMessage::JobCompleted { id: job_id, output_path: dest_path.to_string_lossy().to_string() }).await;
+                        break;
+                    },
+                    Err(e) => {
+                        let _ = tx_actor.send(construct_error(job_id, format!("File move failed: {}", e), status.code(), e.to_string(), captured_logs)).await;
+                        break;
+                    }
                 }
             } else {
-                let _ = tx_actor.send(construct_error(job_id, "Could not determine filename".into(), status.code(), "Filename parser failed".into(), captured_logs)).await;
+                let _ = tx_actor.send(construct_error(job_id, "Download succeeded but file not found".into(), status.code(), "Could not locate output file".into(), captured_logs)).await;
                 break;
             }
         } else {
             let log_blob = captured_logs.join("\n");
             let stderr_blob = captured_stderr.join("\n");
             
-            // Auto Retry logic for filename issues
             let is_filesystem_error = FILESYSTEM_ERROR_REGEX.is_match(&log_blob);
             if !job_data.restrict_filenames && is_filesystem_error {
                 job_data.restrict_filenames = true;

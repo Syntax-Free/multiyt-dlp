@@ -1,14 +1,22 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
+use tokio::sync::mpsc;
 use tokio::fs::{OpenOptions, File};
 use tokio::io::{AsyncWriteExt, AsyncReadExt, BufReader, AsyncBufReadExt};
 use url::Url;
+
+enum HistoryMessage {
+    Write(String),
+    Clear,
+    Save(String),
+}
 
 #[derive(Clone)]
 pub struct HistoryManager {
     cache: Arc<RwLock<HashSet<String>>>,
     file_path: PathBuf,
+    sender: mpsc::Sender<HistoryMessage>,
 }
 
 impl HistoryManager {
@@ -23,35 +31,68 @@ impl HistoryManager {
             }
         }
 
-        let manager = Self {
-            cache: Arc::new(RwLock::new(HashSet::new())),
-            file_path,
-        };
-
-        // Initial synchronous load to populate cache before app starts serving requests
-        manager.load_sync();
+        let cache = Arc::new(RwLock::new(HashSet::new()));
         
-        manager
+        // Load sync
+        if file_path.exists() {
+             if let Ok(file) = std::fs::File::open(&file_path) {
+                let reader = std::io::BufReader::new(file);
+                let mut c = cache.write().unwrap();
+                use std::io::BufRead;
+                for line in reader.lines() {
+                    if let Ok(l) = line {
+                        if !l.trim().is_empty() {
+                            c.insert(Self::normalize_url(&l));
+                        }
+                    }
+                }
+             }
+        }
+
+        // --- Serial Actor for File Writes ---
+        let (tx, mut rx) = mpsc::channel(100);
+        let actor_path = file_path.clone();
+        
+        tauri::async_runtime::spawn(async move {
+            while let Some(msg) = rx.recv().await {
+                match msg {
+                    HistoryMessage::Write(url) => {
+                        if let Ok(mut file) = OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(&actor_path)
+                            .await 
+                        {
+                            let _ = file.write_all(format!("{}\n", url).as_bytes()).await;
+                        }
+                    },
+                    HistoryMessage::Clear => {
+                        let _ = File::create(&actor_path).await;
+                    },
+                    HistoryMessage::Save(content) => {
+                         if let Ok(mut file) = File::create(&actor_path).await {
+                             let _ = file.write_all(content.as_bytes()).await;
+                         }
+                    }
+                }
+            }
+        });
+
+        Self {
+            cache,
+            file_path,
+            sender: tx
+        }
     }
 
-    /// Canonicalizes URLs to ensure duplicates are detected regardless of:
-    /// - Protocol (http vs https)
-    /// - Subdomain (www vs non-www, m.youtube vs youtube)
-    /// - Tracking parameters (utm_*, feature, si)
-    /// - Shortened links (youtu.be vs youtube.com)
     pub fn normalize_url(raw_url: &str) -> String {
         let Ok(mut url) = Url::parse(raw_url) else {
-            // If it's not a valid URL (e.g. just a filename?), trim and return
             return raw_url.trim().to_string();
         };
 
-        // Capture host as owned String to avoid borrowing `url` during mutation checks
         let host_option = url.domain().map(|s| s.to_string());
-
         if let Some(host) = host_option {
             if host == "youtu.be" {
-                // Shortened URL logic
-                // Borrow path momentarily to create new string
                 let path = url.path().trim_start_matches('/');
                 if !path.is_empty() {
                     let new_url = format!("https://youtube.com/watch?v={}", path);
@@ -67,14 +108,11 @@ impl HistoryManager {
             }
         }
 
-        // 2. Filter Query Parameters
         let allowed_params: HashSet<&str> = ["v", "list", "id"].into_iter().collect();
-        // Collect params to owned Vector to drop borrow on `url`
         let current_params: Vec<(String, String)> = url.query_pairs()
             .map(|(k, v)| (k.into_owned(), v.into_owned()))
             .collect();
 
-        // If it's YouTube, be strict. If generic, be lenient but strip specific tracking.
         let is_youtube = url.domain().map(|d| d.contains("youtube")).unwrap_or(false);
 
         if is_youtube {
@@ -85,7 +123,6 @@ impl HistoryManager {
                 }
             }
         } else {
-            // Generic: Remove known tracking params
             let tracking = ["utm_source", "utm_medium", "utm_campaign", "si", "feature", "ab_channel"];
             url.query_pairs_mut().clear();
             for (k, v) in current_params {
@@ -95,39 +132,15 @@ impl HistoryManager {
             }
         }
 
-        // 3. Remove Scheme for pure string comparison
         let as_str = url.to_string();
-        // Strip https:// or http://
         let no_scheme = as_str.split("://").last().unwrap_or(&as_str);
-        
-        // Remove trailing slash
         no_scheme.trim_end_matches('/').to_string()
-    }
-
-    fn load_sync(&self) {
-        if !self.file_path.exists() { return; }
-        
-        if let Ok(file) = std::fs::File::open(&self.file_path) {
-            let reader = std::io::BufReader::new(file);
-            let mut cache = self.cache.write().unwrap();
-            
-            use std::io::BufRead;
-            for line in reader.lines() {
-                if let Ok(l) = line {
-                    if !l.trim().is_empty() {
-                        cache.insert(Self::normalize_url(&l));
-                    }
-                }
-            }
-        }
     }
 
     pub async fn reload(&self) -> Result<(), String> {
         let file = File::open(&self.file_path).await.map_err(|e| e.to_string())?;
         let reader = BufReader::new(file);
         let mut lines = reader.lines();
-        
-        // Prepare new set
         let mut new_set = HashSet::new();
 
         while let Ok(Some(line)) = lines.next_line().await {
@@ -136,10 +149,8 @@ impl HistoryManager {
             }
         }
 
-        // Atomic Swap
         let mut cache = self.cache.write().unwrap();
         *cache = new_set;
-        
         Ok(())
     }
 
@@ -152,7 +163,6 @@ impl HistoryManager {
     pub async fn add(&self, url: &str) -> Result<(), String> {
         let normalized = Self::normalize_url(url);
         
-        // 1. Check & Insert to Cache (Short Critical Section)
         {
             let mut cache = self.cache.write().unwrap();
             if cache.contains(&normalized) {
@@ -161,24 +171,9 @@ impl HistoryManager {
             cache.insert(normalized);
         }
 
-        // 2. Append to File (Async I/O)
-        // We append the ORIGINAL url to the file for readability, 
-        // but the cache only cares about the normalized version.
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.file_path)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        file.write_all(format!("{}\n", url).as_bytes())
-            .await
-            .map_err(|e| e.to_string())?;
-
+        let _ = self.sender.send(HistoryMessage::Write(url.to_string())).await;
         Ok(())
     }
-
-    // --- Raw File Operations for Editor ---
 
     pub async fn get_content(&self) -> Result<String, String> {
         if !self.file_path.exists() { return Ok(String::new()); }
@@ -189,21 +184,16 @@ impl HistoryManager {
     }
 
     pub async fn save_content(&self, content: String) -> Result<(), String> {
-        let mut file = File::create(&self.file_path).await.map_err(|e| e.to_string())?;
-        file.write_all(content.as_bytes()).await.map_err(|e| e.to_string())?;
-        
-        // Reload cache after manual edit
+        let _ = self.sender.send(HistoryMessage::Save(content)).await;
+        // Wait briefly for file to write before reloading (imperfect but functional for manual edits)
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         self.reload().await
     }
 
     pub async fn clear(&self) -> Result<(), String> {
-        // Truncate file
-        let _ = File::create(&self.file_path).await.map_err(|e| e.to_string())?;
-        
-        // Clear cache
+        let _ = self.sender.send(HistoryMessage::Clear).await;
         let mut cache = self.cache.write().unwrap();
         cache.clear();
-        
         Ok(())
     }
 }

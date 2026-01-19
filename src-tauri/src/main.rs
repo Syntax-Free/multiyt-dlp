@@ -16,7 +16,7 @@ use windows::{
 use crate::core::manager::JobManagerHandle;
 use crate::config::ConfigManager;
 use crate::core::logging::{LogManager, rotate_logs};
-use crate::core::history::HistoryManager; // New Import
+use crate::core::history::HistoryManager;
 
 mod commands;
 mod core;
@@ -45,7 +45,7 @@ fn main() {
     let initial_config = config_manager.get_config();
     let log_manager = LogManager::init(&initial_config.general.log_level);
     
-    // Initialize History Manager (Loads file synchronously on init)
+    // Initialize History Manager
     let history_manager = HistoryManager::new();
 
     let config_manager_setup = config_manager.clone();
@@ -56,7 +56,7 @@ fn main() {
     tauri::Builder::default()
         .manage(config_manager)
         .manage(log_manager)
-        .manage(history_manager) // Register History State
+        .manage(history_manager)
         .setup(move |app| {
             let job_manager_handle = JobManagerHandle::new(app.handle());
             app.manage(job_manager_handle);
@@ -139,10 +139,10 @@ fn main() {
             commands::downloader::get_pending_jobs,
             commands::downloader::resume_pending_jobs,
             commands::downloader::clear_pending_jobs,
+            commands::downloader::sync_download_state, // New
             commands::config::get_app_config,
             commands::config::save_general_config,
             commands::config::save_preference_config,
-            // New History Commands
             commands::history::get_download_history,
             commands::history::save_download_history,
             commands::history::clear_download_history,

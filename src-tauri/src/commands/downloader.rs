@@ -3,6 +3,7 @@ use uuid::Uuid;
 use std::process::Command;
 use std::sync::Arc;
 use std::collections::HashSet;
+use tokio::sync::Semaphore;
 
 use crate::config::ConfigManager;
 use crate::core::{
@@ -12,80 +13,98 @@ use crate::core::{
 };
 use crate::models::{DownloadFormatPreset, QueuedJob, PlaylistResult, PlaylistEntry, StartDownloadResponse};
 
+// Probing Semaphore to prevent "Fork Bombs"
+// Limits concurrent probing tasks to 3
+static PROBE_SEMAPHORE: std::sync::OnceLock<Arc<Semaphore>> = std::sync::OnceLock::new();
+
+fn get_probe_semaphore() -> Arc<Semaphore> {
+    PROBE_SEMAPHORE.get_or_init(|| Arc::new(Semaphore::new(3))).clone()
+}
+
 // --- Probe Helper ---
 
-fn probe_url(url: &str, app: &AppHandle, config_manager: &Arc<ConfigManager>) -> Result<Vec<PlaylistEntry>, AppError> {
-    let config = config_manager.get_config().general;
+async fn probe_url(url: &str, app: &AppHandle, config_manager: &Arc<ConfigManager>) -> Result<Vec<PlaylistEntry>, AppError> {
+    // Acquire Permit (Throttling) - FIX: Bind semaphore to extend lifetime before acquire
+    let semaphore = get_probe_semaphore();
+    let _permit = semaphore.acquire().await.map_err(|_| AppError::ValidationFailed("Semaphore closed".into()))?;
 
+    let config = config_manager.get_config().general;
     let app_dir = app.path_resolver().app_data_dir().unwrap();
     let bin_dir = app_dir.join("bin");
     
-    let mut yt_dlp_cmd = "yt-dlp".to_string();
-    let local_exe = bin_dir.join(if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" });
-    if local_exe.exists() { 
-        yt_dlp_cmd = local_exe.to_string_lossy().to_string(); 
-    }
-
-    let mut cmd = Command::new(yt_dlp_cmd);
-
-    if let Ok(current_path) = std::env::var("PATH") {
-        let new_path = format!("{}{}{}", bin_dir.to_string_lossy(), if cfg!(windows) { ";" } else { ":" }, current_path);
-        cmd.env("PATH", new_path);
-    } else {
-        cmd.env("PATH", bin_dir.to_string_lossy().to_string());
-    }
-
-    cmd.arg("--flat-playlist")
-       .arg("--dump-single-json")
-       .arg("--no-warnings")
-       .arg(url);
-
-    if let Some(path) = config.cookies_path {
-        if !path.trim().is_empty() { cmd.arg("--cookies").arg(path); }
-    } else if let Some(browser) = config.cookies_from_browser {
-        if !browser.trim().is_empty() && browser != "none" { cmd.arg("--cookies-from-browser").arg(browser); }
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000);
-    }
-
-    let output = cmd.output().map_err(|e| AppError::IoError(e.to_string()))?;
-
-    if !output.status.success() {
-        return Err(AppError::ProcessFailed { 
-            exit_code: output.status.code().unwrap_or(-1), 
-            stderr: String::from_utf8_lossy(&output.stderr).to_string() 
-        });
-    }
-
-    let json_str = String::from_utf8_lossy(&output.stdout);
-    let parsed: serde_json::Value = serde_json::from_str(&json_str)
-        .map_err(|e| AppError::ValidationFailed(format!("Failed to parse JSON: {}", e)))?;
-
-    let mut entries = Vec::new();
-
-    if let Some(entries_arr) = parsed.get("entries").and_then(|e| e.as_array()) {
-        for entry in entries_arr {
-            if let Some(u) = entry.get("url").and_then(|s| s.as_str()) {
-                entries.push(PlaylistEntry {
-                    id: entry.get("id").and_then(|s| s.as_str()).map(|s| s.to_string()),
-                    url: u.to_string(),
-                    title: entry.get("title").and_then(|s| s.as_str()).unwrap_or("Unknown").to_string(),
-                });
-            }
+    let url_clone = url.to_string();
+    
+    // Run blocking process in a spawn_blocking to assume async context in parent
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let mut yt_dlp_cmd = "yt-dlp".to_string();
+        let local_exe = bin_dir.join(if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" });
+        if local_exe.exists() { 
+            yt_dlp_cmd = local_exe.to_string_lossy().to_string(); 
         }
-    } else {
-        entries.push(PlaylistEntry {
-            id: parsed.get("id").and_then(|s| s.as_str()).map(|s| s.to_string()),
-            url: parsed.get("webpage_url").and_then(|s| s.as_str()).unwrap_or(url).to_string(),
-            title: parsed.get("title").and_then(|s| s.as_str()).unwrap_or("Unknown").to_string(),
-        });
-    }
 
-    Ok(entries)
+        let mut cmd = Command::new(yt_dlp_cmd);
+
+        if let Ok(current_path) = std::env::var("PATH") {
+            let new_path = format!("{}{}{}", bin_dir.to_string_lossy(), if cfg!(windows) { ";" } else { ":" }, current_path);
+            cmd.env("PATH", new_path);
+        } else {
+            cmd.env("PATH", bin_dir.to_string_lossy().to_string());
+        }
+
+        cmd.arg("--flat-playlist")
+        .arg("--dump-single-json")
+        .arg("--no-warnings")
+        .arg(&url_clone);
+
+        if let Some(path) = config.cookies_path {
+            if !path.trim().is_empty() { cmd.arg("--cookies").arg(path); }
+        } else if let Some(browser) = config.cookies_from_browser {
+            if !browser.trim().is_empty() && browser != "none" { cmd.arg("--cookies-from-browser").arg(browser); }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000);
+        }
+
+        let output = cmd.output().map_err(|e| AppError::IoError(e.to_string()))?;
+
+        if !output.status.success() {
+            return Err(AppError::ProcessFailed { 
+                exit_code: output.status.code().unwrap_or(-1), 
+                stderr: String::from_utf8_lossy(&output.stderr).to_string() 
+            });
+        }
+
+        let json_str = String::from_utf8_lossy(&output.stdout);
+        let parsed: serde_json::Value = serde_json::from_str(&json_str)
+            .map_err(|e| AppError::ValidationFailed(format!("Failed to parse JSON: {}", e)))?;
+
+        let mut entries = Vec::new();
+
+        if let Some(entries_arr) = parsed.get("entries").and_then(|e| e.as_array()) {
+            for entry in entries_arr {
+                if let Some(u) = entry.get("url").and_then(|s| s.as_str()) {
+                    entries.push(PlaylistEntry {
+                        id: entry.get("id").and_then(|s| s.as_str()).map(|s| s.to_string()),
+                        url: u.to_string(),
+                        title: entry.get("title").and_then(|s| s.as_str()).unwrap_or("Unknown").to_string(),
+                    });
+                }
+            }
+        } else {
+            entries.push(PlaylistEntry {
+                id: parsed.get("id").and_then(|s| s.as_str()).map(|s| s.to_string()),
+                url: parsed.get("webpage_url").and_then(|s| s.as_str()).unwrap_or(&url_clone).to_string(),
+                title: parsed.get("title").and_then(|s| s.as_str()).unwrap_or("Unknown").to_string(),
+            });
+        }
+
+        Ok(entries)
+    }).await.map_err(|e| AppError::IoError(e.to_string()))??;
+
+    Ok(result)
 }
 
 #[tauri::command]
@@ -97,9 +116,8 @@ pub async fn expand_playlist(
     let app_handle = app.clone();
     let config_manager = config.inner().clone();
     
-    let entries = tauri::async_runtime::spawn_blocking(move || {
-        probe_url(&url, &app_handle, &config_manager)
-    }).await.map_err(|e| AppError::IoError(e.to_string()))??;
+    // Probing is now throttled internally via semaphore
+    let entries = probe_url(&url, &app_handle, &config_manager).await?;
 
     Ok(PlaylistResult { entries })
 }
@@ -120,7 +138,7 @@ pub async fn start_download(
     url_whitelist: Option<Vec<String>>,
     config: State<'_, Arc<ConfigManager>>,
     manager: State<'_, JobManagerHandle>, 
-    history: State<'_, HistoryManager>, // NEW: Injected History Manager
+    history: State<'_, HistoryManager>, 
 ) -> Result<StartDownloadResponse, AppError> { 
     
     if !url.starts_with("http://") && !url.starts_with("https://") {
@@ -141,10 +159,8 @@ pub async fn start_download(
     let url_clone = url.clone();
     let is_forced = force_download.unwrap_or(false);
 
-    // 1. Probe URL (Blocking Operation)
-    let entries = tauri::async_runtime::spawn_blocking(move || {
-        probe_url(&url_clone, &app_handle, &config_manager)
-    }).await.map_err(|e| AppError::IoError(e.to_string()))??;
+    // 1. Probe URL (Throttled)
+    let entries = probe_url(&url_clone, &app_handle, &config_manager).await?;
 
     let total_found = entries.len() as u32;
 
@@ -241,4 +257,11 @@ pub async fn resume_pending_jobs(
 pub async fn clear_pending_jobs(manager: State<'_, JobManagerHandle>) -> Result<(), String> {
     manager.clear_pending().await;
     Ok(())
+}
+
+#[tauri::command]
+pub async fn sync_download_state(
+    manager: State<'_, JobManagerHandle>
+) -> Result<Vec<crate::models::Download>, String> {
+    Ok(manager.sync_state().await)
 }
