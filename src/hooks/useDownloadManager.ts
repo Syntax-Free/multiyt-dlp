@@ -137,6 +137,7 @@ export function useDownloadManager() {
       setDownloads((prev) => {
         const newMap = new Map(prev);
         
+        // Count active downloads to calculate optimistic concurrency slots
         const currentActiveCount = Array.from(prev.values()).filter(d => 
             d.status === 'downloading'
         ).length;
@@ -144,30 +145,57 @@ export function useDownloadManager() {
         let availableSlots = maxConcurrentDownloads - currentActiveCount;
 
         response.job_ids.forEach(jobId => {
+            const existing = newMap.get(jobId);
+
+            // If the job is already tracked and active (via event listener), we treat it as occupying a slot.
+            // If it's new, we determine if we have slots available to start it immediately.
+            const isAlreadyActive = existing && existing.status === 'downloading';
+            
             let initialStatus: 'pending' | 'downloading' = 'pending';
             let initialPhase: string | undefined = undefined;
 
-            if (availableSlots > 0) {
+            if (!isAlreadyActive && availableSlots > 0) {
                 initialStatus = 'downloading';
                 initialPhase = 'Initializing Process...';
                 availableSlots--;
             }
 
-            newMap.set(jobId, {
-              jobId,
-              url,
-              status: initialStatus,
-              phase: initialPhase,
-              progress: 0,
-              preset: formatPreset,
-              videoResolution,
-              downloadPath,
-              filenameTemplate,
-              embedMetadata,
-              embedThumbnail,
-              restrictFilenames,
-              liveFromStart
-            });
+            if (existing) {
+                // The event listener beat us to creating the entry.
+                // We perform a smart merge: Backfill the static metadata (settings) while preserving
+                // the dynamic runtime state (progress, status, speed) from the event.
+                newMap.set(jobId, {
+                    ...existing,
+                    // Metadata Backfill
+                    url,
+                    preset: formatPreset,
+                    videoResolution,
+                    downloadPath,
+                    filenameTemplate,
+                    embedMetadata,
+                    embedThumbnail,
+                    restrictFilenames,
+                    liveFromStart,
+                    // Important: We do NOT overwrite status, progress, or phase here.
+                });
+            } else {
+                // Standard initialization path (we beat the event listener)
+                newMap.set(jobId, {
+                    jobId,
+                    url,
+                    status: initialStatus,
+                    phase: initialPhase,
+                    progress: 0,
+                    preset: formatPreset,
+                    videoResolution,
+                    downloadPath,
+                    filenameTemplate,
+                    embedMetadata,
+                    embedThumbnail,
+                    restrictFilenames,
+                    liveFromStart
+                });
+            }
         });
         return newMap;
       });
