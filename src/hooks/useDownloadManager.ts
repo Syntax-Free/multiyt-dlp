@@ -102,7 +102,8 @@ export function useDownloadManager() {
     filenameTemplate: string,
     restrictFilenames: boolean = false,
     forceDownload: boolean = false,
-    urlWhitelist?: string[]
+    urlWhitelist?: string[],
+    liveFromStart: boolean = false
   ): Promise<StartDownloadResponse> => {
     try {
       const response = await apiStartDownload(
@@ -115,7 +116,8 @@ export function useDownloadManager() {
           filenameTemplate,
           restrictFilenames,
           forceDownload,
-          urlWhitelist
+          urlWhitelist,
+          liveFromStart
       ); 
       
       setDownloads((prev) => {
@@ -153,7 +155,8 @@ export function useDownloadManager() {
               filenameTemplate,
               embedMetadata,
               embedThumbnail,
-              restrictFilenames
+              restrictFilenames,
+              liveFromStart
             });
         });
         return newMap;
@@ -181,7 +184,8 @@ export function useDownloadManager() {
                   filenameTemplate: job.filename_template,
                   embedMetadata: job.embed_metadata,
                   embedThumbnail: job.embed_thumbnail,
-                  restrictFilenames: job.restrict_filenames
+                  restrictFilenames: job.restrict_filenames,
+                  liveFromStart: job.live_from_start
               });
           });
           return newMap;

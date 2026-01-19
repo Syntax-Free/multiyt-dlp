@@ -4,3 +4,11 @@
 assets/
 README.md
 LICENSE
+.github
+CONTRIBUTING.md
+package.json
+postcss.config.js
+vite-env.d.ts
+vite.config.ts
+tsconfig.json
+tsconfig.node.json

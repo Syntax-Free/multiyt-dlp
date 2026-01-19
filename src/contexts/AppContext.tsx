@@ -65,7 +65,8 @@ const DEFAULT_PREFS: PreferenceConfig = {
     audio_preset: 'audio_best',  
     video_resolution: 'best',
     embed_metadata: false,
-    embed_thumbnail: false
+    embed_thumbnail: false,
+    live_from_start: false
 };
 
 export const AppContext = React.createContext<AppContextType | undefined>(undefined);

@@ -116,6 +116,7 @@ pub async fn start_download(
     filename_template: String,
     restrict_filenames: Option<bool>,
     force_download: Option<bool>,
+    live_from_start: Option<bool>,
     url_whitelist: Option<Vec<String>>,
     config: State<'_, Arc<ConfigManager>>,
     manager: State<'_, JobManagerHandle>, 
@@ -180,6 +181,7 @@ pub async fn start_download(
             embed_thumbnail,
             restrict_filenames: restrict_filenames.unwrap_or(false),
             filename_template: safe_template.clone(),
+            live_from_start: live_from_start.unwrap_or(false),
         };
 
         match manager.add_job(job_data).await {

@@ -64,7 +64,8 @@ export async function startDownload(
   filenameTemplate: string,
   restrictFilenames: boolean = false,
   forceDownload: boolean = false,
-  urlWhitelist?: string[]
+  urlWhitelist: string[] | undefined,
+  liveFromStart: boolean = false
 ): Promise<StartDownloadResponse> { 
   return await invoke("start_download", { 
     url, 
@@ -76,10 +77,8 @@ export async function startDownload(
     filenameTemplate,
     restrictFilenames,
     forceDownload,
-    // FIX: Tauri expects camelCase keys for arguments to map to snake_case Rust arguments.
-    // Passing 'url_whitelist' explicitly failed the mapping, resulting in None being passed to Rust.
-    // Changed to 'urlWhitelist' to ensure correct mapping to 'url_whitelist' in Rust.
-    urlWhitelist 
+    urlWhitelist,
+    liveFromStart
   });
 }
 

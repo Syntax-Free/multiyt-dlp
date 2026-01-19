@@ -173,6 +173,10 @@ pub async fn run_download_process(
         if job_data.embed_metadata { cmd.arg("--embed-metadata"); }
         if job_data.embed_thumbnail { cmd.arg("--embed-thumbnail"); }
 
+        if job_data.live_from_start {
+            cmd.arg("--live-from-start");
+        }
+
         let height_filter = if job_data.video_resolution != "best" {
             let number_part: String = job_data.video_resolution.chars().filter(|c| c.is_numeric()).collect();
             if !number_part.is_empty() { format!("[height<={}]", number_part) } else { String::new() }

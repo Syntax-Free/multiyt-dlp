@@ -58,6 +58,7 @@ pub struct QueuedJob {
     pub embed_thumbnail: bool,
     pub filename_template: String,
     pub restrict_filenames: bool,
+    pub live_from_start: bool,
 }
 
 // --- Playlist Expansion ---

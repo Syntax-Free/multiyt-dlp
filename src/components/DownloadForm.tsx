@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Button } from './ui/Button';
 import { Card, CardContent } from './ui/Card';
-import { Download, FolderOpen, Link2, MonitorPlay, Headphones, FileText, Image as ImageIcon, AlertTriangle, Loader2, ChevronDown, CheckCheck, RefreshCw, Filter } from 'lucide-react';
+import { Download, FolderOpen, Link2, MonitorPlay, Headphones, FileText, Image as ImageIcon, AlertTriangle, Loader2, ChevronDown, CheckCheck, RefreshCw, Filter, Radio } from 'lucide-react';
 import { selectDirectory } from '@/api/invoke';
 import { DownloadFormatPreset, PreferenceConfig, StartDownloadResponse } from '@/types';
 import { useAppContext } from '@/contexts/AppContext';
@@ -20,7 +20,8 @@ interface DownloadFormProps {
       filenameTemplate: string,
       restrictFilenames: boolean,
       forceDownload: boolean,
-      urlWhitelist?: string[]
+      urlWhitelist?: string[],
+      liveFromStart?: boolean
     ) => Promise<StartDownloadResponse>; 
 }
 
@@ -144,7 +145,9 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
             preferences.embed_thumbnail, 
             template,
             false, // restrictFilenames default
-            force  // forceDownload
+            force, // forceDownload
+            undefined, // whitelist
+            preferences.live_from_start // liveFromStart
         );
 
         if (response.skipped_count > 0) {
@@ -186,7 +189,8 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
             template,
             false,
             true, // FORCE TRUE to bypass history check
-            urlsToRetry // WHITELIST ONLY SKIPPED to bypass active downloads check and target specific items
+            urlsToRetry, // WHITELIST ONLY SKIPPED to bypass active downloads check and target specific items
+            preferences.live_from_start
           ).then((res) => {
               if (res.skipped_count > 0) {
                    setSkipInfo({ 
@@ -295,7 +299,7 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
                 </div>
             )}
 
-            {/* Skipped Items Feedback - REDESIGNED */}
+            {/* Skipped Items Feedback */}
             {skipInfo && (
                 <div className="animate-fade-in p-3 rounded-lg border bg-zinc-900 border-zinc-800 text-zinc-300">
                     <div className="flex items-start gap-3">
@@ -430,6 +434,21 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
                          >
                             <ImageIcon className="h-3.5 w-3.5" />
                             Thumbnail
+                         </button>
+
+                         <button
+                            type="button"
+                            onClick={() => updatePreferences({ live_from_start: !preferences.live_from_start })}
+                            className={twMerge(
+                                "flex-1 flex items-center justify-center gap-2 px-2 py-2.5 rounded-md border transition-all text-xs font-medium",
+                                preferences.live_from_start
+                                    ? "bg-zinc-800 border-theme-red/50 text-theme-red" 
+                                    : "bg-surfaceHighlight border-border text-zinc-500 hover:text-zinc-300"
+                            )}
+                            title="Download Livestreams from Start"
+                         >
+                            <Radio className="h-3.5 w-3.5" />
+                            Live
                          </button>
                      </div>
                  </div>

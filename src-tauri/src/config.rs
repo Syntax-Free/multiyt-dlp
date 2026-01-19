@@ -67,6 +67,7 @@ pub struct PreferenceConfig {
     pub video_resolution: String, 
     pub embed_metadata: bool,
     pub embed_thumbnail: bool,
+    pub live_from_start: bool,
 }
 
 impl Default for PreferenceConfig {
@@ -79,6 +80,7 @@ impl Default for PreferenceConfig {
             video_resolution: "best".to_string(),
             embed_metadata: false,
             embed_thumbnail: false,
+            live_from_start: false,
         }
     }
 }

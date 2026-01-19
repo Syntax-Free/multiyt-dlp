@@ -18,6 +18,7 @@ export interface PreferenceConfig {
   video_resolution: string; 
   embed_metadata: boolean;
   embed_thumbnail: boolean;
+  live_from_start: boolean;
 }
 
 export interface WindowConfig {
@@ -126,6 +127,7 @@ export interface Download {
   embedMetadata?: boolean; 
   embedThumbnail?: boolean;
   restrictFilenames?: boolean;
+  liveFromStart?: boolean;
 }
 
 export interface QueuedJob {
@@ -138,6 +140,7 @@ export interface QueuedJob {
   embed_thumbnail: boolean;
   filename_template: string;
   restrict_filenames: boolean;
+  live_from_start: boolean;
 }
 
 export type TemplateBlockType = 'variable' | 'separator' | 'text';
