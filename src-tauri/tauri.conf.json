@@ -8,7 +8,7 @@
   },
   "package": {
     "productName": "Multiyt-dlp",
-    "version": "2.1.2"
+    "version": "2.1.3"
   },
   "tauri": {
     "allowlist": {
