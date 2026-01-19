@@ -35,11 +35,15 @@ export function DownloadItem({ download, onCancel }: DownloadItemProps) {
       return text;
   };
 
+  // Expanded check for various processing phases
   const isProcessingPhase = phase?.includes('Merging') 
     || phase?.includes('Extracting') 
     || phase?.includes('Fixing')
     || phase?.includes('Starting')
-    || phase?.includes('Initializing');
+    || phase?.includes('Initializing')
+    || phase?.includes('Moving')
+    || phase?.includes('Finalizing')
+    || phase?.includes('Processing');
 
   const isMetaPhase = phase?.includes('Metadata') || phase?.includes('Thumbnail');
 

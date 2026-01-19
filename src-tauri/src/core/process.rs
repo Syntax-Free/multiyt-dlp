@@ -16,11 +16,32 @@ use crate::models::{DownloadFormatPreset, QueuedJob, JobMessage, DownloadErrorPa
 use crate::commands::system::get_js_runtime_info;
 
 // --- Regex Definitions ---
-static MERGER_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r#"\[Merger\]\s+Merging formats into\s+"?(?P<filename>.+?)"?$"#).unwrap());
-static EXTRACT_AUDIO_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\[ExtractAudio\]\s+Destination:\s+(?P<filename>.+)$").unwrap());
-static METADATA_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\[Metadata\]\s+Adding metadata to:\s+(?P<filename>.+)$").unwrap());
+
+// [Merger] Merging formats into "filename"
+static MERGER_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r#"^\[Merger\]"#).unwrap());
+
+// [ExtractAudio] Destination: filename
+static EXTRACT_AUDIO_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\[ExtractAudio\]").unwrap());
+
+// [Metadata] Adding metadata to: filename
+static METADATA_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\[Metadata\]").unwrap());
+
+// [EmbedThumbnail] ...
 static THUMBNAIL_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\[(?:Thumbnails|EmbedThumbnail)\]").unwrap());
+
+// [FixupM3u8] or [FixupM4a]
 static FIXUP_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\[(?:Fixup\w+)\]").unwrap());
+
+// [MoveFiles] Moving file ...
+static MOVE_FILES_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\[MoveFiles\]").unwrap());
+
+// [ffmpeg] ...
+static FFMPEG_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\[ffmpeg\]").unwrap());
+
+// General [download] Destination: ... (catches start before JSON progress)
+static DOWNLOAD_START_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\[download\]\s+Destination:").unwrap());
+
+// Errors usually found in text output
 static FILESYSTEM_ERROR_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)(No such file|Invalid argument|cannot be written|WinError 123|Postprocessing: Error opening input files)").unwrap());
 
 #[derive(Deserialize, Debug)]
@@ -48,13 +69,11 @@ mod win_job {
     impl JobObject {
         pub fn new() -> Result<Self, String> {
             unsafe {
-                // CreateJobObjectW returns Result<HANDLE> in windows 0.48
                 let job = CreateJobObjectW(None, None).map_err(|e| e.to_string())?;
                 
                 let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
                 info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
 
-                // SetInformationJobObject returns BOOL
                 let success = SetInformationJobObject(
                     job,
                     JobObjectExtendedLimitInformation,
@@ -73,7 +92,6 @@ mod win_job {
 
         pub fn assign_process(&self, process_handle: std::os::windows::io::RawHandle) -> Result<(), String> {
             unsafe {
-                // AssignProcessToJobObject returns BOOL
                 let success = AssignProcessToJobObject(self.0, HANDLE(process_handle as isize));
                 if !success.as_bool() {
                     return Err("Failed to assign process to job object".to_string());
@@ -139,7 +157,6 @@ async fn robust_move_file(src: &Path, dest: &Path) -> Result<(), std::io::Error>
                     }
                     return Err(e);
                 }
-                // Exponential backoff
                 tokio::time::sleep(Duration::from_millis(50 * 2u64.pow(attempts))).await;
             }
         }
@@ -169,7 +186,6 @@ pub async fn run_download_process(
     let config_manager = app_handle.state::<Arc<ConfigManager>>();
 
     loop {
-        // Refresh config on retry
         let general_config = config_manager.get_config().general;
 
         let app_dir = app_handle.path_resolver().app_data_dir().unwrap();
@@ -210,7 +226,6 @@ pub async fn run_download_process(
         cmd.env("PYTHONIOENCODING", "utf-8");
         cmd.current_dir(&temp_dir);
 
-        // Unix Process Group
         #[cfg(not(target_os = "windows"))]
         {
             use std::os::unix::process::CommandExt;
@@ -227,7 +242,6 @@ pub async fn run_download_process(
             if !browser.trim().is_empty() && browser != "none" { cmd.arg("--cookies-from-browser").arg(browser); }
         }
 
-        // Standard Arguments
         cmd.arg(&url)
             .arg("-o").arg(&job_data.filename_template) 
             .arg("--no-playlist")
@@ -235,16 +249,17 @@ pub async fn run_download_process(
             .arg("--newline")
             .arg("--windows-filenames")
             .arg("--encoding").arg("utf-8")
+            // FORCE PROGRESS: Required because --print silences standard output by default
+            .arg("--progress") 
             .arg("--progress-template").arg("download:%(progress)j")
-            // CRITICAL FIX: Print the final filepath to stdout for reliable capture
+            // PRINT FILEPATH: Captured to determine the final filename
             .arg("--print").arg("after_move:filepath");
 
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
-        // Windows Job Object Flag
         #[cfg(target_os = "windows")]
-        { cmd.creation_flags(0x08000000); } // CREATE_NO_WINDOW
+        { cmd.creation_flags(0x08000000); } 
 
         if job_data.restrict_filenames {
             cmd.arg("--restrict-filenames").arg("--trim-filenames").arg("200");
@@ -337,7 +352,6 @@ pub async fn run_download_process(
 
         let mut state_percentage: f32 = 0.0;
         let mut state_phase: String = "Initializing".to_string();
-        // This variable now holds the ABSOLUTE path from yt-dlp --print
         let mut detected_output_path: Option<String> = None;
         let mut detected_filename_only: Option<String> = None;
         
@@ -356,7 +370,7 @@ pub async fn run_download_process(
                 if captured_stderr.len() > 50 { captured_stderr.remove(0); }
             }
 
-            // Check for Absolute Filepath print (priority detection)
+            // Priority detection: Absolute Filepath from --print
             if !is_stderr {
                 let potential_path = PathBuf::from(trimmed);
                 if potential_path.is_absolute() && potential_path.starts_with(&temp_dir) {
@@ -373,6 +387,7 @@ pub async fn run_download_process(
             let mut eta_str = "N/A".to_string();
 
             if let Ok(progress_json) = serde_json::from_str::<YtDlpJsonProgress>(trimmed) {
+                // Handle JSON Progress (The "active download" part)
                 if let Some(d) = progress_json.downloaded_bytes {
                      let t = progress_json.total_bytes.or(progress_json.total_bytes_estimate);
                      if let Some(total) = t { state_percentage = (d as f32 / total as f32) * 100.0; }
@@ -385,12 +400,20 @@ pub async fn run_download_process(
                      }
                 }
                 
-                if !state_phase.contains("Merging") && !state_phase.contains("Extracting") && !state_phase.contains("Writing") && !state_phase.contains("Embedding") {
+                if !state_phase.contains("Merging") && !state_phase.contains("Extracting") 
+                   && !state_phase.contains("Writing") && !state_phase.contains("Embedding") 
+                   && !state_phase.contains("Fixing") && !state_phase.contains("Moving") {
                     state_phase = "Downloading".to_string();
                 }
                 emit_update = true;
             } else {
-                if let Some(_caps) = METADATA_REGEX.captures(trimmed) {
+                // Handle Standard Text Output (Post-processing phases)
+                
+                if DOWNLOAD_START_REGEX.is_match(trimmed) {
+                    state_phase = "Starting Download".to_string();
+                    emit_update = true;
+                }
+                else if METADATA_REGEX.is_match(trimmed) {
                     state_phase = "Writing Metadata".to_string();
                     state_percentage = 99.0;
                     emit_update = true;
@@ -400,13 +423,13 @@ pub async fn run_download_process(
                     state_percentage = 99.0;
                     emit_update = true;
                 }
-                else if let Some(_caps) = MERGER_REGEX.captures(trimmed) {
+                else if MERGER_REGEX.is_match(trimmed) {
                     state_phase = "Merging Formats".to_string();
                     state_percentage = 100.0;
                     eta_str = "Done".to_string();
                     emit_update = true;
                 }
-                else if let Some(_caps) = EXTRACT_AUDIO_REGEX.captures(trimmed) {
+                else if EXTRACT_AUDIO_REGEX.is_match(trimmed) {
                     state_phase = "Extracting Audio".to_string();
                     state_percentage = 100.0;
                     eta_str = "Done".to_string();
@@ -414,7 +437,20 @@ pub async fn run_download_process(
                 }
                 else if FIXUP_REGEX.is_match(trimmed) {
                     state_phase = "Fixing Container".to_string();
+                    state_percentage = 100.0;
                     emit_update = true;
+                }
+                else if MOVE_FILES_REGEX.is_match(trimmed) {
+                    state_phase = "Finalizing".to_string(); // Moving file to destination
+                    state_percentage = 100.0;
+                    emit_update = true;
+                }
+                else if FFMPEG_REGEX.is_match(trimmed) {
+                    // Generic ffmpeg activity
+                    if !state_phase.contains("Merging") && !state_phase.contains("Extracting") {
+                         state_phase = "Processing (FFmpeg)".to_string();
+                         emit_update = true;
+                    }
                 }
             }
 
@@ -433,10 +469,8 @@ pub async fn run_download_process(
         let status = child.wait().await.expect("Child process error");
 
         if status.success() {
-            // Determine source file via multiple strategies
             let mut final_src_path: Option<PathBuf> = None;
 
-            // Strategy 1: Explicit --print detection (Most reliable)
             if let Some(p) = detected_output_path {
                 let path = PathBuf::from(p);
                 if path.exists() {
@@ -444,7 +478,6 @@ pub async fn run_download_process(
                 }
             }
 
-            // Strategy 2: Scan temp dir for the file matching the detected filename (Fallback)
             if final_src_path.is_none() {
                 if let Some(fname) = detected_filename_only {
                     let path = temp_dir.join(&fname);
@@ -455,11 +488,20 @@ pub async fn run_download_process(
             }
 
             if let Some(src_path) = final_src_path {
-                // Ensure target directory exists
                 if !target_dir.exists() { let _ = std::fs::create_dir_all(&target_dir); }
 
                 let file_name = src_path.file_name().unwrap();
                 let dest_path = target_dir.join(file_name);
+                
+                // Final UI Update for the move
+                let _ = tx_actor.send(JobMessage::UpdateProgress {
+                    id: job_id,
+                    percentage: 100.0,
+                    speed: "Done".to_string(),
+                    eta: "Done".to_string(),
+                    filename: None,
+                    phase: "Moving to Library".to_string()
+                }).await;
                 
                 match robust_move_file(&src_path, &dest_path).await {
                     Ok(_) => {

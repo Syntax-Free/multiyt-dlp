@@ -26,7 +26,10 @@ export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) 
     || phase?.includes('Extracting') 
     || phase?.includes('Fixing')
     || phase?.includes('Starting')
-    || phase?.includes('Initializing');
+    || phase?.includes('Initializing')
+    || phase?.includes('Moving')
+    || phase?.includes('Finalizing')
+    || phase?.includes('Processing');
 
   const isMetaPhase = phase?.includes('Metadata') || phase?.includes('Thumbnail');
 
