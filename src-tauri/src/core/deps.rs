@@ -1,12 +1,10 @@
 use std::fs::{self, File};
-use std::io::Write;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
-use futures_util::StreamExt;
 use serde::Serialize;
-use reqwest::{Client, header};
 use std::process::Command;
 use async_trait::async_trait;
+use crate::core::transport::download_file_robust;
 
 #[cfg(target_os = "windows")]
 const YT_DLP_URL: &str = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe";
@@ -43,21 +41,19 @@ pub trait DependencyProvider: Send + Sync {
     async fn install(&self, app_handle: AppHandle, target_dir: PathBuf) -> Result<(), String>;
 }
 
-fn get_http_client() -> Result<Client, String> {
-    Client::builder()
-        .user_agent("Multiyt-dlp/2.0 (github.com/zqil/multiyt-dlp)")
-        // Timeout needed to fail fast in offline mode
-        .connect_timeout(std::time::Duration::from_secs(5)) 
-        .build()
-        .map_err(|e| e.to_string())
-}
+// --- Helper Functions ---
 
 pub async fn get_latest_github_tag(repo: &str) -> Result<String, String> {
-    let client = get_http_client()?;
+    let client = reqwest::Client::builder()
+        .user_agent("Multiyt-dlp/2.1")
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|e| e.to_string())?;
+
     let url = format!("https://api.github.com/repos/{}/releases/latest", repo);
     
     let resp = client.get(&url)
-        .header(header::ACCEPT, "application/vnd.github.v3+json")
+        .header(reqwest::header::ACCEPT, "application/vnd.github.v3+json")
         .send()
         .await
         .map_err(|e| format!("Network error: {}", e))?;
@@ -72,36 +68,6 @@ pub async fn get_latest_github_tag(repo: &str) -> Result<String, String> {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .ok_or_else(|| "Could not find tag_name in response".to_string())
-}
-
-async fn download_file(url: &str, dest: &PathBuf, name: &str, app_handle: &AppHandle) -> Result<(), String> {
-    let client = get_http_client()?;
-    let res = client.get(url).send().await.map_err(|e| e.to_string())?;
-    
-    let total_size = res.content_length().unwrap_or(0);
-    let mut file = File::create(dest).map_err(|e| e.to_string())?;
-    let mut stream = res.bytes_stream();
-    let mut downloaded: u64 = 0;
-    let mut last_emit = 0;
-
-    while let Some(item) = stream.next().await {
-        let chunk = item.map_err(|e| e.to_string())?;
-        file.write_all(&chunk).map_err(|e| e.to_string())?;
-        downloaded += chunk.len() as u64;
-
-        if total_size > 0 {
-            let percentage = (downloaded * 100) / total_size;
-            if percentage >= last_emit + 5 || percentage == 100 {
-                last_emit = percentage;
-                let _ = app_handle.emit_all("install-progress", InstallProgressPayload {
-                    name: name.to_string(),
-                    percentage,
-                    status: "Downloading...".to_string()
-                });
-            }
-        }
-    }
-    Ok(())
 }
 
 fn new_silent_command(program: &str) -> Command {
@@ -127,6 +93,8 @@ fn get_local_version(path: &PathBuf, arg: &str) -> Option<String> {
     let out_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
     Some(out_str)
 }
+
+// --- Extraction Logic ---
 
 fn extract_zip_finding_binary(zip_path: &PathBuf, target_dir: &PathBuf, binary_names: &[&str]) -> Result<(), String> {
     let file = File::open(zip_path).map_err(|e| e.to_string())?;
@@ -177,6 +145,8 @@ fn extract_tar_xz_finding_binary(tar_path: &PathBuf, target_dir: &PathBuf, binar
     Ok(())
 }
 
+// --- Providers ---
+
 pub struct YtDlpProvider;
 #[async_trait]
 impl DependencyProvider for YtDlpProvider {
@@ -188,17 +158,10 @@ impl DependencyProvider for YtDlpProvider {
         let filename = self.get_binaries()[0];
         let target_path = target_dir.join(filename);
         
-        download_file(YT_DLP_URL, &target_path, "yt-dlp", &app_handle).await?;
-        
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&target_path).map_err(|e| e.to_string())?.permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&target_path, perms).map_err(|e| e.to_string())?;
-        }
-
-        Ok(())
+        // Use Robust Transport
+        download_file_robust(YT_DLP_URL, target_path, "yt-dlp", &app_handle)
+            .await
+            .map_err(|e| format!("Transport Error: {}", e))
     }
 }
 
@@ -214,7 +177,10 @@ impl DependencyProvider for FfmpegProvider {
         let temp_dir = std::env::temp_dir();
         let archive_path = temp_dir.join(archive_name);
 
-        download_file(FFMPEG_URL, &archive_path, "ffmpeg", &app_handle).await?;
+        // Use Robust Transport
+        download_file_robust(FFMPEG_URL, archive_path.clone(), "ffmpeg", &app_handle)
+            .await
+            .map_err(|e| format!("Transport Error: {}", e))?;
 
         let _ = app_handle.emit_all("install-progress", InstallProgressPayload {
             name: "ffmpeg".to_string(), percentage: 100, status: "Extracting...".to_string()
@@ -241,7 +207,10 @@ impl DependencyProvider for DenoProvider {
     async fn install(&self, app_handle: AppHandle, target_dir: PathBuf) -> Result<(), String> {
         let archive_path = std::env::temp_dir().join("deno.zip");
 
-        download_file(DENO_URL, &archive_path, "js_runtime", &app_handle).await?;
+        // Use Robust Transport
+        download_file_robust(DENO_URL, archive_path.clone(), "js_runtime", &app_handle)
+            .await
+            .map_err(|e| format!("Transport Error: {}", e))?;
 
         let _ = app_handle.emit_all("install-progress", InstallProgressPayload {
             name: "js_runtime".to_string(), percentage: 100, status: "Extracting...".to_string()
@@ -252,6 +221,8 @@ impl DependencyProvider for DenoProvider {
         Ok(())
     }
 }
+
+// --- High Level Functions ---
 
 pub async fn auto_update_yt_dlp(app_handle: AppHandle, bin_dir: PathBuf) -> Result<(), String> {
     let provider = YtDlpProvider;

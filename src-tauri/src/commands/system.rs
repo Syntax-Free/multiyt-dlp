@@ -201,10 +201,19 @@ pub async fn sync_dependencies(app_handle: AppHandle) -> Result<AppDependencies,
         std::fs::create_dir_all(&bin_dir).map_err(|e| e.to_string())?;
     }
 
-    deps::auto_update_yt_dlp(app_handle.clone(), bin_dir.clone()).await?;
-    deps::install_missing_ffmpeg(app_handle.clone(), bin_dir.clone()).await?;
-    deps::manage_js_runtime(app_handle.clone(), bin_dir.clone()).await?;
+    // Parallel Execution Fix (Waterfall Bug)
+    let (yt_res, ffmpeg_res, js_res) = tokio::join!(
+        deps::auto_update_yt_dlp(app_handle.clone(), bin_dir.clone()),
+        deps::install_missing_ffmpeg(app_handle.clone(), bin_dir.clone()),
+        deps::manage_js_runtime(app_handle.clone(), bin_dir.clone())
+    );
 
+    // We check results individually to log errors but allow partial success if critical deps exist
+    if let Err(e) = yt_res { error!("yt-dlp sync failed: {}", e); }
+    if let Err(e) = ffmpeg_res { error!("ffmpeg sync failed: {}", e); }
+    if let Err(e) = js_res { error!("js_runtime sync failed: {}", e); }
+
+    // Re-check what actually exists
     Ok(check_dependencies(app_handle).await)
 }
 
