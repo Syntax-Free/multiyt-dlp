@@ -112,7 +112,22 @@ fn main() {
                     }
                 }
                 if window_label == "main" {
-                    event.window().app_handle().exit(0);
+                    // Defect Fix #6: Graceful Shutdown
+                    let app_handle = event.window().app_handle();
+                    
+                    // We must use a blocking call here or the process dies before cleanup.
+                    // However, we can't block the UI thread indefinitely.
+                    // Since 'Destroyed' implies the window is gone, we just need to ensure cleanup happens before `exit`.
+                    // But `Destroyed` is post-facto. `CloseRequested` is pre-facto but cancellable.
+                    // The standard pattern is to catch Destroyed and do cleanup then exit.
+                    
+                    let manager = app_handle.state::<JobManagerHandle>();
+                    let manager_clone = manager.inner().clone();
+                    
+                    tauri::async_runtime::spawn(async move {
+                        manager_clone.shutdown().await;
+                        app_handle.exit(0);
+                    });
                 }
             }
 

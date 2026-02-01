@@ -42,13 +42,32 @@ export function useDownloadManager() {
 
   useEffect(() => {
     // 1. Recover state on mount (UI Refresh resilience)
+    // Defect Fix #5: Smart Sync Merge
     if (!hasSynced.current) {
         hasSynced.current = true;
         syncDownloadState().then((recovered) => {
             if (recovered && recovered.length > 0) {
                 setDownloads(prev => {
                     const newMap = new Map(prev);
-                    recovered.forEach(d => newMap.set(d.jobId, d));
+                    recovered.forEach(remoteJob => {
+                        const localJob = newMap.get(remoteJob.jobId);
+                        
+                        // If we already have local state for this job, we need to be careful
+                        // The event listener might have already fired with newer data
+                        if (localJob) {
+                            // If local is 'downloading' and remote says 'pending', trust local (events are faster)
+                            if (localJob.status === 'downloading' && remoteJob.status === 'pending') {
+                                return;
+                            }
+                            // If local progress is higher, trust local
+                            if (localJob.progress > remoteJob.progress) {
+                                return;
+                            }
+                        }
+                        
+                        // Otherwise, trust the sync
+                        newMap.set(remoteJob.jobId, remoteJob);
+                    });
                     return newMap;
                 });
             }

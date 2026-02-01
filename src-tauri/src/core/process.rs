@@ -108,6 +108,21 @@ mod win_job {
     }
 }
 
+// --- SAFETY GUARD ---
+// Defect Fix #1: Ensures the concurrency slot is FREED even if the process logic panics.
+struct WorkerGuard {
+    tx: mpsc::Sender<JobMessage>,
+}
+
+impl Drop for WorkerGuard {
+    fn drop(&mut self) {
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let _ = tx.send(JobMessage::WorkerFinished).await;
+        });
+    }
+}
+
 // --- Helpers ---
 
 fn format_speed(bytes_per_sec: f64) -> String {
@@ -170,6 +185,9 @@ pub async fn run_download_process(
     app_handle: AppHandle,
     tx_actor: mpsc::Sender<JobMessage>,
 ) {
+    // Defect Fix #1: Initialize Guard immediately
+    let _guard = WorkerGuard { tx: tx_actor.clone() };
+
     let job_id = job_data.id;
     let url = job_data.url.clone();
 
@@ -198,16 +216,21 @@ pub async fn run_download_process(
                 Some(path) => path,
                 None => {
                     let _ = tx_actor.send(construct_error(job_id, "Missing download dir".into(), None, String::new(), vec![])).await;
-                    let _ = tx_actor.send(JobMessage::WorkerFinished).await;
-                    return;
+                    return; // Guard drops here
                 }
             }
         };
         
         if !target_dir.exists() { let _ = std::fs::create_dir_all(&target_dir); }
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let temp_dir = home.join(".multiyt-dlp").join("temp_downloads");
-        if !temp_dir.exists() { let _ = std::fs::create_dir_all(&temp_dir); }
+        
+        // Defect Fix #3: Unique Temp Directory per Job
+        let base_temp_dir = home.join(".multiyt-dlp").join("temp_downloads");
+        let unique_temp_dir = base_temp_dir.join(job_id.to_string());
+
+        // Ensure clean state for this job
+        if unique_temp_dir.exists() { let _ = std::fs::remove_dir_all(&unique_temp_dir); }
+        let _ = std::fs::create_dir_all(&unique_temp_dir);
 
         let mut yt_dlp_cmd = "yt-dlp".to_string();
         let local_exe = bin_dir.join(if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" });
@@ -224,7 +247,7 @@ pub async fn run_download_process(
         }
         cmd.env("PYTHONUTF8", "1");
         cmd.env("PYTHONIOENCODING", "utf-8");
-        cmd.current_dir(&temp_dir);
+        cmd.current_dir(&unique_temp_dir); // Working in isolated dir
 
         #[cfg(not(target_os = "windows"))]
         {
@@ -303,8 +326,9 @@ pub async fn run_download_process(
             Ok(child) => child,
             Err(e) => {
                 let _ = tx_actor.send(construct_error(job_id, format!("Failed to spawn process: {}", e), None, e.to_string(), vec![])).await;
-                let _ = tx_actor.send(JobMessage::WorkerFinished).await;
-                return;
+                // Cleanup temp dir
+                let _ = std::fs::remove_dir_all(&unique_temp_dir);
+                return; // Guard drops
             }
         };
 
@@ -373,7 +397,7 @@ pub async fn run_download_process(
             // Priority detection: Absolute Filepath from --print
             if !is_stderr {
                 let potential_path = PathBuf::from(trimmed);
-                if potential_path.is_absolute() && potential_path.starts_with(&temp_dir) {
+                if potential_path.is_absolute() && potential_path.starts_with(&unique_temp_dir) {
                     detected_output_path = Some(trimmed.to_string());
                     if let Some(name) = potential_path.file_name() {
                         detected_filename_only = Some(name.to_string_lossy().to_string());
@@ -479,10 +503,30 @@ pub async fn run_download_process(
             }
 
             if final_src_path.is_none() {
-                if let Some(fname) = detected_filename_only {
-                    let path = temp_dir.join(&fname);
-                    if path.exists() {
-                        final_src_path = Some(path);
+                // If we didn't get a print output, look in the unique temp dir
+                if let Ok(entries) = fs::read_dir(&unique_temp_dir) {
+                    // Find the largest file that isn't a partial download or temp file
+                    // Or ideally, the file matching the detected filename
+                    if let Some(fname) = detected_filename_only {
+                         let path = unique_temp_dir.join(&fname);
+                         if path.exists() { final_src_path = Some(path); }
+                    }
+                    
+                    if final_src_path.is_none() {
+                        // Fallback: look for any video/audio file
+                         for entry in entries.flatten() {
+                            let path = entry.path();
+                            if path.is_file() {
+                                // Rudimentary check to avoid system files
+                                if let Some(ext) = path.extension() {
+                                    let ext_str = ext.to_string_lossy();
+                                    if ["mp4", "mkv", "webm", "mp3", "flac", "m4a", "wav"].contains(&ext_str.as_ref()) {
+                                        final_src_path = Some(path);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -540,5 +584,13 @@ pub async fn run_download_process(
         }
     }
     
-    let _ = tx_actor.send(JobMessage::WorkerFinished).await;
+    // Clean up unique temp directory
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let base_temp_dir = home.join(".multiyt-dlp").join("temp_downloads");
+    let unique_temp_dir = base_temp_dir.join(job_id.to_string());
+    if unique_temp_dir.exists() {
+        let _ = std::fs::remove_dir_all(&unique_temp_dir);
+    }
+    
+    // Guard drops here automatically calling WorkerFinished
 }

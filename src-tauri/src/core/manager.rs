@@ -63,6 +63,18 @@ impl JobManagerHandle {
         let _ = self.sender.send(JobMessage::SyncState(tx)).await;
         rx.await.unwrap_or_default()
     }
+    
+    pub async fn shutdown(&self) {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.sender.send(JobMessage::Shutdown(tx)).await;
+        let _ = rx.await;
+    }
+}
+
+// Defect Fix #2: Dedicated persistence thread communication
+enum PersistenceMsg {
+    Save(Vec<QueuedJob>),
+    Clear
 }
 
 struct JobManagerActor {
@@ -74,6 +86,7 @@ struct JobManagerActor {
     jobs: HashMap<Uuid, Job>,
     queue: VecDeque<QueuedJob>,
     persistence_registry: HashMap<Uuid, QueuedJob>,
+    persistence_tx: mpsc::Sender<PersistenceMsg>,
 
     // Concurrency
     active_network_jobs: u32,
@@ -86,6 +99,28 @@ struct JobManagerActor {
 
 impl JobManagerActor {
     fn new(app_handle: AppHandle, receiver: mpsc::Receiver<JobMessage>, self_sender: mpsc::Sender<JobMessage>) -> Self {
+        
+        // Defect Fix #2: Serialized Persistence Loop
+        let (ptx, mut prx) = mpsc::channel(100);
+        tauri::async_runtime::spawn(async move {
+            let path = Self::get_persistence_path();
+            while let Some(msg) = prx.recv().await {
+                match msg {
+                    PersistenceMsg::Save(jobs) => {
+                        if let Ok(json) = serde_json::to_string_pretty(&jobs) {
+                            let tmp_path = path.with_extension("tmp");
+                            if tokio::fs::write(&tmp_path, json).await.is_ok() {
+                                let _ = tokio::fs::rename(tmp_path, &path).await;
+                            }
+                        }
+                    },
+                    PersistenceMsg::Clear => {
+                        if path.exists() { let _ = tokio::fs::remove_file(&path).await; }
+                    }
+                }
+            }
+        });
+
         Self {
             app_handle,
             receiver,
@@ -93,6 +128,7 @@ impl JobManagerActor {
             jobs: HashMap::new(),
             queue: VecDeque::new(),
             persistence_registry: HashMap::new(),
+            persistence_tx: ptx,
             active_network_jobs: 0,
             active_process_instances: 0,
             completed_session_count: 0,
@@ -105,19 +141,9 @@ impl JobManagerActor {
         home.join(".multiyt-dlp").join("jobs.json")
     }
 
-    fn save_state(&self) {
-        let path = Self::get_persistence_path();
+    fn trigger_save(&self) {
         let jobs: Vec<QueuedJob> = self.persistence_registry.values().cloned().collect();
-        
-        tauri::async_runtime::spawn(async move {
-            if let Ok(json) = serde_json::to_string_pretty(&jobs) {
-                // Atomic Write: Write to temp then rename
-                let tmp_path = path.with_extension("tmp");
-                if tokio::fs::write(&tmp_path, json).await.is_ok() {
-                    let _ = tokio::fs::rename(tmp_path, path).await;
-                }
-            }
-        });
+        let _ = self.persistence_tx.try_send(PersistenceMsg::Save(jobs));
     }
 
     async fn run(mut self) {
@@ -126,6 +152,11 @@ impl JobManagerActor {
         loop {
             tokio::select! {
                 Some(msg) = self.receiver.recv() => {
+                    if let JobMessage::Shutdown(tx) = msg {
+                        self.handle_shutdown().await;
+                        let _ = tx.send(());
+                        break;
+                    }
                     self.handle_message(msg).await;
                 }
                 _ = interval.tick() => {
@@ -134,6 +165,21 @@ impl JobManagerActor {
                 }
             }
         }
+    }
+
+    // Defect Fix #6: Clean up orphans on exit
+    async fn handle_shutdown(&mut self) {
+        // Collect all active PIDs
+        let pids: Vec<u32> = self.jobs.values()
+            .filter_map(|j| j.pid)
+            .collect();
+        
+        for pid in pids {
+            self.kill_process(pid);
+        }
+        
+        // Also cleanup temp dirs if possible
+        self.clean_temp_directory();
     }
 
     async fn handle_message(&mut self, msg: JobMessage) {
@@ -163,7 +209,7 @@ impl JobManagerActor {
                         self.jobs.insert(job.id, j);
                         self.persistence_registry.insert(job.id, job.clone());
                         self.queue.push_back(job);
-                        self.save_state();
+                        self.trigger_save();
                         self.process_queue();
                         let _ = resp.send(Ok(()));
                     }
@@ -179,7 +225,7 @@ impl JobManagerActor {
                     job.status = JobStatus::Cancelled;
                 }
                 self.persistence_registry.remove(&id);
-                self.save_state();
+                self.trigger_save();
 
                 let _ = self.app_handle.emit_all("download-cancelled", DownloadCancelledPayload {
                     job_id: id
@@ -224,7 +270,7 @@ impl JobManagerActor {
                     job.phase = Some("Done".to_string());
                 }
                 self.persistence_registry.remove(&id);
-                self.save_state();
+                self.trigger_save();
 
                 let _ = self.app_handle.emit_all("download-complete", DownloadCompletePayload {
                     job_id: id,
@@ -300,8 +346,7 @@ impl JobManagerActor {
                 let _ = tx.send(resumed);
             },
             JobMessage::ClearPending => {
-                let path = Self::get_persistence_path();
-                if path.exists() { let _ = fs::remove_file(path); }
+                let _ = self.persistence_tx.try_send(PersistenceMsg::Clear);
                 self.clean_temp_directory();
             },
             JobMessage::SyncState(tx) => {
@@ -333,6 +378,9 @@ impl JobManagerActor {
                     });
                 }
                 let _ = tx.send(downloads);
+            },
+            JobMessage::Shutdown(_) => {
+                // Handled in main loop match
             }
         }
     }

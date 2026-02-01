@@ -61,7 +61,7 @@
     "bundle": {
       "active": true,
       "targets": "all",
-      "identifier": "net.sf.multiyt-dlp",
+      "identifier": "net.syntaxfree.multiyt-dlp",
       "icon": [
         "icons/32x32.png",
         "icons/128x128.png",

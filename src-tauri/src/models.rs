@@ -228,4 +228,5 @@ pub enum JobMessage {
     ResumePending(oneshot::Sender<Vec<QueuedJob>>),
     ClearPending,
     SyncState(oneshot::Sender<Vec<Download>>),
+    Shutdown(oneshot::Sender<()>),
 }

@@ -12,3 +12,5 @@ vite-env.d.ts
 vite.config.ts
 tsconfig.json
 tsconfig.node.json
+Cargo.lock
+package-lock.json
