@@ -42,6 +42,8 @@ fn main() {
     }
 
     let config_manager = Arc::new(ConfigManager::new());
+    
+    // Load initial config (sanitized by ConfigManager::new)
     let initial_config = config_manager.get_config();
     let log_manager = LogManager::init(&initial_config.general.log_level);
     
@@ -51,6 +53,8 @@ fn main() {
     let config_manager_setup = config_manager.clone();
     let config_manager_event = config_manager.clone();
     let config_manager_saver = config_manager.clone();
+    
+    // Config Auto-Save Channel
     let (tx_save, mut rx_save) = mpsc::unbounded_channel::<()>();
 
     tauri::Builder::default()
@@ -64,6 +68,7 @@ fn main() {
             let main_window = app.get_window("main").unwrap();
             let config = config_manager_setup.get_config();
             
+            // Apply Sanitized Window Config
             let _ = main_window.set_size(tauri::Size::Physical(tauri::PhysicalSize {
                 width: config.window.width as u32,
                 height: config.window.height as u32,
@@ -75,10 +80,16 @@ fn main() {
             
             tracing::info!("Application startup complete. Window initialized.");
 
+            // Background Saver Actor
+            // Debounces save requests to avoid thrashing the disk during resize
             tauri::async_runtime::spawn(async move {
                 while let Some(_) = rx_save.recv().await {
+                    // Drain buffer to get the latest request
                     while let Ok(_) = rx_save.try_recv() {}
+                    
+                    // Wait for movement to settle
                     tokio::time::sleep(Duration::from_millis(500)).await;
+                    
                     if let Err(e) = config_manager_saver.save() {
                         tracing::error!("Failed to auto-save window config: {}", e);
                     }
@@ -105,23 +116,39 @@ fn main() {
                 }
             }
 
-            if let WindowEvent::Moved(pos) = event.event() {
-                let mut current_config = config_manager_event.get_config();
-                current_config.window.x = pos.x as f64;
-                current_config.window.y = pos.y as f64;
-                config_manager_event.update_window(current_config.window);
-                let _ = tx_save.send(());
-            }
-            
-            if let WindowEvent::Resized(size) = event.event() {
-                if size.width > 0 && size.height > 0 {
-                    let mut current_config = config_manager_event.get_config();
-                    current_config.window.width = size.width as f64;
-                    current_config.window.height = size.height as f64;
-                    config_manager_event.update_window(current_config.window);
-                    let _ = tx_save.send(());
+            // --- ROBUST WINDOW TRACKING START ---
+            let window = event.window();
+            let is_minimized = window.is_minimized().unwrap_or(false);
+
+            // Only update config if the window is visible/restored
+            if !is_minimized {
+                match event.event() {
+                    WindowEvent::Moved(pos) => {
+                        // Double check against extreme values (Windows -32000 bug)
+                        if pos.x > -10000 && pos.y > -10000 {
+                            let mut current_config = config_manager_event.get_config();
+                            current_config.window.x = pos.x as f64;
+                            current_config.window.y = pos.y as f64;
+                            
+                            // .update_window() calls .sanitize() internally
+                            config_manager_event.update_window(current_config.window);
+                            let _ = tx_save.send(());
+                        }
+                    },
+                    WindowEvent::Resized(size) => {
+                        if size.width > 0 && size.height > 0 {
+                            let mut current_config = config_manager_event.get_config();
+                            current_config.window.width = size.width as f64;
+                            current_config.window.height = size.height as f64;
+                            
+                            config_manager_event.update_window(current_config.window);
+                            let _ = tx_save.send(());
+                        }
+                    },
+                    _ => {}
                 }
             }
+            // --- ROBUST WINDOW TRACKING END ---
         })
         .invoke_handler(tauri::generate_handler![
             commands::system::check_dependencies,
@@ -139,7 +166,7 @@ fn main() {
             commands::downloader::get_pending_jobs,
             commands::downloader::resume_pending_jobs,
             commands::downloader::clear_pending_jobs,
-            commands::downloader::sync_download_state, // New
+            commands::downloader::sync_download_state,
             commands::config::get_app_config,
             commands::config::save_general_config,
             commands::config::save_preference_config,

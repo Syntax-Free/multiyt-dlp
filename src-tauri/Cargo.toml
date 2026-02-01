@@ -2,7 +2,7 @@
 name = "multiyt-dlp"
 version = "2.1.3"
 description = "A Tauri App for yt-dlp"
-authors = ["zqil"]
+authors = ["syntax-free"]
 license = "MIT"
 repository = ""
 edition = "2021"

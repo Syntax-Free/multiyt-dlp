@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{PathBuf};
 use std::sync::Mutex;
 
 // --- Configuration Structs ---
@@ -26,6 +26,23 @@ impl Default for WindowConfig {
     }
 }
 
+impl WindowConfig {
+    /// Validates and fixes invalid coordinates (e.g. minimized state -32000)
+    pub fn sanitize(&mut self) {
+        // Windows minimizes to -32000. Mac/Linux behave differently but large negatives are bad.
+        // We also ensure the window isn't 0x0 size.
+        if self.x <= -10000.0 || self.y <= -10000.0 {
+            // Reset to safe default
+            self.x = 100.0;
+            self.y = 100.0;
+        }
+
+        // Prevent tiny unusable windows
+        if self.width < 400.0 { self.width = 1200.0; }
+        if self.height < 300.0 { self.height = 800.0; }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(default)]
 pub struct GeneralConfig {
@@ -36,9 +53,8 @@ pub struct GeneralConfig {
     pub max_total_instances: u32,
     pub log_level: String, 
     pub check_for_updates: bool,
-    // NEW: Cookies
     pub cookies_path: Option<String>,
-    pub cookies_from_browser: Option<String>, // "chrome", "firefox", etc. or None
+    pub cookies_from_browser: Option<String>,
 }
 
 impl Default for GeneralConfig {
@@ -120,72 +136,55 @@ impl ConfigManager {
             let _ = fs::create_dir_all(&config_dir);
         }
 
-        let config = Self::load_robustly(&file_path);
+        // Try load main -> Try load backup -> Default
+        let mut config = Self::load_robustly(&file_path)
+            .or_else(|| {
+                let bak_path = file_path.with_extension("json.bak");
+                println!("Main config failed. Attempting backup: {:?}", bak_path);
+                Self::load_robustly(&bak_path)
+            })
+            .unwrap_or_else(AppConfig::default);
 
-        // Immediately save back to disk to ensure the file 
-        // has any new fields that might have been added in this version.
+        // Sanitize immediately upon load to fix any existing bad states
+        config.window.sanitize();
+
         let manager = Self {
             config: Mutex::new(config),
             file_path,
         };
+        
+        // Save immediately to ensure file structure is up to date (schema migration)
         let _ = manager.save();
         
         manager
     }
 
-    /// Robust loader that attempts to preserve user data even across schema changes
-    fn load_robustly(path: &PathBuf) -> AppConfig {
-        if !path.exists() {
-            return AppConfig::default();
-        }
+    /// Robust loader that handles missing fields and partial corruption
+    fn load_robustly(path: &PathBuf) -> Option<AppConfig> {
+        if !path.exists() { return None; }
 
-        let content = match fs::read_to_string(path) {
-            Ok(c) => c,
-            Err(_) => return AppConfig::default(),
-        };
+        let content = fs::read_to_string(path).ok()?;
 
-        // 1. Attempt direct deserialization
-        // Thanks to #[serde(default)], this handles missing fields gracefully.
+        // 1. Attempt strict typed deserialization first
         match serde_json::from_str::<AppConfig>(&content) {
-            Ok(cfg) => cfg,
+            Ok(cfg) => Some(cfg),
             Err(e) => {
                 println!("Direct config load failed ({}). Attempting repair merge...", e);
                 
-                // 2. Fallback: Type-Safe Merge
-                // If direct load failed (e.g. type mismatch), load as generic JSON
-                // and merge valid fields into the Default config.
-                let disk_json: Value = match serde_json::from_str(&content) {
-                    Ok(v) => v,
-                    Err(_) => {
-                        println!("Config file is strictly invalid JSON. Backing up and resetting.");
-                        let _ = fs::rename(path, path.with_extension("corrupt.json"));
-                        return AppConfig::default();
-                    }
-                };
+                // 2. Fallback: Generic JSON Merge
+                let disk_json: Value = serde_json::from_str(&content).ok()?; // If valid JSON but invalid schema
+                
+                let default_config = AppConfig::default();
+                let mut merged_json = serde_json::to_value(&default_config).unwrap();
 
-                let final_config = AppConfig::default();
-                let mut default_json = serde_json::to_value(&final_config).unwrap();
+                Self::tolerant_merge(&mut merged_json, &disk_json);
 
-                // Merge disk values into default values
-                Self::tolerant_merge(&mut default_json, &disk_json);
-
-                // Deserialize the merged result
-                match serde_json::from_value(default_json) {
-                    Ok(recovered) => {
-                        println!("Config recovered successfully.");
-                        recovered
-                    },
-                    Err(_) => {
-                        println!("Recovery failed. Resetting to defaults.");
-                        let _ = fs::rename(path, path.with_extension("json.bak"));
-                        AppConfig::default()
-                    }
-                }
+                serde_json::from_value(merged_json).ok()
             }
         }
     }
 
-    /// Recursively merges `overlay` into `base`.
+    /// Recursively merges `overlay` into `base` while preserving types.
     fn tolerant_merge(base: &mut Value, overlay: &Value) {
         match (base, overlay) {
             (Value::Object(base_map), Value::Object(overlay_map)) => {
@@ -196,28 +195,47 @@ impl ConfigManager {
                 }
             }
             (base_val, overlay_val) => {
-                if base_val.is_number() && overlay_val.is_number() {
+                // Only overwrite if types match or if base is null
+                if std::mem::discriminant(base_val) == std::mem::discriminant(overlay_val) {
                     *base_val = overlay_val.clone();
-                } 
-                else if std::mem::discriminant(base_val) == std::mem::discriminant(overlay_val) {
+                } else if base_val.is_null() {
                     *base_val = overlay_val.clone();
-                }
-                else if base_val.is_null() {
-                    *base_val = overlay_val.clone();
+                } else if base_val.is_f64() && overlay_val.is_i64() {
+                    // Handle float/int mismatch (common with coords)
+                    if let Some(n) = overlay_val.as_f64() {
+                        *base_val = Value::from(n);
+                    }
                 }
             }
         }
     }
 
+    /// Atomic Save with Backup
     pub fn save(&self) -> Result<(), String> {
-        let json = {
-            let config = self.config.lock().unwrap();
-            serde_json::to_string_pretty(&*config)
-                .map_err(|e| format!("Serialization error: {}", e))?
-        };
+        let config_guard = self.config.lock().unwrap();
         
-        fs::write(&self.file_path, json)
-            .map_err(|e| format!("Failed to write config file: {}", e))
+        let json = serde_json::to_string_pretty(&*config_guard)
+            .map_err(|e| format!("Serialization error: {}", e))?;
+
+        // Paths
+        let main_path = &self.file_path;
+        let tmp_path = main_path.with_extension("tmp");
+        let bak_path = main_path.with_extension("json.bak");
+
+        // 1. Write to .tmp first (Atomic prep)
+        fs::write(&tmp_path, json)
+            .map_err(|e| format!("Failed to write temp config: {}", e))?;
+
+        // 2. If main exists, copy it to .bak (Backup)
+        if main_path.exists() {
+            let _ = fs::copy(main_path, &bak_path); 
+        }
+
+        // 3. Rename .tmp to main (Atomic commit)
+        fs::rename(&tmp_path, main_path)
+            .map_err(|e| format!("Failed to commit config file: {}", e))?;
+
+        Ok(())
     }
 
     pub fn get_config(&self) -> AppConfig {
@@ -234,7 +252,8 @@ impl ConfigManager {
         cfg.preferences = prefs;
     }
 
-    pub fn update_window(&self, window: WindowConfig) {
+    pub fn update_window(&self, mut window: WindowConfig) {
+        window.sanitize(); // Always sanitize before setting memory state
         let mut cfg = self.config.lock().unwrap();
         cfg.window = window;
     }
