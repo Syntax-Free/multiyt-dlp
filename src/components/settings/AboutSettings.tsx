@@ -7,9 +7,12 @@ import icon from '@/assets/icon.webp';
 import { Button } from '../ui/Button';
 import { useAppContext } from '@/contexts/AppContext';
 
-const DependencyRow = ({ info, onInstall }: { info: DependencyInfo, onInstall?: () => void }) => {
+const DependencyRow = ({ info, onInstall, label }: { info: DependencyInfo, onInstall?: () => void, label?: string }) => {
     const [copied, setCopied] = useState(false);
     
+    const isManaged = info.path && (info.path.includes('.multiyt-dlp') || info.path.includes('AppData'));
+    const isAvailable = info.available;
+
     const handleCopy = () => {
         if (info.path) {
             navigator.clipboard.writeText(info.path);
@@ -26,10 +29,11 @@ const DependencyRow = ({ info, onInstall }: { info: DependencyInfo, onInstall?: 
                         <Terminal className="h-4 w-4" />
                     </div>
                     <div>
-                        <div className="font-semibold text-zinc-200 text-sm capitalize">{info.name}</div>
-                        {info.available ? (
+                        <div className="font-semibold text-zinc-200 text-sm capitalize">{label || info.name}</div>
+                        {isAvailable ? (
                              <div className="text-[10px] text-emerald-500 font-mono flex items-center gap-1">
                                 <Check className="h-3 w-3" /> {info.version || 'Detected'}
+                                {!info.is_recommended && <span className="text-amber-500 ml-2">Legacy Build</span>}
                              </div>
                         ) : (
                              <div className="text-[10px] text-theme-red font-mono flex items-center gap-1">
@@ -38,9 +42,26 @@ const DependencyRow = ({ info, onInstall }: { info: DependencyInfo, onInstall?: 
                         )}
                     </div>
                 </div>
-                {onInstall && !info.available && (
-                    <Button size="sm" variant="outline" onClick={onInstall} className="h-7 text-xs">
-                        <Download className="h-3 w-3 mr-1" /> Install
+                
+                {onInstall && !info.is_latest && (
+                    <Button 
+                        size="sm" 
+                        variant="outline" 
+                        onClick={onInstall} 
+                        className="h-7 text-xs border-zinc-700 bg-zinc-800 hover:text-white"
+                        disabled={!isManaged && isAvailable}
+                        title={!isManaged && isAvailable ? "Managed by System" : "Update Dependency"}
+                    >
+                        {!isManaged && isAvailable ? (
+                             <span className="flex items-center text-zinc-500 cursor-not-allowed">
+                                 System Managed
+                             </span>
+                        ) : (
+                            <>
+                                <RefreshCw className="h-3 w-3 mr-1" /> 
+                                {isAvailable ? "Update" : "Install"}
+                            </>
+                        )}
                     </Button>
                 )}
             </div>
@@ -72,14 +93,7 @@ export function AboutSettings() {
     const [installing, setInstalling] = useState<string | null>(null);
     const [checkingUpdate, setCheckingUpdate] = useState(false);
 
-    const { 
-        currentVersion, 
-        latestVersion, 
-        isUpdateAvailable, 
-        checkAppUpdate,
-        checkForUpdates,
-        setCheckForUpdates
-    } = useAppContext();
+    const { currentVersion, latestVersion, isUpdateAvailable, checkAppUpdate } = useAppContext();
 
     const fetchData = async () => {
         try {
@@ -98,13 +112,13 @@ export function AboutSettings() {
         fetchData();
     }, []);
 
-    const handleInstall = async (name: string) => {
-        setInstalling(name);
+    const handleInstall = async (name: string, display: string) => {
+        setInstalling(display);
         try {
             await installDependency(name);
             await fetchData();
         } catch (e) {
-            alert(`Failed to install ${name}: ${e}`);
+            alert(`Failed to update ${display}: ${e}`);
         } finally {
             setInstalling(null);
         }
@@ -122,7 +136,6 @@ export function AboutSettings() {
 
     return (
         <div className="space-y-6 animate-fade-in pb-10">
-            {/* Header Area */}
             <div className="flex items-center gap-5 pb-4 border-b border-zinc-800">
                 <img src={icon} className="w-16 h-16 rounded-xl shadow-glow-cyan" alt="App Icon" />
                 <div className="flex-1">
@@ -137,12 +150,11 @@ export function AboutSettings() {
                 {installing && (
                     <div className="ml-auto flex items-center gap-2 text-theme-cyan text-xs animate-pulse">
                         <Loader2 className="h-4 w-4 animate-spin" />
-                        Installing {installing}...
+                        Updating {installing}...
                     </div>
                 )}
             </div>
 
-            {/* App Update Status */}
             <div className="space-y-4">
                  <div className="bg-zinc-900/30 border border-zinc-800 p-4 rounded-lg flex items-center justify-between">
                     <div>
@@ -153,9 +165,7 @@ export function AboutSettings() {
                                 <span>Update Available: v{latestVersion}</span>
                             </div>
                         ) : (
-                            <div className="text-xs text-zinc-500 mt-1">
-                                You are on the latest version.
-                            </div>
+                            <div className="text-xs text-zinc-500 mt-1">You are on the latest version.</div>
                         )}
                     </div>
                     <div className="flex items-center gap-2">
@@ -169,34 +179,13 @@ export function AboutSettings() {
                                 <Download className="h-3 w-3 mr-1" /> Update
                             </Button>
                         )}
-                        <Button 
-                            size="sm" 
-                            variant="secondary" 
-                            className="h-8 w-8 p-0" 
-                            onClick={handleUpdateCheck}
-                            title="Check for updates"
-                        >
+                        <Button size="sm" variant="secondary" className="h-8 w-8 p-0" onClick={handleUpdateCheck}>
                             <RefreshCw className={`h-3 w-3 ${checkingUpdate ? 'animate-spin' : ''}`} />
                         </Button>
                     </div>
                 </div>
-
-                <div className="flex items-center justify-between px-1">
-                     <div className="text-xs text-zinc-500">Auto-check for updates on startup</div>
-                     <button
-                        onClick={() => setCheckForUpdates(!checkForUpdates)}
-                        className={`w-8 h-4 flex items-center rounded-full px-0.5 transition-colors duration-200 ${
-                            checkForUpdates ? 'bg-theme-cyan' : 'bg-zinc-800'
-                        }`}
-                     >
-                        <div className={`w-3 h-3 rounded-full bg-white transition-transform duration-200 ${
-                            checkForUpdates ? 'translate-x-4' : 'translate-x-0'
-                        }`} />
-                     </button>
-                </div>
             </div>
 
-            {/* Dependencies Grid */}
             <div id="section-deps" className="space-y-3 pt-4 border-t border-zinc-800 scroll-mt-6">
                 <div className="flex items-center gap-2 text-sm text-zinc-400 font-medium">
                     <Cpu className="h-4 w-4" />
@@ -204,19 +193,27 @@ export function AboutSettings() {
                 </div>
                 
                 <div className="grid grid-cols-1 gap-3">
-                    {deps.yt_dlp && <DependencyRow info={deps.yt_dlp} />}
-                    {deps.ffmpeg && <DependencyRow info={deps.ffmpeg} />}
-                    {deps.js_runtime && <DependencyRow 
-                        info={deps.js_runtime} 
-                        onInstall={() => handleInstall('js_runtime')} 
-                    />}
+                    {deps.yt_dlp && (
+                        <DependencyRow 
+                            info={deps.yt_dlp} 
+                            onInstall={() => handleInstall('yt-dlp', 'Core')}
+                            label="Core (yt-dlp)"
+                        />
+                    )}
+                    {deps.ffmpeg && (
+                        <DependencyRow 
+                            info={deps.ffmpeg} 
+                            onInstall={() => handleInstall('ffmpeg', 'FFmpeg')}
+                        />
+                    )}
+                    {deps.js_runtime && (
+                        <DependencyRow 
+                            info={deps.js_runtime} 
+                            onInstall={() => handleInstall(deps.js_runtime?.name || 'js_runtime', 'Runtime')} 
+                            label={`JS Runtime (${deps.js_runtime.name})`}
+                        />
+                    )}
                 </div>
-            </div>
-
-            <div className="pt-4 text-center">
-                <p className="text-[10px] text-zinc-600">
-                    Binaries are installed to <code>%AppData%/multiyt-dlp/bin</code> and prioritized over system paths.
-                </p>
             </div>
         </div>
     );

@@ -114,7 +114,6 @@ fn format_eta(seconds: u64) -> String {
 }
 
 fn construct_error(job_id: uuid::Uuid, msg: String, exit_code: Option<i32>, stderr: String, logs: Vec<String>) -> JobMessage {
-    // Also log to backend tracing
     error!(target: "core::process", job_id = ?job_id, exit_code = ?exit_code, "Job failed: {}", msg);
     
     JobMessage::JobError {
@@ -159,7 +158,6 @@ pub async fn run_download_process(
     let job_id = job_data.id;
     let url = job_data.url.clone();
 
-    // Start UI update
     let _ = tx_actor.send(JobMessage::UpdateProgress {
         id: job_id,
         percentage: 0.0,
@@ -220,7 +218,14 @@ pub async fn run_download_process(
         }
 
         if let Some((name, path)) = get_js_runtime_info(&bin_dir) {
-            cmd.arg("--js-runtimes").arg(format!("{}:{}", name, path));
+            let ytdlp_runtime_name = match name.as_str() {
+                "quickjs" | "quickjs-ng" => "quickjs",
+                "node" => "node",
+                "deno" => "deno",
+                "bun" => "bun",
+                _ => &name
+            };
+            cmd.arg("--js-runtimes").arg(format!("{}:{}", ytdlp_runtime_name, path));
         }
 
         if let Some(cookie_path) = &general_config.cookies_path {
@@ -284,7 +289,6 @@ pub async fn run_download_process(
             DownloadFormatPreset::AudioM4a => { cmd.arg("-x").args(["--audio-format", "m4a", "--audio-quality", "0"]); }
         }
 
-        // --- Log Process Spawn ---
         debug!(target: "core::process", job_id = ?job_id, "Spawning process: {:?}", cmd.as_std());
 
         let mut child = match cmd.spawn() {
@@ -353,12 +357,10 @@ pub async fn run_download_process(
             if captured_logs.len() > 100 { captured_logs.remove(0); }
             
             if is_stderr {
-                // IMPORTANT: Mirror stderr to logs at WARN level so we see what's wrong
                 warn!(target: "core::process::stderr", job_id = ?job_id, "{}", trimmed);
                 captured_stderr.push(trimmed.to_string());
                 if captured_stderr.len() > 50 { captured_stderr.remove(0); }
             } else {
-                // Optional: Trace stdout
                 trace!(target: "core::process::stdout", job_id = ?job_id, "{}", trimmed);
             }
 
@@ -521,7 +523,6 @@ pub async fn run_download_process(
             let log_blob = captured_logs.join("\n");
             let stderr_blob = captured_stderr.join("\n");
             
-            // Log failure to backend
             warn!(target: "core::process", job_id = ?job_id, exit_code = ?status.code(), "Process exited with error");
             
             let is_filesystem_error = FILESYSTEM_ERROR_REGEX.is_match(&log_blob);
@@ -532,7 +533,7 @@ pub async fn run_download_process(
             }
 
             let short_msg = if stderr_blob.contains("No supported JavaScript runtime") {
-                "Missing JS Runtime".to_string()
+                "Missing compliant JS Runtime".to_string()
             } else if stderr_blob.contains("Sign in to confirm") {
                 "Authentication Required".to_string()
             } else {

@@ -1,5 +1,5 @@
 import { useAppContext } from '@/contexts/AppContext';
-import { AlertCircle, Trash2, FileText, Check, Save, X, Loader2, Database } from 'lucide-react';
+import { AlertCircle, Trash2, FileText, Check, Save, X, Loader2, Database, AlertTriangle } from 'lucide-react';
 import { Button } from '../ui/Button';
 import { clearDownloadHistory, getDownloadHistory, saveDownloadHistory } from '@/api/invoke';
 import { useState } from 'react';
@@ -169,7 +169,7 @@ export function GeneralSettings() {
                     <div className="space-y-4">
                         <div className="flex justify-between items-center">
                             <label className="text-sm font-medium text-zinc-300">Total Concurrent Instances</label>
-                            <span className="text-theme-cyan font-mono font-bold bg-theme-cyan/10 px-2 py-1 rounded border border-theme-cyan/20">
+                            <span className={`font-mono font-bold px-2 py-1 rounded border ${maxTotalInstances > 10 ? 'text-theme-red bg-theme-red/10 border-theme-red/20' : 'text-theme-cyan bg-theme-cyan/10 border-theme-cyan/20'}`}>
                                 {maxTotalInstances}
                             </span>
                         </div>
@@ -179,11 +179,24 @@ export function GeneralSettings() {
                             max="20"
                             value={maxTotalInstances}
                             onChange={(e) => handleChange('max_total_instances', parseInt(e.target.value))}
-                            className="w-full h-2 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-theme-cyan hover:accent-theme-cyan/80 transition-all"
+                            className={`w-full h-2 bg-zinc-800 rounded-lg appearance-none cursor-pointer transition-all ${maxTotalInstances > 10 ? 'accent-theme-red hover:accent-theme-red/80' : 'accent-theme-cyan hover:accent-theme-cyan/80'}`}
                         />
                         <p className="text-xs text-zinc-500">
                             Includes active downloads AND videos that are currently merging/processing.
                         </p>
+
+                        {/* High Usage Warning */}
+                        {maxTotalInstances > 10 && (
+                            <div className="flex items-start gap-3 p-3 bg-red-950/20 border border-red-500/20 rounded-md animate-fade-in">
+                                <AlertTriangle className="h-5 w-5 text-red-500 flex-shrink-0" />
+                                <div className="space-y-1">
+                                    <p className="text-xs font-bold text-red-400">High CPU Usage Warning</p>
+                                    <p className="text-[10px] text-red-300/70 leading-relaxed">
+                                        Running more than 10 simultaneous ffmpeg instances may significantly degrade system performance on mid-range hardware (e.g., i5-10600k). Proceed with caution.
+                                    </p>
+                                </div>
+                            </div>
+                        )}
                     </div>
                 </div>
             </div>

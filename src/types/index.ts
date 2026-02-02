@@ -39,6 +39,9 @@ export interface DependencyInfo {
     available: boolean;
     version: string | null;
     path: string | null;
+    is_supported: boolean;
+    is_recommended: boolean;
+    is_latest: boolean;
 }
 
 export interface AppDependencies {

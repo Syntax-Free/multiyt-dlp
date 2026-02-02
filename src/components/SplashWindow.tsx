@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
-import { syncDependencies, closeSplash } from '@/api/invoke';
+import { syncDependencies, closeSplash, installDependency } from '@/api/invoke';
 import { listen } from '@tauri-apps/api/event';
 import { getVersion } from '@tauri-apps/api/app';
 import icon from '@/assets/icon.webp';
-import { RefreshCw, AlertTriangle, ShieldCheck } from 'lucide-react';
+import { RefreshCw, ShieldCheck, Terminal, Download, XCircle } from 'lucide-react';
 import { Progress } from './ui/Progress';
 import { Button } from './ui/Button';
+import { AppDependencies } from '@/types';
 
 interface InstallProgress {
     name: string;
@@ -13,63 +14,87 @@ interface InstallProgress {
     status: string;
 }
 
+type SplashStatus = 'init' | 'syncing' | 'js-analysis' | 'ready' | 'error';
+
 export function SplashWindow() {
-  const [status, setStatus] = useState<'init' | 'syncing' | 'ready' | 'error'>('init');
+  const [status, setStatus] = useState<SplashStatus>('init');
   const [message, setMessage] = useState('Initializing Core...');
   const [installState, setInstallState] = useState<InstallProgress>({ name: '', percentage: 0, status: '' });
   const [appVersion, setAppVersion] = useState('');
   const [errorDetails, setErrorDetails] = useState('');
+  const [deps, setDeps] = useState<AppDependencies | null>(null);
   
   const hasRun = useRef(false);
 
-  const startStartupSync = async () => {
-    if (hasRun.current) return;
-    hasRun.current = true;
-
-    setStatus('syncing');
-    setMessage('Checking System Integrity...');
-    
+  const performSync = async () => {
     try {
-      // Allow the UI to render the 'Syncing' state briefly before heavy lifting
-      await new Promise(resolve => setTimeout(resolve, 500));
-      
-      // Call the all-in-one sync command
-      const finalDeps = await syncDependencies();
+        setStatus('syncing');
+        setMessage('Verifying System Integrity...');
+        const finalDeps = await syncDependencies();
+        setDeps(finalDeps);
 
-      // Check critical failures
-      if (!finalDeps.yt_dlp.available || !finalDeps.ffmpeg.available) {
-          throw new Error("Critical dependencies failed to install.");
-      }
+        // Logic for JS Runtime specific scenarios
+        const js = finalDeps.js_runtime;
+        
+        if (!js.available || !js.is_supported) {
+            setStatus('js-analysis');
+            return;
+        }
 
+        if (js.is_supported && !js.is_recommended) {
+            setStatus('js-analysis');
+            return;
+        }
+
+        // All good
+        finishStartup();
+    } catch (e) {
+        setStatus('error');
+        setErrorDetails(String(e));
+    }
+  };
+
+  const finishStartup = () => {
       setStatus('ready');
       setMessage('System Optimal. Launching...');
-      
-      setTimeout(async () => {
-          await closeSplash();
-      }, 800);
+      setTimeout(async () => { await closeSplash(); }, 800);
+  };
 
-    } catch (e) {
-      console.error(e);
-      setStatus('error');
-      setMessage('Startup Failed');
-      setErrorDetails(String(e));
-    }
+  const handleInstallDeno = async () => {
+      setStatus('syncing');
+      setMessage('Installing Deno (Recommended)...');
+      try {
+          await installDependency('deno');
+          await performSync();
+      } catch (e) {
+          setStatus('error');
+          setErrorDetails(String(e));
+      }
+  };
+
+  const handleUpdateCurrent = async () => {
+      if (!deps?.js_runtime.name) return;
+      setStatus('syncing');
+      setMessage(`Updating ${deps.js_runtime.name}...`);
+      try {
+          await installDependency(deps.js_runtime.name);
+          await performSync();
+      } catch (e) {
+          setStatus('error');
+          setErrorDetails(String(e));
+      }
   };
 
   useEffect(() => {
     getVersion().then(v => setAppVersion(`v${v}`));
-
     const unlisten = listen<InstallProgress>('install-progress', (event) => {
         setInstallState(event.payload);
-        setStatus('syncing'); // Ensure we show syncing UI during events
     });
 
-    const img = new Image();
-    img.src = icon;
-    const startApp = () => { requestAnimationFrame(() => { startStartupSync(); }); };
-
-    if (img.complete) startApp();
-    else { img.onload = startApp; img.onerror = startApp; }
+    if (!hasRun.current) {
+        hasRun.current = true;
+        performSync();
+    }
 
     return () => { unlisten.then(f => f()); };
   }, []);
@@ -88,27 +113,53 @@ export function SplashWindow() {
                 status === 'error' ? 'text-theme-red' : 'text-theme-cyan'
             }`}>
                 {status === 'init' && 'Initializing'}
-                {status === 'syncing' && 'Syncing Resources'}
+                {status === 'syncing' && 'Syncing'}
+                {status === 'js-analysis' && 'Requirement Check'}
                 {status === 'ready' && 'Ready'}
-                {status === 'error' && 'Critical Error'}
+                {status === 'error' && 'Sync Failed'}
             </h1>
             <p className="text-zinc-500 text-xs font-medium min-h-[16px]">{message}</p>
         </div>
 
-        {/* Syncing Progress UI */}
-        {status === 'syncing' && (
-            <div className="w-full space-y-3 animate-fade-in bg-black/50 p-4 rounded-lg border border-zinc-800 backdrop-blur-sm">
-                <div className="flex items-center gap-2 text-xs text-zinc-300">
-                    <RefreshCw className="h-3 w-3 animate-spin text-theme-cyan" />
-                    <span className="font-bold uppercase">{installState.name || 'Core System'}</span>
+        {/* JS Analysis Interactive Screen */}
+        {status === 'js-analysis' && deps && (
+            <div className="w-full space-y-4 animate-fade-in bg-zinc-900/80 p-5 rounded-lg border border-zinc-800 backdrop-blur-md">
+                <div className="flex items-center gap-3 text-amber-500">
+                    <Terminal className="h-5 w-5" />
+                    <span className="text-sm font-bold uppercase">JS Runtime Notice</span>
                 </div>
                 
-                {installState.status && (
-                    <div className="text-[10px] text-zinc-500 font-mono truncate">
-                        {installState.status}
-                    </div>
-                )}
-                
+                <p className="text-[11px] text-zinc-400 leading-relaxed">
+                    {!deps.js_runtime.available || !deps.js_runtime.is_supported 
+                        ? "No supported JS runtime was detected. YouTube extraction relies on modern JS engines. We highly recommend installing Deno."
+                        : `Your current runtime (${deps.js_runtime.name} ${deps.js_runtime.version}) is supported, but a newer build is recommended for stability.`}
+                </p>
+
+                <div className="space-y-2">
+                    <Button size="sm" variant="neon" className="w-full h-9 text-xs" onClick={handleInstallDeno}>
+                        <Download className="h-3 w-3 mr-2" /> Install Deno
+                    </Button>
+                    
+                    {deps.js_runtime.available && !deps.js_runtime.is_recommended && (
+                         <Button size="sm" variant="outline" className="w-full h-9 text-xs" onClick={handleUpdateCurrent}>
+                            <RefreshCw className="h-3 w-3 mr-2" /> Update Current
+                         </Button>
+                    )}
+
+                    <Button size="sm" variant="ghost" className="w-full h-9 text-xs text-zinc-500" onClick={finishStartup}>
+                        <XCircle className="h-3 w-3 mr-2" /> Dismiss & Launch
+                    </Button>
+                </div>
+            </div>
+        )}
+
+        {/* Syncing Progress UI */}
+        {status === 'syncing' && (
+            <div className="w-full space-y-3 animate-fade-in bg-black/50 p-4 rounded-lg border border-zinc-800">
+                <div className="flex items-center gap-2 text-xs text-zinc-300">
+                    <RefreshCw className="h-3 w-3 animate-spin text-theme-cyan" />
+                    <span className="font-bold uppercase">{installState.name || 'Resources'}</span>
+                </div>
                 <Progress value={installState.percentage || 0} className="h-1" />
             </div>
         )}
@@ -117,35 +168,17 @@ export function SplashWindow() {
         {status === 'ready' && (
              <div className="flex items-center gap-2 text-emerald-500 animate-fade-in bg-emerald-500/10 px-4 py-2 rounded-full border border-emerald-500/20">
                 <ShieldCheck className="h-4 w-4" />
-                <span className="text-xs font-bold uppercase tracking-wider">Integrity Verified</span>
+                <span className="text-xs font-bold uppercase tracking-wider">Verified</span>
              </div>
         )}
 
         {/* Error UI */}
         {status === 'error' && (
-            <div className="w-full space-y-3 animate-fade-in bg-black/50 p-4 rounded-lg border border-theme-red/30 backdrop-blur-sm">
-                <div className="flex items-center gap-2 text-theme-red text-xs font-bold uppercase">
-                    <AlertTriangle className="h-4 w-4" />
-                    <span>Sync Failed</span>
-                </div>
+            <div className="w-full space-y-3 animate-fade-in bg-black/50 p-4 rounded-lg border border-theme-red/30">
                 <div className="text-[10px] text-zinc-400 font-mono bg-zinc-900 p-2 rounded border border-zinc-800 break-all">
-                    {errorDetails || "Unknown error occurred during startup sync."}
+                    {errorDetails}
                 </div>
-                
-                <Button 
-                    size="sm" 
-                    className="w-full mt-2"
-                    onClick={() => { hasRun.current = false; startStartupSync(); }}
-                >
-                    Retry Sync
-                </Button>
-            </div>
-        )}
-
-        {/* Initial Loading Spinner */}
-        {status === 'init' && (
-            <div className="w-32 h-1 bg-zinc-900 rounded-full overflow-hidden">
-                <div className="h-full bg-theme-cyan animate-[shimmer_1s_infinite_linear] w-full origin-left scale-x-50" />
+                <Button size="sm" className="w-full" onClick={() => { performSync(); }}>Retry</Button>
             </div>
         )}
       </div>

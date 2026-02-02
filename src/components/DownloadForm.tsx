@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Button } from './ui/Button';
 import { Card, CardContent } from './ui/Card';
-import { Download, FolderOpen, Link2, MonitorPlay, Headphones, FileText, Image as ImageIcon, AlertTriangle, Loader2, ChevronDown, CheckCheck, RefreshCw, Filter, Radio } from 'lucide-react';
+import { Download, FolderOpen, Link2, MonitorPlay, Headphones, FileText, Image as ImageIcon, AlertTriangle, Loader2, ChevronDown, CheckCheck, RefreshCw, Filter, Radio, X } from 'lucide-react';
 import { selectDirectory } from '@/api/invoke';
 import { DownloadFormatPreset, PreferenceConfig, StartDownloadResponse } from '@/types';
 import { useAppContext } from '@/contexts/AppContext';
@@ -301,8 +301,16 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
 
             {/* Skipped Items Feedback */}
             {skipInfo && (
-                <div className="animate-fade-in p-3 rounded-lg border bg-zinc-900 border-zinc-800 text-zinc-300">
-                    <div className="flex items-start gap-3">
+                <div className="animate-fade-in relative p-3 rounded-lg border bg-zinc-900 border-zinc-800 text-zinc-300">
+                    <button 
+                        type="button"
+                        onClick={() => setSkipInfo(null)}
+                        className="absolute top-2 right-2 text-zinc-500 hover:text-white transition-colors"
+                    >
+                        <X className="h-3 w-3" />
+                    </button>
+                    
+                    <div className="flex items-start gap-3 pr-4">
                         <div className="p-2 bg-zinc-800 rounded text-zinc-400">
                              <Filter className="h-4 w-4" />
                         </div>

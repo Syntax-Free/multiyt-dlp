@@ -245,8 +245,6 @@ impl JobManagerActor {
                 }
             },
             JobMessage::UpdateProgress { id, percentage, speed, eta, filename, phase } => {
-                // Too noisy to log every progress update at info level
-                // trace!(target: "core::manager", job_id = ?id, phase = %phase, "Progress update");
                 if let Some(job) = self.jobs.get_mut(&id) {
                     if job.status == JobStatus::Cancelled { return; }
 
@@ -293,6 +291,12 @@ impl JobManagerActor {
                     job.logs = Some(payload.logs.clone());
                     job.exit_code = payload.exit_code;
                 }
+                
+                // IMPORTANT: Remove failed jobs from persistence so they don't auto-retry on reboot.
+                // They remain in memory (self.jobs) for the UI to display the error.
+                self.persistence_registry.remove(&id);
+                self.trigger_save();
+
                 let _ = self.app_handle.emit_all("download-error", payload);
             },
             JobMessage::WorkerFinished => {

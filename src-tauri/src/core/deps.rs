@@ -5,6 +5,7 @@ use serde::Serialize;
 use std::process::Command;
 use async_trait::async_trait;
 use crate::core::transport::download_file_robust;
+use regex::Regex;
 
 #[cfg(target_os = "windows")]
 const YT_DLP_URL: &str = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe";
@@ -27,11 +28,19 @@ const DENO_URL: &str = "https://github.com/denoland/deno/releases/latest/downloa
 #[cfg(target_os = "linux")]
 const DENO_URL: &str = "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip";
 
+#[cfg(target_os = "windows")]
+const BUN_URL: &str = "https://github.com/oven-sh/bun/releases/latest/download/bun-windows-x64.zip";
+#[cfg(target_os = "macos")]
+const BUN_URL: &str = "https://github.com/oven-sh/bun/releases/latest/download/bun-darwin-aarch64.zip";
+#[cfg(target_os = "linux")]
+const BUN_URL: &str = "https://github.com/oven-sh/bun/releases/latest/download/bun-linux-x64.zip";
+
+
 #[derive(Clone, Serialize)]
-struct InstallProgressPayload {
-    name: String,
-    percentage: u64,
-    status: String,
+pub struct InstallProgressPayload {
+    pub name: String,
+    pub percentage: u64,
+    pub status: String,
 }
 
 #[async_trait]
@@ -39,9 +48,38 @@ pub trait DependencyProvider: Send + Sync {
     fn get_name(&self) -> String;
     fn get_binaries(&self) -> Vec<&str>;
     async fn install(&self, app_handle: AppHandle, target_dir: PathBuf) -> Result<(), String>;
+    async fn check_update_available(&self, bin_dir: &PathBuf) -> Result<bool, String>;
 }
 
-// --- Helper Functions ---
+// --- Version Helpers ---
+
+pub fn compare_semver(current: &str, required: &str) -> bool {
+    let re = Regex::new(r"(\d+)\.(\d+)\.(\d+)").unwrap();
+    let c = re.captures(current);
+    let r = re.captures(required);
+
+    if let (Some(cc), Some(rc)) = (c, r) {
+        let cv = (cc[1].parse::<u32>().unwrap(), cc[2].parse::<u32>().unwrap(), cc[3].parse::<u32>().unwrap());
+        let rv = (rc[1].parse::<u32>().unwrap(), rc[2].parse::<u32>().unwrap(), rc[3].parse::<u32>().unwrap());
+        return cv >= rv;
+    }
+    false
+}
+
+pub fn compare_date(current: &str, required: &str) -> bool {
+    let re = Regex::new(r"(\d{4})-(\d{2})-(\d{2})").unwrap();
+    let c = re.captures(current);
+    let r = re.captures(required);
+
+    if let (Some(cc), Some(rc)) = (c, r) {
+        let cv = (cc[1].parse::<u32>().unwrap(), cc[2].parse::<u32>().unwrap(), cc[3].parse::<u32>().unwrap());
+        let rv = (rc[1].parse::<u32>().unwrap(), rc[2].parse::<u32>().unwrap(), rc[3].parse::<u32>().unwrap());
+        return cv >= rv;
+    }
+    false
+}
+
+// --- GitHub Helper ---
 
 pub async fn get_latest_github_tag(repo: &str) -> Result<String, String> {
     let client = reqwest::Client::builder()
@@ -51,7 +89,6 @@ pub async fn get_latest_github_tag(repo: &str) -> Result<String, String> {
         .map_err(|e| e.to_string())?;
 
     let url = format!("https://api.github.com/repos/{}/releases/latest", repo);
-    
     let resp = client.get(&url)
         .header(reqwest::header::ACCEPT, "application/vnd.github.v3+json")
         .send()
@@ -63,11 +100,10 @@ pub async fn get_latest_github_tag(repo: &str) -> Result<String, String> {
     }
 
     let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-    
     json.get("tag_name")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
-        .ok_or_else(|| "Could not find tag_name in response".to_string())
+        .ok_or_else(|| "Could not find tag_name".to_string())
 }
 
 fn new_silent_command(program: &str) -> Command {
@@ -82,16 +118,9 @@ fn new_silent_command(program: &str) -> Command {
 
 fn get_local_version(path: &PathBuf, arg: &str) -> Option<String> {
     if !path.exists() { return None; }
-    
-    let output = new_silent_command(path.to_str()?)
-        .arg(arg)
-        .output()
-        .ok()?;
-
+    let output = new_silent_command(path.to_str()?).arg(arg).output().ok()?;
     if !output.status.success() { return None; }
-    
-    let out_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    Some(out_str)
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 // --- Extraction Logic ---
@@ -99,46 +128,17 @@ fn get_local_version(path: &PathBuf, arg: &str) -> Option<String> {
 fn extract_zip_finding_binary(zip_path: &PathBuf, target_dir: &PathBuf, binary_names: &[&str]) -> Result<(), String> {
     let file = File::open(zip_path).map_err(|e| e.to_string())?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
-
     for i in 0..archive.len() {
         let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
         let outpath = match file.enclosed_name() {
             Some(path) => path.to_owned(),
             None => continue,
         };
-
         if let Some(file_name) = outpath.file_name() {
             let file_name_str = file_name.to_string_lossy();
             if binary_names.contains(&file_name_str.as_ref()) {
                 let mut out_file = File::create(target_dir.join(file_name)).map_err(|e| e.to_string())?;
                 std::io::copy(&mut file, &mut out_file).map_err(|e| e.to_string())?;
-                
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let mut perms = out_file.metadata().map_err(|e| e.to_string())?.permissions();
-                    perms.set_mode(0o755);
-                    out_file.set_permissions(perms).map_err(|e| e.to_string())?;
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-fn extract_tar_xz_finding_binary(tar_path: &PathBuf, target_dir: &PathBuf, binary_names: &[&str]) -> Result<(), String> {
-    let tar_gz = File::open(tar_path).map_err(|e| e.to_string())?;
-    let tar = xz2::read::XzDecoder::new(tar_gz);
-    let mut archive = tar::Archive::new(tar);
-
-    for entry in archive.entries().map_err(|e| e.to_string())? {
-        let mut entry = entry.map_err(|e| e.to_string())?;
-        let path = entry.path().map_err(|e| e.to_string())?.into_owned();
-        
-        if let Some(file_name) = path.file_name() {
-            let file_name_str = file_name.to_string_lossy();
-            if binary_names.contains(&file_name_str.as_ref()) {
-                entry.unpack(target_dir.join(file_name)).map_err(|e| e.to_string())?;
             }
         }
     }
@@ -151,17 +151,16 @@ pub struct YtDlpProvider;
 #[async_trait]
 impl DependencyProvider for YtDlpProvider {
     fn get_name(&self) -> String { "yt-dlp".to_string() }
-    fn get_binaries(&self) -> Vec<&str> {
-        if cfg!(windows) { vec!["yt-dlp.exe"] } else { vec!["yt-dlp"] }
-    }
+    fn get_binaries(&self) -> Vec<&str> { if cfg!(windows) { vec!["yt-dlp.exe"] } else { vec!["yt-dlp"] } }
     async fn install(&self, app_handle: AppHandle, target_dir: PathBuf) -> Result<(), String> {
-        let filename = self.get_binaries()[0];
-        let target_path = target_dir.join(filename);
-        
-        // Use Robust Transport
-        download_file_robust(YT_DLP_URL, target_path, "yt-dlp", &app_handle)
-            .await
-            .map_err(|e| format!("Transport Error: {}", e))
+        let target_path = target_dir.join(self.get_binaries()[0]);
+        download_file_robust(YT_DLP_URL, target_path, &self.get_name(), &app_handle).await.map_err(|e| e.to_string())
+    }
+    async fn check_update_available(&self, bin_dir: &PathBuf) -> Result<bool, String> {
+        let local_path = bin_dir.join(self.get_binaries()[0]);
+        if !local_path.exists() { return Ok(true); }
+        let remote_tag = get_latest_github_tag("yt-dlp/yt-dlp").await?;
+        Ok(get_local_version(&local_path, "--version").map_or(true, |v| v.trim() != remote_tag.trim()))
     }
 }
 
@@ -169,56 +168,77 @@ pub struct FfmpegProvider;
 #[async_trait]
 impl DependencyProvider for FfmpegProvider {
     fn get_name(&self) -> String { "ffmpeg".to_string() }
-    fn get_binaries(&self) -> Vec<&str> {
-        if cfg!(windows) { vec!["ffmpeg.exe", "ffprobe.exe"] } else { vec!["ffmpeg", "ffprobe"] }
-    }
+    fn get_binaries(&self) -> Vec<&str> { if cfg!(windows) { vec!["ffmpeg.exe"] } else { vec!["ffmpeg"] } }
     async fn install(&self, app_handle: AppHandle, target_dir: PathBuf) -> Result<(), String> {
-        let archive_name = if cfg!(windows) || cfg!(target_os = "macos") { "ffmpeg.zip" } else { "ffmpeg.tar.xz" };
-        let temp_dir = std::env::temp_dir();
-        let archive_path = temp_dir.join(archive_name);
-
-        // Use Robust Transport
-        download_file_robust(FFMPEG_URL, archive_path.clone(), "ffmpeg", &app_handle)
-            .await
-            .map_err(|e| format!("Transport Error: {}", e))?;
-
+        let archive_path = std::env::temp_dir().join("ffmpeg_tmp");
+        download_file_robust(FFMPEG_URL, archive_path.clone(), &self.get_name(), &app_handle).await.map_err(|e| e.to_string())?;
+        
         let _ = app_handle.emit_all("install-progress", InstallProgressPayload {
-            name: "ffmpeg".to_string(), percentage: 100, status: "Extracting...".to_string()
+            name: self.get_name(),
+            percentage: 100,
+            status: "Extracting FFmpeg...".to_string()
         });
-
-        if archive_path.extension().unwrap_or_default() == "zip" {
-            extract_zip_finding_binary(&archive_path, &target_dir, &self.get_binaries())?;
-        } else {
-            extract_tar_xz_finding_binary(&archive_path, &target_dir, &self.get_binaries())?;
-        }
-
+        
+        extract_zip_finding_binary(&archive_path, &target_dir, &self.get_binaries())?;
         let _ = fs::remove_file(archive_path);
         Ok(())
     }
+    async fn check_update_available(&self, _bin_dir: &PathBuf) -> Result<bool, String> { Ok(true) }
 }
 
 pub struct DenoProvider;
 #[async_trait]
 impl DependencyProvider for DenoProvider {
-    fn get_name(&self) -> String { "js_runtime".to_string() }
-    fn get_binaries(&self) -> Vec<&str> {
-        if cfg!(windows) { vec!["deno.exe"] } else { vec!["deno"] }
-    }
+    fn get_name(&self) -> String { "deno".to_string() }
+    fn get_binaries(&self) -> Vec<&str> { if cfg!(windows) { vec!["deno.exe"] } else { vec!["deno"] } }
     async fn install(&self, app_handle: AppHandle, target_dir: PathBuf) -> Result<(), String> {
         let archive_path = std::env::temp_dir().join("deno.zip");
-
-        // Use Robust Transport
-        download_file_robust(DENO_URL, archive_path.clone(), "js_runtime", &app_handle)
-            .await
-            .map_err(|e| format!("Transport Error: {}", e))?;
-
+        download_file_robust(DENO_URL, archive_path.clone(), &self.get_name(), &app_handle).await.map_err(|e| e.to_string())?;
+        
         let _ = app_handle.emit_all("install-progress", InstallProgressPayload {
-            name: "js_runtime".to_string(), percentage: 100, status: "Extracting...".to_string()
+            name: self.get_name(),
+            percentage: 100,
+            status: "Extracting Deno...".to_string()
         });
-
+        
         extract_zip_finding_binary(&archive_path, &target_dir, &self.get_binaries())?;
         let _ = fs::remove_file(archive_path);
         Ok(())
+    }
+    async fn check_update_available(&self, bin_dir: &PathBuf) -> Result<bool, String> {
+        let local_path = bin_dir.join(self.get_binaries()[0]);
+        if !local_path.exists() { return Ok(true); }
+        let remote_tag = get_latest_github_tag("denoland/deno").await?;
+        let clean_remote = remote_tag.replace("v", "");
+        Ok(get_local_version(&local_path, "--version").map_or(true, |v| !v.contains(&clean_remote)))
+    }
+}
+
+pub struct BunProvider;
+#[async_trait]
+impl DependencyProvider for BunProvider {
+    fn get_name(&self) -> String { "bun".to_string() }
+    fn get_binaries(&self) -> Vec<&str> { if cfg!(windows) { vec!["bun.exe"] } else { vec!["bun"] } }
+    async fn install(&self, app_handle: AppHandle, target_dir: PathBuf) -> Result<(), String> {
+        let archive_path = std::env::temp_dir().join("bun.zip");
+        download_file_robust(BUN_URL, archive_path.clone(), &self.get_name(), &app_handle).await.map_err(|e| e.to_string())?;
+        
+        let _ = app_handle.emit_all("install-progress", InstallProgressPayload {
+            name: self.get_name(),
+            percentage: 100,
+            status: "Extracting Bun...".to_string()
+        });
+        
+        extract_zip_finding_binary(&archive_path, &target_dir, &self.get_binaries())?;
+        let _ = fs::remove_file(archive_path);
+        Ok(())
+    }
+    async fn check_update_available(&self, bin_dir: &PathBuf) -> Result<bool, String> {
+        let local_path = bin_dir.join(self.get_binaries()[0]);
+        if !local_path.exists() { return Ok(true); }
+        let remote_tag = get_latest_github_tag("oven-sh/bun").await?;
+        let clean_remote = remote_tag.replace("bun-v", "").replace("v", "");
+        Ok(get_local_version(&local_path, "--version").map_or(true, |v| !v.contains(&clean_remote)))
     }
 }
 
@@ -226,83 +246,16 @@ impl DependencyProvider for DenoProvider {
 
 pub async fn auto_update_yt_dlp(app_handle: AppHandle, bin_dir: PathBuf) -> Result<(), String> {
     let provider = YtDlpProvider;
-    let binary_name = provider.get_binaries()[0];
-    let local_path = bin_dir.join(binary_name);
-
-    // Try to get remote tag. If network fails, proceed silently if local exists.
-    let remote_tag = match get_latest_github_tag("yt-dlp/yt-dlp").await {
-        Ok(t) => t,
-        Err(e) => {
-            if !local_path.exists() { return Err(e); }
-            return Ok(());
-        }
-    };
-
-    if let Some(local_ver) = get_local_version(&local_path, "--version") {
-        if local_ver.trim() == remote_tag.trim() {
-            return Ok(());
-        }
+    if provider.check_update_available(&bin_dir).await.unwrap_or(true) {
+        provider.install(app_handle, bin_dir).await?;
     }
-
-    let _ = app_handle.emit_all("install-progress", InstallProgressPayload {
-        name: "yt-dlp".to_string(),
-        percentage: 0,
-        status: format!("Updating to {}...", remote_tag)
-    });
-    
-    provider.install(app_handle, bin_dir).await
-}
-
-pub async fn manage_js_runtime(app_handle: AppHandle, bin_dir: PathBuf) -> Result<(), String> {
-    if new_silent_command("deno").arg("--version").output().is_ok() { return Ok(()); }
-    if new_silent_command("bun").arg("--version").output().is_ok() { return Ok(()); }
-    if new_silent_command("node").arg("--version").output().is_ok() { return Ok(()); }
-
-    let provider = DenoProvider;
-    let binary_name = provider.get_binaries()[0];
-    let local_path = bin_dir.join(binary_name);
-
-    // Offline Handling
-    let remote_tag = match get_latest_github_tag("denoland/deno").await {
-        Ok(t) => t,
-        Err(e) => {
-             if !local_path.exists() { return Err(e); }
-             return Ok(());
-        }
-    };
-    
-    let clean_remote = remote_tag.replace("v", ""); 
-
-    if let Some(local_ver_raw) = get_local_version(&local_path, "--version") {
-        if local_ver_raw.contains(&clean_remote) {
-            return Ok(());
-        }
-    }
-
-    let _ = app_handle.emit_all("install-progress", InstallProgressPayload {
-        name: "Portable Runtime".to_string(),
-        percentage: 0,
-        status: format!("Syncing Deno {}...", clean_remote)
-    });
-
-    provider.install(app_handle, bin_dir).await
+    Ok(())
 }
 
 pub async fn install_missing_ffmpeg(app_handle: AppHandle, bin_dir: PathBuf) -> Result<(), String> {
-    let provider = FfmpegProvider;
-    let binary_name = provider.get_binaries()[0]; 
-    let local_path = bin_dir.join(binary_name);
-    
-    let exec_name = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
-    if new_silent_command(exec_name).arg("-version").output().is_ok() {
-        return Ok(()); 
-    }
-
+    let local_path = bin_dir.join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" });
     if !local_path.exists() {
-         let _ = app_handle.emit_all("install-progress", InstallProgressPayload {
-            name: "ffmpeg".to_string(), percentage: 0, status: "Installing...".to_string()
-        });
-        provider.install(app_handle, bin_dir).await?;
+        FfmpegProvider.install(app_handle, bin_dir).await?;
     }
     Ok(())
 }
@@ -311,29 +264,23 @@ pub fn get_provider(name: &str) -> Option<Box<dyn DependencyProvider>> {
     match name {
         "yt-dlp" => Some(Box::new(YtDlpProvider)),
         "ffmpeg" => Some(Box::new(FfmpegProvider)),
-        "js_runtime" => Some(Box::new(DenoProvider)),
+        "deno" => Some(Box::new(DenoProvider)),
+        "bun" => Some(Box::new(BunProvider)),
         _ => None
     }
 }
 
 pub async fn install_dep(name: String, app_handle: AppHandle) -> Result<(), String> {
     let provider = get_provider(&name).ok_or("Unknown dependency")?;
-    
-    let app_dir = app_handle.path_resolver().app_data_dir().ok_or("Failed to resolve app data dir")?;
+    let app_dir = app_handle.path_resolver().app_data_dir().ok_or("Failed dir")?;
     let bin_dir = app_dir.join("bin");
+    if !bin_dir.exists() { fs::create_dir_all(&bin_dir).map_err(|e| e.to_string())?; }
     
-    if !bin_dir.exists() {
-        fs::create_dir_all(&bin_dir).map_err(|e| e.to_string())?;
-    }
-
-    provider.install(app_handle.clone(), bin_dir).await?;
-
-    let installed_name = provider.get_name();
     let _ = app_handle.emit_all("install-progress", InstallProgressPayload {
-        name: installed_name, 
-        percentage: 100, 
-        status: "Installed".to_string()
+        name: provider.get_name(),
+        percentage: 0,
+        status: format!("Starting install for {}...", provider.get_name())
     });
-
-    Ok(())
+    
+    provider.install(app_handle, bin_dir).await
 }

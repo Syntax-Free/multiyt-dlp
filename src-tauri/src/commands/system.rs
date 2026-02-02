@@ -6,12 +6,15 @@ use crate::core::deps;
 use std::path::PathBuf;
 use tracing::{info, warn, error, debug};
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug)]
 pub struct DependencyInfo {
     pub name: String,
     pub available: bool,
     pub version: Option<String>,
     pub path: Option<String>,
+    pub is_supported: bool,
+    pub is_recommended: bool,
+    pub is_latest: bool,
 }
 
 #[derive(Serialize)]
@@ -42,28 +45,25 @@ pub fn log_frontend_message(level: LogLevel, message: String, context: Option<St
     }
 }
 
-// --- EXISTING COMMANDS ---
+// --- SYSTEM COMMANDS ---
 
-// Helper to create a command that doesn't spawn a visible window on Windows
 fn new_silent_command(program: &str) -> Command {
     let mut cmd = Command::new(program);
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        cmd.creation_flags(0x08000000); 
     }
     cmd
 }
 
 pub fn resolve_binary_info(bin_name: &str, version_flag: &str, local_bin_path: &PathBuf) -> DependencyInfo {
-    // 1. Check Local Bin Folder First
     let local_path = local_bin_path.join(bin_name);
     let local_available = local_path.exists();
 
     let final_path = if local_available {
         Some(local_path.to_string_lossy().to_string())
     } else {
-        // 2. Check System Path
         let path_cmd = if cfg!(target_os = "windows") { "where" } else { "which" };
         new_silent_command(path_cmd)
             .arg(bin_name)
@@ -75,8 +75,6 @@ pub fn resolve_binary_info(bin_name: &str, version_flag: &str, local_bin_path: &
     };
 
     let available = final_path.is_some();
-
-    // 3. Check Version if available
     let mut version = None;
     if let Some(ref p) = final_path {
         if let Ok(output) = new_silent_command(p).arg(version_flag).output() {
@@ -92,35 +90,102 @@ pub fn resolve_binary_info(bin_name: &str, version_flag: &str, local_bin_path: &
         name: bin_name.to_string(),
         available,
         version,
-        path: final_path
+        path: final_path,
+        is_supported: true,
+        is_recommended: true,
+        is_latest: false,
     }
 }
 
-/// Public helper to get the best available JS runtime info (Name, Path)
-/// Prioritizes Deno -> Bun -> Node
+/// Synchronous helper for the downloader process.
+/// Priority: Deno > Node > QuickJS > QuickJS-ng > Bun
 pub fn get_js_runtime_info(bin_path: &PathBuf) -> Option<(String, String)> {
-    // 1. Check for Deno (Preferred)
-    let deno_exec = if cfg!(windows) { "deno.exe" } else { "deno" };
-    let deno = resolve_binary_info(deno_exec, "--version", bin_path);
-    if deno.available {
-        return Some(("deno".to_string(), deno.path.unwrap()));
-    }
+    let providers = [
+        ("deno", "deno", "--version"),
+        ("node", "node", "--version"),
+        ("qjs", "quickjs", "--version"),
+        ("qjs-ng", "quickjs-ng", "--version"),
+        ("bun", "bun", "--version"),
+    ];
 
-    // 2. Check for Bun
-    let bun_exec = if cfg!(windows) { "bun.exe" } else { "bun" };
-    let bun = resolve_binary_info(bun_exec, "--version", bin_path);
-    if bun.available {
-        return Some(("bun".to_string(), bun.path.unwrap()));
-    }
+    for (exec_base, name, flag) in providers {
+        let exec = if cfg!(windows) { format!("{}.exe", exec_base) } else { exec_base.to_string() };
+        let info = resolve_binary_info(&exec, flag, bin_path);
+        
+        if !info.available { continue; }
 
-    // 3. Check for Node
-    let node_exec = if cfg!(windows) { "node.exe" } else { "node" };
-    let node = resolve_binary_info(node_exec, "--version", bin_path);
-    if node.available {
-        return Some(("node".to_string(), node.path.unwrap()));
+        let version_str = info.version.clone().unwrap_or_default();
+        let supported = match name {
+            "deno" => deps::compare_semver(&version_str, "2.0.0"),
+            "node" => deps::compare_semver(&version_str, "20.0.0"),
+            "quickjs" | "quickjs-ng" => deps::compare_date(&version_str, "2023-12-09"),
+            "bun" => deps::compare_semver(&version_str, "1.0.31"),
+            _ => false
+        };
+
+        if supported {
+            return Some((name.to_string(), info.path.unwrap()));
+        }
     }
 
     None
+}
+
+/// Specialized analysis for interactive UI based on yt-dlp #15012
+pub async fn analyze_js_runtime(_app_handle: &AppHandle, bin_path: &PathBuf) -> DependencyInfo {
+    let providers = [
+        ("deno", "deno", "--version"),
+        ("node", "node", "--version"),
+        ("qjs", "quickjs", "--version"),
+        ("qjs-ng", "quickjs-ng", "--version"),
+        ("bun", "bun", "--version"),
+    ];
+
+    let mut best_info: Option<DependencyInfo> = None;
+
+    for (exec_base, name, flag) in providers {
+        let exec = if cfg!(windows) { format!("{}.exe", exec_base) } else { exec_base.to_string() };
+        let mut info = resolve_binary_info(&exec, flag, bin_path);
+        
+        if !info.available { continue; }
+
+        info.name = name.to_string();
+        let version_str = info.version.clone().unwrap_or_default();
+        
+        let (supported, recommended) = match name {
+            "deno" => (deps::compare_semver(&version_str, "2.0.0"), true),
+            "node" => (deps::compare_semver(&version_str, "20.0.0"), deps::compare_semver(&version_str, "25.0.0")),
+            "quickjs" | "quickjs-ng" => (
+                deps::compare_date(&version_str, "2023-12-09"), 
+                deps::compare_date(&version_str, "2025-04-26")
+            ),
+            "bun" => (deps::compare_semver(&version_str, "1.0.31"), true),
+            _ => (false, false)
+        };
+
+        info.is_supported = supported;
+        info.is_recommended = recommended;
+
+        if let Some(provider) = deps::get_provider(name) {
+            if let Ok(is_update_needed) = provider.check_update_available(bin_path).await {
+                info.is_latest = !is_update_needed;
+            }
+        }
+
+        if best_info.is_none() {
+            best_info = Some(info);
+        }
+    }
+
+    best_info.unwrap_or(DependencyInfo {
+        name: "None".to_string(),
+        available: false,
+        version: None,
+        path: None,
+        is_supported: false,
+        is_recommended: false,
+        is_latest: false,
+    })
 }
 
 #[tauri::command]
@@ -128,14 +193,23 @@ pub async fn check_dependencies(app_handle: AppHandle) -> AppDependencies {
     let app_dir = app_handle.path_resolver().app_data_dir().unwrap();
     let bin_dir = app_dir.join("bin");
 
+    let app_handle_inner = app_handle.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let bin_path = bin_dir;
 
-        // 1. yt-dlp
         let exec_name = if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" };
-        let yt_dlp = resolve_binary_info(exec_name, "--version", &bin_path);
+        let mut yt_dlp = resolve_binary_info(exec_name, "--version", &bin_path);
+        if yt_dlp.available {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let is_up_to_date = rt.block_on(async {
+                if let Ok(tag) = deps::get_latest_github_tag("yt-dlp/yt-dlp").await {
+                    return yt_dlp.version.as_ref().map_or(false, |v| v.trim() == tag.trim());
+                }
+                false
+            });
+            yt_dlp.is_latest = is_up_to_date;
+        }
 
-        // 2. ffmpeg
         let exec_name = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
         let mut ffmpeg = resolve_binary_info(exec_name, "-version", &bin_path);
         if let Some(ref v) = ffmpeg.version {
@@ -145,37 +219,8 @@ pub async fn check_dependencies(app_handle: AppHandle) -> AppDependencies {
             }
         }
 
-        // 3. JS Runtime (Using shared helper)
-        let mut js_runtime = DependencyInfo { 
-            name: "None".to_string(), available: false, version: None, path: None 
-        };
-
-        // Check specific binaries again to populate full DependencyInfo including version
-        // (The helper just returns name/path for process injection)
-        let deno_exec = if cfg!(windows) { "deno.exe" } else { "deno" };
-        let local_deno = resolve_binary_info(deno_exec, "--version", &bin_path);
-
-        if local_deno.available {
-            js_runtime = local_deno;
-            js_runtime.name = "deno".to_string();
-        } else {
-            let runtimes = [("bun", "--version"), ("node", "--version")];
-            for (bin, flag) in runtimes {
-                let bin_name = if cfg!(windows) { format!("{}.exe", bin) } else { bin.to_string() };
-                let info = resolve_binary_info(&bin_name, flag, &bin_path);
-                if info.available {
-                    js_runtime = info;
-                    js_runtime.name = bin.to_string();
-                    break;
-                }
-            }
-        }
-        
-        if js_runtime.name.contains("deno") {
-             if let Some(ref v) = js_runtime.version {
-                 js_runtime.version = Some(v.replace("deno ", ""));
-             }
-        }
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let js_runtime = rt.block_on(analyze_js_runtime(&app_handle_inner, &bin_path));
 
         AppDependencies {
             yt_dlp,
@@ -201,19 +246,11 @@ pub async fn sync_dependencies(app_handle: AppHandle) -> Result<AppDependencies,
         std::fs::create_dir_all(&bin_dir).map_err(|e| e.to_string())?;
     }
 
-    // Parallel Execution Fix (Waterfall Bug)
-    let (yt_res, ffmpeg_res, js_res) = tokio::join!(
+    let _ = tokio::join!(
         deps::auto_update_yt_dlp(app_handle.clone(), bin_dir.clone()),
         deps::install_missing_ffmpeg(app_handle.clone(), bin_dir.clone()),
-        deps::manage_js_runtime(app_handle.clone(), bin_dir.clone())
     );
 
-    // We check results individually to log errors but allow partial success if critical deps exist
-    if let Err(e) = yt_res { error!("yt-dlp sync failed: {}", e); }
-    if let Err(e) = ffmpeg_res { error!("ffmpeg sync failed: {}", e); }
-    if let Err(e) = js_res { error!("js_runtime sync failed: {}", e); }
-
-    // Re-check what actually exists
     Ok(check_dependencies(app_handle).await)
 }
 
@@ -250,14 +287,11 @@ pub fn show_in_folder(path: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt; 
-
         let normalized_path = path.replace("/", "\\");
-        
         let command = Command::new("explorer")
             .arg("/select,")
             .raw_arg(format!("\"{}\"", normalized_path))
             .spawn();
-
         match command {
             Ok(_) => Ok(()),
             Err(e) => Err(e.to_string())
