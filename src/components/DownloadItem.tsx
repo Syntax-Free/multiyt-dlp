@@ -1,7 +1,7 @@
 import { Download } from '@/types';
 import { Progress } from './ui/Progress';
 import { Button } from './ui/Button';
-import { X, MonitorPlay, Clock, CheckCircle2, AlertCircle, Headphones, Activity, FileOutput, Tags, FileText, Image as ImageIcon, Hourglass, FolderSearch, FileCode, Copy, Trash2 } from 'lucide-react';
+import { X, MonitorPlay, Clock, CheckCircle2, AlertTriangle, Headphones, Activity, FileOutput, Tags, FileText, Image as ImageIcon, Hourglass, FolderSearch, Copy, Trash2, ChevronDown, ChevronUp } from 'lucide-react';
 import { twMerge } from 'tailwind-merge';
 import { showInFolder, openLogFolder } from '@/api/invoke';
 import { useState } from 'react';
@@ -13,11 +13,10 @@ interface DownloadItemProps {
 }
 
 export function DownloadItem({ download, onCancel }: DownloadItemProps) {
-
   const { 
     jobId, url, status, progress, speed, eta, 
     error, filename, phase, preset, embedMetadata, 
-    embedThumbnail, outputPath, stderr, logs, exit_code 
+    embedThumbnail, outputPath, stderr, logs 
   } = download;
 
   const [showLogs, setShowLogs] = useState(false);
@@ -35,26 +34,37 @@ export function DownloadItem({ download, onCancel }: DownloadItemProps) {
       return text;
   };
 
-  // Expanded check for various processing phases
-  const isProcessingPhase = phase?.includes('Merging') 
+  const isProcessingPhase = isActive && (
+       phase?.includes('Merging') 
     || phase?.includes('Extracting') 
     || phase?.includes('Fixing')
-    || phase?.includes('Starting')
-    || phase?.includes('Initializing')
     || phase?.includes('Moving')
     || phase?.includes('Finalizing')
-    || phase?.includes('Processing');
+    || phase?.includes('Processing')
+  );
 
-  const isMetaPhase = phase?.includes('Metadata') || phase?.includes('Thumbnail');
+  const isMetaPhase = isActive && (
+       phase?.includes('Metadata') 
+    || phase?.includes('Thumbnail')
+  );
+
+  const getStatusColor = () => {
+      if (isError) return "text-red-500 bg-red-500/10 border-red-500/20";
+      if (isCompleted) return "text-emerald-500 bg-emerald-500/10 border-emerald-500/20";
+      if (isCancelled) return "text-zinc-500 bg-zinc-800/50 border-zinc-700/50";
+      if (isProcessingPhase || isMetaPhase) return "text-amber-500 bg-amber-500/10 border-amber-500/20";
+      if (isActive) return "text-theme-cyan bg-theme-cyan/10 border-theme-cyan/20";
+      return "text-zinc-400 bg-zinc-800 border-zinc-700"; // Queued
+  };
 
   const getIcon = () => {
-      if (isError) return <AlertCircle className="h-5 w-5 text-theme-red" />;
-      if (isCompleted) return <CheckCircle2 className="h-5 w-5 text-theme-cyan" />;
-      if (isCancelled) return <X className="h-5 w-5 text-zinc-600" />;
+      if (isError) return <AlertTriangle className="h-5 w-5 text-red-500" />;
+      if (isCompleted) return <CheckCircle2 className="h-5 w-5 text-emerald-500" />;
+      if (isCancelled) return <X className="h-5 w-5 text-zinc-500" />;
       if (isQueued) return <Hourglass className="h-5 w-5 text-zinc-500 animate-pulse" />;
       
-      if (isMetaPhase) return <Tags className="h-5 w-5 text-yellow-400 animate-pulse" />;
-      if (isProcessingPhase) return <FileOutput className="h-5 w-5 text-zinc-100 animate-pulse" />;
+      if (isMetaPhase) return <Tags className="h-5 w-5 text-amber-500 animate-pulse" />;
+      if (isProcessingPhase) return <FileOutput className="h-5 w-5 text-amber-500 animate-pulse" />;
 
       return isAudio 
         ? <Headphones className="h-5 w-5 text-theme-red animate-pulse" /> 
@@ -62,208 +72,184 @@ export function DownloadItem({ download, onCancel }: DownloadItemProps) {
   };
 
   let badgeText = isAudio ? 'AUDIO' : 'VIDEO';
-  if (isActive || isQueued) {
-      if (preset) {
-          const parts = preset.split('_');
-          if (parts.length > 1 && parts[1] !== 'best') {
-             badgeText = parts[1].toUpperCase();
-          }
+  if (preset) {
+      const parts = preset.split('_');
+      if (parts.length > 1 && parts[1] !== 'best') {
+         badgeText = parts[1].toUpperCase();
       }
   }
 
-  const handleOpenFolder = () => {
-      if (outputPath) {
-          showInFolder(outputPath).catch(console.error);
-      }
-  };
-
-  const handleCopyLogs = () => {
-      if (logs) {
-          navigator.clipboard.writeText(logs);
-      }
-  };
+  const handleOpenFolder = () => outputPath && showInFolder(outputPath).catch(console.error);
+  const handleCopyLogs = () => logs && navigator.clipboard.writeText(logs);
 
   return (
     <div className={twMerge(
-        "group animate-fade-in relative bg-surface border rounded-lg p-5 transition-all duration-300",
-        isActive && "border-theme-cyan/30 shadow-[0_0_20px_-10px_rgba(0,242,234,0.1)]",
-        (isProcessingPhase || isMetaPhase) && "border-yellow-500/30 shadow-[0_0_20px_-10px_rgba(234,179,8,0.2)]",
-        isError && "border-theme-red/30",
-        isQueued && "border-zinc-800/60 bg-zinc-900/30 opacity-80",
-        isCancelled && "opacity-50 border-zinc-900 bg-zinc-950",
-        (!isActive && !isError && !isQueued && !isCancelled) && "border-border"
+        "group animate-fade-in relative bg-zinc-900/40 border rounded-lg p-4 transition-all duration-300 hover:bg-zinc-900/60",
+        isError ? "border-red-900/30 hover:border-red-900/50" : 
+        isCompleted ? "border-emerald-900/30 hover:border-emerald-900/50" : 
+        isActive ? "border-theme-cyan/20 shadow-[0_0_15px_-10px_rgba(6,182,212,0.1)] hover:border-theme-cyan/40" : 
+        "border-zinc-800 hover:border-zinc-700"
     )}>
       
-      <div className="flex items-start gap-5">
+      <div className="flex gap-4">
+        {/* ICON BOX */}
         <div className={twMerge(
             "h-12 w-12 flex-shrink-0 rounded-lg flex items-center justify-center border transition-colors duration-500",
-            isActive && (isProcessingPhase || isMetaPhase) && "bg-yellow-500/10 border-yellow-500/30",
-            isActive && !isProcessingPhase && !isMetaPhase && isAudio && "bg-theme-red/5 border-theme-red/20",
-            isActive && !isProcessingPhase && !isMetaPhase && !isAudio && "bg-theme-cyan/5 border-theme-cyan/20",
-            (!isActive || isCancelled) && "bg-zinc-900 border-zinc-800"
+            isActive && !isProcessingPhase ? "bg-theme-cyan/5 border-theme-cyan/20" : "bg-zinc-950 border-zinc-800",
+            (isProcessingPhase || isMetaPhase) && "bg-amber-500/5 border-amber-500/20",
+            isError && "bg-red-500/5 border-red-500/20",
+            isCompleted && "bg-emerald-500/5 border-emerald-500/20"
         )}>
           {getIcon()}
         </div>
         
-        <div className="flex-grow min-w-0 space-y-3">
+        {/* MAIN CONTENT */}
+        <div className="flex-grow min-w-0 flex flex-col justify-between gap-2">
+            
+            {/* Header Row */}
             <div className="flex justify-between items-start gap-4">
-                 <div className="space-y-1 min-w-0">
+                 <div className="min-w-0">
                     <p className={twMerge(
-                        "text-sm font-semibold truncate transition-colors",
-                        isCancelled ? "text-zinc-500 line-through" : (isActive ? "text-zinc-100" : "text-zinc-400")
+                        "text-sm font-semibold truncate mb-1",
+                        isCancelled ? "text-zinc-500 line-through decoration-zinc-700" : "text-zinc-200"
                     )} title={displayTitle}>
                         {displayTitle}
                     </p>
-                    <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider font-bold">
+                    
+                    <div className="flex flex-wrap items-center gap-2">
+                        {/* Format Badge */}
                         <span className={twMerge(
-                            "px-1.5 py-0.5 rounded border transition-colors",
-                            isCancelled
-                                ? "border-zinc-800 text-zinc-700 bg-zinc-900"
-                                : isQueued 
-                                    ? "border-zinc-700 text-zinc-600 bg-zinc-800" 
-                                    : isAudio 
-                                        ? "border-theme-red/30 text-theme-red bg-theme-red/5" 
-                                        : "border-theme-cyan/30 text-theme-cyan bg-theme-cyan/5"
-                        )}>{badgeText}</span>
-                        
-                        {embedMetadata && (
-                             <span className={twMerge("px-1.5 py-0.5 rounded border flex items-center gap-1", isCancelled ? "border-zinc-800 text-zinc-700 bg-zinc-900" : "border-zinc-700 text-zinc-400 bg-zinc-800/50")} title="Metadata Embedded">
-                                <FileText className="h-3 w-3" /> TAGS
-                             </span>
-                        )}
-                        
-                        {embedThumbnail && (
-                             <span className={twMerge("px-1.5 py-0.5 rounded border flex items-center gap-1", isCancelled ? "border-zinc-800 text-zinc-700 bg-zinc-900" : "border-zinc-700 text-zinc-400 bg-zinc-800/50")} title="Thumbnail Embedded">
-                                <ImageIcon className="h-3 w-3" /> ART
-                             </span>
-                        )}
+                            "text-[10px] font-bold px-1.5 py-0.5 rounded border uppercase",
+                            isAudio ? "text-red-400 bg-red-400/10 border-red-400/20" : "text-cyan-400 bg-cyan-400/10 border-cyan-400/20",
+                            isCancelled && "text-zinc-500 bg-zinc-800 border-zinc-700"
+                        )}>
+                            {badgeText}
+                        </span>
 
+                        {/* Status Badge */}
                         <span className={twMerge(
-                            "flex items-center gap-1 transition-colors duration-300 ml-1",
-                             isCancelled ? "text-zinc-700" : (isProcessingPhase || isMetaPhase) ? "text-yellow-400" : "text-zinc-500"
+                            "text-[10px] font-bold px-1.5 py-0.5 rounded border uppercase flex items-center gap-1.5",
+                            getStatusColor()
                         )}>
                             {isActive && <Activity className={twMerge("h-3 w-3", (isProcessingPhase || isMetaPhase) && "animate-spin")} />}
-                            {phase || (isQueued ? "Waiting for slot..." : status)}
+                            {phase || (isQueued ? "Waiting" : status)}
                         </span>
+
+                        {/* Extra Flags */}
+                        {(embedMetadata || embedThumbnail) && !isCancelled && (
+                            <div className="flex gap-1">
+                                {embedMetadata && (
+                                    <span title="Metadata">
+                                        <FileText className="h-3 w-3 text-zinc-500" />
+                                    </span>
+                                )}
+                                {embedThumbnail && (
+                                    <span title="Thumbnail">
+                                        <ImageIcon className="h-3 w-3 text-zinc-500" />
+                                    </span>
+                                )}
+                            </div>
+                        )}
                     </div>
                  </div>
 
-                 <div className="flex flex-col items-end gap-1">
-                    {isActive && (
-                         <span className="text-lg font-bold text-zinc-100 tabular-nums">
-                            {progress.toFixed(0)}<span className="text-sm text-zinc-600">%</span>
+                 {/* Percentage / Status Right Side */}
+                 <div className="text-right flex-shrink-0">
+                    {isActive ? (
+                         <span className="text-xl font-black text-zinc-100 tabular-nums tracking-tight">
+                            {progress.toFixed(0)}<span className="text-xs font-medium text-zinc-600 ml-0.5">%</span>
                          </span>
-                    )}
-                    {isQueued && (
-                        <span className="text-xs font-bold text-zinc-600 uppercase bg-zinc-900 border border-zinc-800 px-2 py-1 rounded">
-                            Queued
-                        </span>
-                    )}
-                    {isCancelled && (
-                        <span className="text-xs font-bold text-zinc-700 uppercase bg-zinc-950 border border-zinc-900 px-2 py-1 rounded">
-                            Cancelled
-                        </span>
-                    )}
-                    {isError && exit_code !== undefined && (
-                        <span className="text-[10px] font-mono text-theme-red bg-theme-red/10 border border-theme-red/20 px-1.5 py-0.5 rounded">
-                            Exit Code: {exit_code}
-                        </span>
+                    ) : (
+                        <div className="h-6" /> // spacer
                     )}
                  </div>
             </div>
             
-            <div className="space-y-3">
+            {/* Progress Bar Row */}
+            <div className="w-full">
                 {isActive && (
                      <div className={twMerge("relative", (isProcessingPhase || isMetaPhase) && "opacity-80")}>
                         <Progress 
                             value={progress} 
-                            variant={isError ? 'error' : 'default'} 
-                            className={twMerge((isProcessingPhase || isMetaPhase) && "opacity-70")}
+                            variant={isError ? 'error' : isCompleted ? 'success' : 'default'} 
+                            className="h-1.5"
                         />
                         {(isProcessingPhase || isMetaPhase) && (
-                            <div className="absolute inset-0 bg-yellow-400/20 animate-pulse rounded-full" />
+                            <div className="absolute inset-0 bg-amber-400/30 animate-pulse rounded-full" />
                         )}
                      </div>
                 )}
                 
                 {isQueued && (
-                    <div className="w-full h-1 bg-zinc-900 rounded-full overflow-hidden relative">
-                        <div className="absolute inset-0 w-full h-full bg-[linear-gradient(45deg,transparent_25%,rgba(255,255,255,0.05)_25%,rgba(255,255,255,0.05)_50%,transparent_50%,transparent_75%,rgba(255,255,255,0.05)_75%,rgba(255,255,255,0.05)_100%)] bg-[length:20px_20px] animate-[progress-stripes_1s_linear_infinite]" />
-                    </div>
-                )}
-                
-                {isError && (
-                    <div className="space-y-2">
-                        {/* New Smart Error Component */}
-                        <SmartError error={error} stderr={stderr} />
-                        
-                        <div className="flex gap-2">
-                            {logs && (
-                                <Button 
-                                    size="sm" 
-                                    variant="outline" 
-                                    className="h-7 text-xs border-theme-red/30 text-theme-red hover:bg-theme-red/10"
-                                    onClick={() => setShowLogs(!showLogs)}
-                                >
-                                    <FileCode className="h-3 w-3 mr-2" />
-                                    {showLogs ? 'Hide Logs' : 'View Logs'}
-                                </Button>
-                            )}
-                             <Button 
-                                size="sm" 
-                                variant="outline" 
-                                className="h-7 text-xs border-zinc-700 text-zinc-400 hover:text-zinc-200"
-                                onClick={() => openLogFolder()}
-                            >
-                                Open Log Folder
-                            </Button>
-                        </div>
-                        
-                        {showLogs && logs && (
-                             <div className="relative mt-2 p-3 bg-zinc-950 border border-zinc-800 rounded font-mono text-[10px] text-zinc-400 h-40 overflow-y-auto">
-                                <pre>{logs}</pre>
-                                <button 
-                                    onClick={handleCopyLogs}
-                                    className="absolute top-2 right-2 p-1.5 bg-zinc-800 hover:bg-zinc-700 rounded text-zinc-300 transition-colors"
-                                    title="Copy to Clipboard"
-                                >
-                                    <Copy className="h-3 w-3" />
-                                </button>
-                             </div>
-                        )}
+                    <div className="w-full h-1.5 bg-zinc-900 rounded-full overflow-hidden relative border border-zinc-800/50">
+                        <div className="absolute inset-0 w-full h-full bg-[linear-gradient(45deg,transparent_25%,rgba(255,255,255,0.05)_25%,rgba(255,255,255,0.05)_50%,transparent_50%,transparent_75%,rgba(255,255,255,0.05)_75%,rgba(255,255,255,0.05)_100%)] bg-[length:16px_16px] animate-[progress-stripes_1s_linear_infinite]" />
                     </div>
                 )}
 
+                {/* Active Stats Footer */}
                 {isActive && !isProcessingPhase && !isMetaPhase && (
-                    <div className="flex items-center justify-between text-xs text-zinc-500 font-mono">
-                        <span title="Speed" className="text-zinc-400 min-w-[60px]">
-                           {formatStat(speed)}
-                        </span>
-                        <span title="ETA" className="flex items-center gap-1 text-zinc-400">
+                    <div className="flex items-center justify-between text-[10px] text-zinc-500 font-mono mt-1.5 px-0.5">
+                        <span title="Download Speed">{formatStat(speed)}</span>
+                        <span title="ETA" className="flex items-center gap-1">
                             <Clock className="h-3 w-3" /> {formatStat(eta)}
                         </span>
                     </div>
                 )}
             </div>
+            
+            {/* Error Details Section */}
+            {isError && (
+                <div className="mt-2 animate-fade-in">
+                    <SmartError error={error} stderr={stderr} />
+                    
+                    <div className="flex items-center gap-2 mt-2">
+                         <button 
+                            onClick={() => setShowLogs(!showLogs)}
+                            className="flex items-center text-[10px] text-zinc-400 hover:text-zinc-200 transition-colors"
+                        >
+                            {showLogs ? <ChevronUp className="h-3 w-3 mr-1" /> : <ChevronDown className="h-3 w-3 mr-1" />}
+                            {showLogs ? 'Hide Raw Logs' : 'View Raw Logs'}
+                        </button>
+                        <div className="h-3 w-px bg-zinc-800" />
+                        <button 
+                             onClick={() => openLogFolder()}
+                             className="text-[10px] text-zinc-400 hover:text-zinc-200 transition-colors"
+                        >
+                            Open Log Folder
+                        </button>
+                    </div>
+
+                    {showLogs && logs && (
+                         <div className="relative mt-2 p-3 bg-zinc-950 border border-zinc-800 rounded font-mono text-[10px] text-zinc-400 h-32 overflow-y-auto custom-scrollbar">
+                            <pre className="whitespace-pre-wrap break-all">{logs}</pre>
+                            <button 
+                                onClick={handleCopyLogs}
+                                className="absolute top-2 right-2 p-1.5 bg-zinc-800 hover:bg-zinc-700 rounded text-zinc-300 transition-colors"
+                                title="Copy to Clipboard"
+                            >
+                                <Copy className="h-3 w-3" />
+                            </button>
+                         </div>
+                    )}
+                </div>
+            )}
         </div>
 
-        {/* Actions Column */}
-        <div className="flex flex-col justify-center pl-2 gap-2">
-          {/* Active / Queued / Error / Cancelled states */}
+        {/* ACTIONS COLUMN */}
+        <div className="flex flex-col justify-start gap-2 pt-1 pl-2 border-l border-zinc-800/50">
           {(isActive || isQueued || isError || isCancelled) && (
              <Button 
                 variant="ghost" 
                 size="icon" 
                 onClick={() => onCancel(jobId)} 
                 className={twMerge(
-                    "h-8 w-8 text-zinc-600 transition-all duration-300",
+                    "h-8 w-8 transition-all duration-200",
                     isError || isCancelled
-                        ? "opacity-100 text-zinc-500 hover:bg-zinc-800 hover:text-red-400" // Trash icon style
-                        : "opacity-0 group-hover:opacity-100 hover:bg-theme-red hover:text-white hover:scale-110 hover:shadow-glow-red" // Cancel icon style
+                        ? "text-zinc-500 hover:bg-red-500/10 hover:text-red-400"
+                        : "text-zinc-400 hover:bg-zinc-800 hover:text-white"
                 )}
-                title={isError || isCancelled ? "Remove from List" : "Cancel Download"}
+                title={isError || isCancelled ? "Dismiss" : "Cancel"}
              >
-                {/* Dynamically switch icon based on state */}
                 {(isError || isCancelled) ? <Trash2 className="h-4 w-4" /> : <X className="h-4 w-4" />}
               </Button>
           )}
@@ -273,7 +259,7 @@ export function DownloadItem({ download, onCancel }: DownloadItemProps) {
                 variant="ghost"
                 size="icon"
                 onClick={handleOpenFolder}
-                className="h-8 w-8 text-zinc-600 hover:text-theme-cyan hover:bg-theme-cyan/10 transition-all duration-300"
+                className="h-8 w-8 text-emerald-500 hover:bg-emerald-500/10"
                 title="Open File Location"
               >
                 <FolderSearch className="h-4 w-4" />

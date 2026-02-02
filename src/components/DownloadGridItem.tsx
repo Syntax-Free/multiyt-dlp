@@ -1,5 +1,5 @@
 import { Download } from '@/types';
-import { X, CheckCircle2, AlertCircle, Hourglass, MonitorPlay, Headphones, Tags, FileOutput, Image as ImageIcon, Activity, FolderSearch, Trash2 } from 'lucide-react';
+import { X, CheckCircle2, AlertTriangle, Hourglass, MonitorPlay, Headphones, Tags, FileOutput, Image as ImageIcon, Activity, FolderSearch, Trash2 } from 'lucide-react';
 import { twMerge } from 'tailwind-merge';
 import { showInFolder } from '@/api/invoke';
 import { parseError } from '@/utils/errorRegistry';
@@ -22,52 +22,51 @@ export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) 
   const isCompleted = status === 'completed';
   const isCancelled = status === 'cancelled';
 
-  const isProcessingPhase = phase?.includes('Merging') 
+  const isProcessingPhase = isActive && (
+       phase?.includes('Merging') 
     || phase?.includes('Extracting') 
     || phase?.includes('Fixing')
-    || phase?.includes('Starting')
-    || phase?.includes('Initializing')
     || phase?.includes('Moving')
     || phase?.includes('Finalizing')
-    || phase?.includes('Processing');
+    || phase?.includes('Processing')
+  );
 
-  const isMetaPhase = phase?.includes('Metadata') || phase?.includes('Thumbnail');
+  const isMetaPhase = isActive && (
+       phase?.includes('Metadata') 
+    || phase?.includes('Thumbnail')
+  );
 
-  // Friendly error summary for tooltip
+  // Parse error for tooltip
   let friendlyError = error;
   if (isError) {
       const parsed = parseError(stderr, error);
       friendlyError = `${parsed.title}: ${parsed.description}`;
   }
 
-  // Determine base color based on type/status
-  const getThemeColorClass = () => {
-      if (isError) return "text-theme-red border-theme-red shadow-glow-red";
-      if (isCompleted) return "text-emerald-500 border-emerald-500";
-      if (isProcessingPhase || isMetaPhase) return "text-yellow-500 border-yellow-500";
-      if (isAudio) return "text-theme-red border-theme-red shadow-glow-red";
-      return "text-theme-cyan border-theme-cyan shadow-glow-cyan"; 
-  };
-  
-  const getBgFillColor = () => {
-      if (isError) return "bg-theme-red";
-      if (isCompleted) return "bg-emerald-500";
-      if (isProcessingPhase || isMetaPhase) return "bg-yellow-500";
-      if (isAudio) return "bg-theme-red";
-      return "bg-theme-cyan";
+  // --- Dynamic Styles ---
+
+  const getContainerStyles = () => {
+      if (isError) return "border-red-500/50 bg-red-950/20 shadow-[0_0_15px_-5px_rgba(239,68,68,0.3)]";
+      if (isCompleted) return "border-emerald-500/50 bg-emerald-950/20 shadow-[0_0_15px_-5px_rgba(16,185,129,0.3)]";
+      if (isProcessingPhase || isMetaPhase) return "border-amber-500/50 bg-amber-950/20 shadow-[0_0_15px_-5px_rgba(245,158,11,0.3)]";
+      if (isActive) return "border-theme-cyan/50 bg-zinc-900 shadow-[0_0_15px_-5px_rgba(6,182,212,0.3)]";
+      if (isCancelled) return "border-zinc-800 bg-zinc-950 opacity-60";
+      return "border-zinc-800 bg-zinc-900"; // Queued
   };
 
   const IconComponent = () => {
-    if (isError) return <AlertCircle className="h-6 w-6" />;
-    if (isCompleted) return <CheckCircle2 className="h-6 w-6" />;
-    if (isCancelled) return <X className="h-6 w-6" />;
-    if (isQueued) return <Hourglass className="h-6 w-6 animate-pulse" />;
+    if (isError) return <AlertTriangle className="h-8 w-8 text-red-500 drop-shadow-lg" />;
+    if (isCompleted) return <CheckCircle2 className="h-8 w-8 text-emerald-500 drop-shadow-lg" />;
+    if (isCancelled) return <X className="h-8 w-8 text-zinc-600" />;
+    if (isQueued) return <Hourglass className="h-8 w-8 text-zinc-500 animate-pulse" />;
     
-    if (isMetaPhase) return <Tags className="h-6 w-6 animate-pulse" />;
-    if (isProcessingPhase) return <FileOutput className="h-6 w-6 animate-pulse" />;
-    if (embedThumbnail && phase?.includes('Thumbnail')) return <ImageIcon className="h-6 w-6 animate-pulse" />;
+    if (isMetaPhase) return <Tags className="h-8 w-8 text-amber-400 animate-pulse" />;
+    if (isProcessingPhase) return <FileOutput className="h-8 w-8 text-amber-400 animate-pulse" />;
+    if (embedThumbnail && phase?.includes('Thumbnail')) return <ImageIcon className="h-8 w-8 text-amber-400 animate-pulse" />;
 
-    return isAudio ? <Headphones className="h-6 w-6" /> : <MonitorPlay className="h-6 w-6" />;
+    return isAudio 
+        ? <Headphones className="h-8 w-8 text-theme-red" /> 
+        : <MonitorPlay className="h-8 w-8 text-theme-cyan" />;
   };
 
   let badgeText = isAudio ? 'AUDIO' : 'VIDEO';
@@ -81,101 +80,128 @@ export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) 
   return (
     <div 
         className={twMerge(
-            "group relative h-28 w-full rounded-xl border bg-zinc-900/40 overflow-hidden transition-all duration-300 select-none flex items-center justify-center",
-            isActive ? getThemeColorClass() : "border-zinc-800 text-zinc-600",
-            (isQueued || isCancelled) && "opacity-60 bg-zinc-900/20 border-zinc-800/60"
+            "group relative aspect-square w-full min-h-[140px] rounded-xl border-2 overflow-hidden transition-all duration-300 select-none flex flex-col",
+            getContainerStyles()
         )}
     >
-        {/* Progress Fill Layer */}
-        {isActive && (
-            <div 
-                className={twMerge("absolute bottom-0 left-0 right-0 transition-all duration-300 opacity-20", getBgFillColor())}
-                style={{ height: `${progress}%` }}
-            />
-        )}
-        
-        {(isQueued || isProcessingPhase) && (
-            <div className="absolute inset-0 w-full h-full bg-[linear-gradient(45deg,transparent_25%,rgba(255,255,255,0.03)_25%,rgba(255,255,255,0.03)_50%,transparent_50%,transparent_75%,rgba(255,255,255,0.03)_75%,rgba(255,255,255,0.03)_100%)] bg-[length:20px_20px] animate-[progress-stripes_2s_linear_infinite] pointer-events-none" />
+        {/* ERROR STATE: Striped Background Pattern */}
+        {isError && (
+            <div className="absolute inset-0 opacity-10 bg-[repeating-linear-gradient(45deg,transparent,transparent_10px,#ef4444_10px,#ef4444_20px)]" />
         )}
 
-        {/* Content Layer */}
-        <div className="z-10 relative flex flex-col items-center justify-center group-hover:opacity-0 transition-opacity duration-200">
+        {/* PROGRESS FILL (Active Only) */}
+        {isActive && !isProcessingPhase && !isMetaPhase && (
+            <div 
+                className="absolute bottom-0 left-0 right-0 bg-theme-cyan/10 transition-all duration-300 ease-out z-0"
+                style={{ height: `${progress}%` }}
+            >
+                {/* Glow line at the top of progress */}
+                <div className="w-full h-[1px] bg-theme-cyan/50 shadow-[0_0_10px_rgba(6,182,212,0.8)]" />
+            </div>
+        )}
+
+        {/* PROCESSING STRIPES */}
+        {(isQueued || isProcessingPhase || isMetaPhase) && (
+            <div className="absolute inset-0 w-full h-full bg-[linear-gradient(45deg,transparent_25%,rgba(255,255,255,0.03)_25%,rgba(255,255,255,0.03)_50%,transparent_50%,transparent_75%,rgba(255,255,255,0.03)_75%,rgba(255,255,255,0.03)_100%)] bg-[length:40px_40px] animate-[progress-stripes_1s_linear_infinite] pointer-events-none opacity-50" />
+        )}
+
+        {/* --- MAIN CONTENT CENTER --- */}
+        <div className="relative z-10 flex-1 flex flex-col items-center justify-center p-4 group-hover:scale-105 transition-transform duration-300">
             {isActive && !isProcessingPhase && !isMetaPhase ? (
-                <div className="flex flex-col items-center animate-fade-in">
-                    <span className="text-xl font-black tracking-tighter tabular-nums">
-                        {progress.toFixed(0)}<span className="text-xs font-normal opacity-70">%</span>
+                <div className="flex flex-col items-center animate-fade-in space-y-1">
+                    <span className="text-3xl font-black tracking-tighter text-zinc-100 tabular-nums drop-shadow-md">
+                        {progress.toFixed(0)}<span className="text-sm font-medium text-zinc-500 align-top ml-0.5">%</span>
                     </span>
-                    <Activity className="h-3 w-3 mt-1 animate-pulse opacity-50" />
+                    <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-black/20 backdrop-blur-sm border border-white/5">
+                        <Activity className="h-3 w-3 text-theme-cyan animate-pulse" />
+                        <span className="text-[10px] font-mono text-theme-cyan/80">DOWNLOADING</span>
+                    </div>
                 </div>
             ) : (
-                <div className={twMerge("transition-transform duration-300", isActive && "animate-pulse")}>
+                <div className={twMerge("transition-transform duration-300 p-3 rounded-full bg-black/20 backdrop-blur-sm border border-white/5", isActive && "animate-pulse")}>
                     <IconComponent />
+                </div>
+            )}
+            
+            {/* Status Text (Non-Active states) */}
+            {!isActive && (
+                <div className={twMerge(
+                    "mt-3 text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded border backdrop-blur-sm",
+                    isError ? "text-red-400 border-red-500/30 bg-red-950/40" :
+                    isCompleted ? "text-emerald-400 border-emerald-500/30 bg-emerald-950/40" :
+                    isCancelled ? "text-zinc-500 border-zinc-700 bg-zinc-900" :
+                    "text-zinc-400 border-zinc-700 bg-zinc-800"
+                )}>
+                    {isError ? 'FAILED' : isCompleted ? 'DONE' : isCancelled ? 'CANCELLED' : 'QUEUED'}
                 </div>
             )}
         </div>
 
-        {/* HOVER OVERLAY */}
-        <div className="absolute inset-0 bg-zinc-950/90 backdrop-blur-sm opacity-0 group-hover:opacity-100 transition-all duration-200 z-20 flex flex-col p-3 text-left">
-            
-            {/* Top Right: Actions */}
-            <div className="absolute top-2 right-2 flex gap-2 z-30">
-                {isCompleted && outputPath && (
-                    <button
-                        onClick={(e) => { e.stopPropagation(); showInFolder(outputPath); }}
-                        className="p-1.5 rounded-full bg-zinc-800 hover:bg-theme-cyan hover:text-black text-zinc-400 transition-colors shadow-lg"
-                        title="Open File Location"
-                    >
-                        <FolderSearch className="h-3 w-3" />
-                    </button>
-                )}
-
-                {/* Cancel or Remove Button */}
-                {(isActive || isQueued || isError || isCancelled) && (
-                    <button 
-                        onClick={(e) => { e.stopPropagation(); onCancel(jobId); }}
-                        className={twMerge(
-                            "p-1.5 rounded-full bg-zinc-800 transition-colors shadow-lg",
-                            isError || isCancelled 
-                                ? "hover:bg-zinc-700 hover:text-red-400 text-zinc-400" 
-                                : "hover:bg-theme-red hover:text-white text-zinc-400"
-                        )}
-                        title={isError || isCancelled ? "Remove from Grid" : "Cancel Download"}
-                    >
-                        {(isError || isCancelled) ? <Trash2 className="h-3 w-3" /> : <X className="h-3 w-3" />}
-                    </button>
-                )}
-            </div>
-
-            {/* Title */}
-            <div className="text-[10px] font-bold text-zinc-100 leading-tight line-clamp-2 pr-12 mb-auto break-all">
+        {/* --- TITLE FOOTER --- */}
+        <div className="relative z-10 w-full p-2 bg-black/40 backdrop-blur-sm border-t border-white/5">
+            <div className="text-[10px] font-medium text-zinc-300 truncate text-center px-1" title={displayTitle}>
                 {displayTitle}
             </div>
+        </div>
 
-            {/* Error Message specific display */}
-            {isError ? (
-                 <div className="text-[9px] text-red-400 font-mono leading-tight mt-1 line-clamp-3">
+        {/* --- HOVER OVERLAY ACTIONS --- */}
+        <div className="absolute inset-0 z-20 bg-zinc-950/90 backdrop-blur-[2px] opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex flex-col p-3">
+            {/* Top Bar Badges */}
+            <div className="flex gap-1 mb-auto">
+                <span className={twMerge(
+                    "text-[9px] font-bold px-1.5 py-0.5 rounded border uppercase",
+                    isAudio ? "bg-red-500/10 text-red-400 border-red-500/20" : "bg-cyan-500/10 text-cyan-400 border-cyan-500/20"
+                )}>
+                    {badgeText}
+                </span>
+                {(isProcessingPhase || isMetaPhase) && (
+                     <span className="text-[9px] font-bold px-1.5 py-0.5 rounded border uppercase bg-amber-500/10 text-amber-400 border-amber-500/20 animate-pulse">
+                        PROCESSING
+                    </span>
+                )}
+            </div>
+
+            {/* Error Details Preview */}
+            {isError && (
+                <div className="mb-auto text-[10px] text-red-300 leading-tight font-mono break-words line-clamp-3 bg-red-950/30 p-1.5 rounded border border-red-900/50">
                     {friendlyError}
-                 </div>
-            ) : (
-                <>
-                    {/* Badges */}
-                    <div className="flex flex-wrap gap-1 mt-2 mb-1">
-                        <span className={twMerge(
-                            "px-1 py-0.5 text-[9px] font-bold rounded uppercase",
-                            isCancelled ? "bg-zinc-800 text-zinc-600" : (isAudio ? "bg-theme-red/20 text-theme-red" : "bg-theme-cyan/20 text-theme-cyan")
-                        )}>
-                            {isCancelled ? 'CANCELLED' : badgeText}
-                        </span>
-                    </div>
-                    
-                    <div className={twMerge(
-                        "text-[9px] font-mono truncate",
-                        isCancelled ? "text-zinc-600 line-through" : (isProcessingPhase || isMetaPhase) ? "text-yellow-500" : "text-zinc-500"
-                    )}>
-                        {phase || status}
-                    </div>
-                </>
+                </div>
             )}
+
+            {/* Action Buttons Container */}
+            <div className="mt-auto grid grid-cols-1 gap-2">
+                {isCompleted && outputPath ? (
+                    <button
+                        onClick={(e) => { e.stopPropagation(); showInFolder(outputPath); }}
+                        className="flex items-center justify-center gap-2 w-full py-1.5 rounded bg-zinc-800 hover:bg-emerald-600 hover:text-white text-zinc-300 text-[10px] font-bold transition-colors border border-zinc-700 hover:border-emerald-500"
+                    >
+                        <FolderSearch className="h-3.5 w-3.5" />
+                        OPEN FOLDER
+                    </button>
+                ) : null}
+
+                {(isActive || isQueued || isError || isCancelled) && (
+                     <button
+                        onClick={(e) => { e.stopPropagation(); onCancel(jobId); }}
+                        className={twMerge(
+                            "flex items-center justify-center gap-2 w-full py-1.5 rounded text-[10px] font-bold transition-colors border",
+                            isError 
+                                ? "bg-zinc-800 hover:bg-red-600 text-zinc-300 hover:text-white border-zinc-700 hover:border-red-500"
+                                : "bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-zinc-200 border-zinc-700"
+                        )}
+                    >
+                        {isError ? (
+                            <>
+                                <Trash2 className="h-3.5 w-3.5" /> DISMISS
+                            </>
+                        ) : (
+                            <>
+                                <X className="h-3.5 w-3.5" /> CANCEL
+                            </>
+                        )}
+                    </button>
+                )}
+            </div>
         </div>
     </div>
   );
