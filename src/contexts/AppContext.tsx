@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { TemplateBlock, PreferenceConfig } from '@/types';
 import { getAppConfig, saveGeneralConfig, savePreferenceConfig, checkDependencies, getLatestAppVersion } from '@/api/invoke';
 import { getVersion } from '@tauri-apps/api/app';
@@ -102,6 +102,11 @@ export const AppProvider = ({ children }: { children: React.ReactNode }) => {
   const [latestVersion, setLatestVersion] = useState<string | null>(null);
   const [currentVersion, setCurrentVersion] = useState<string | null>(null);
 
+  // DEFECT FIX #2: Debouncing for config save
+  // We use a ref to store the latest config state, and a useEffect to trigger save with delay.
+  // This prevents UI lag and file locking issues on the backend.
+  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // --- Settings Navigation Logic ---
   const openSettings = useCallback((tab?: string, sectionId?: string) => {
     if (tab) setSettingsActiveTab(tab);
@@ -197,70 +202,79 @@ export const AppProvider = ({ children }: { children: React.ReactNode }) => {
     }).join('');
   }, [filenameTemplateBlocks]);
 
-  const saveGeneral = (
-      path: string | null, 
-      blocks: TemplateBlock[], 
-      concurrent: number, 
-      total: number, 
-      log: string,
-      updates: boolean,
-      cPath: string | null,
-      cBrowser: string | null
-    ) => {
-      saveGeneralConfig({
-        download_path: path,
-        filename_template: getTemplateString(blocks),
-        template_blocks_json: JSON.stringify(blocks),
-        max_concurrent_downloads: concurrent,
-        max_total_instances: total,
-        log_level: log,
-        check_for_updates: updates,
-        cookies_path: cPath,
-        cookies_from_browser: cBrowser
-      }).catch(e => console.error("Failed to save general config:", e));
-  };
+  // Debounced Save Trigger
+  const triggerDebouncedSave = useCallback(() => {
+      if (saveTimeoutRef.current) {
+          clearTimeout(saveTimeoutRef.current);
+      }
+
+      saveTimeoutRef.current = setTimeout(() => {
+          saveGeneralConfig({
+            download_path: defaultDownloadPath,
+            filename_template: getTemplateString(filenameTemplateBlocks),
+            template_blocks_json: JSON.stringify(filenameTemplateBlocks),
+            max_concurrent_downloads: maxConcurrentDownloads,
+            max_total_instances: maxTotalInstances,
+            log_level: logLevel,
+            check_for_updates: checkForUpdates,
+            cookies_path: cookiesPath,
+            cookies_from_browser: cookiesBrowser
+          }).catch(e => console.error("Failed to save general config:", e));
+      }, 500); // 500ms debounce
+  }, [
+      defaultDownloadPath, 
+      filenameTemplateBlocks, 
+      maxConcurrentDownloads, 
+      maxTotalInstances, 
+      logLevel, 
+      checkForUpdates, 
+      cookiesPath, 
+      cookiesBrowser,
+      getTemplateString
+  ]);
+
+  // Whenever dependencies change, schedule a save
+  useEffect(() => {
+      if (isConfigLoaded) {
+          triggerDebouncedSave();
+      }
+  }, [triggerDebouncedSave, isConfigLoaded]);
 
   const setDefaultDownloadPath = (path: string) => {
     _setDownloadPath(path);
-    saveGeneral(path, filenameTemplateBlocks, maxConcurrentDownloads, maxTotalInstances, logLevel, checkForUpdates, cookiesPath, cookiesBrowser);
   };
 
   const setCookiesPath = (path: string | null) => {
       _setCookiesPath(path);
       if (path) _setCookiesBrowser(null); 
-      saveGeneral(defaultDownloadPath, filenameTemplateBlocks, maxConcurrentDownloads, maxTotalInstances, logLevel, checkForUpdates, path, path ? null : cookiesBrowser);
   };
 
   const setCookiesBrowser = (browser: string | null) => {
       _setCookiesBrowser(browser);
       if (browser && browser !== 'none') _setCookiesPath(null);
-      saveGeneral(defaultDownloadPath, filenameTemplateBlocks, maxConcurrentDownloads, maxTotalInstances, logLevel, checkForUpdates, browser && browser !== 'none' ? null : cookiesPath, browser);
   };
 
   const setFilenameTemplateBlocks = (blocks: TemplateBlock[]) => {
     _setTemplateBlocks(blocks);
-    saveGeneral(defaultDownloadPath, blocks, maxConcurrentDownloads, maxTotalInstances, logLevel, checkForUpdates, cookiesPath, cookiesBrowser);
   };
 
   const setConcurrency = (concurrent: number, total: number) => {
     _setMaxConcurrentDownloads(concurrent);
     _setMaxTotalInstances(total);
-    saveGeneral(defaultDownloadPath, filenameTemplateBlocks, concurrent, total, logLevel, checkForUpdates, cookiesPath, cookiesBrowser);
   };
 
   const setLogLevel = (level: string) => {
       _setLogLevel(level);
-      saveGeneral(defaultDownloadPath, filenameTemplateBlocks, maxConcurrentDownloads, maxTotalInstances, level, checkForUpdates, cookiesPath, cookiesBrowser);
   };
 
   const setCheckForUpdates = (enabled: boolean) => {
       _setCheckForUpdates(enabled);
-      saveGeneral(defaultDownloadPath, filenameTemplateBlocks, maxConcurrentDownloads, maxTotalInstances, logLevel, enabled, cookiesPath, cookiesBrowser);
   };
 
   const updatePreferences = (updates: Partial<PreferenceConfig>) => {
       const newPrefs = { ...preferences, ...updates };
       _setPreferences(newPrefs);
+      // Preferences are usually user-interaction driven and less frequent than sliders, can save immediately
       savePreferenceConfig(newPrefs).catch(e => console.error("Failed to save preferences:", e));
   };
 

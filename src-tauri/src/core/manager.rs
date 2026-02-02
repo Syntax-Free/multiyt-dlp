@@ -179,7 +179,17 @@ impl JobManagerActor {
         for pid in pids {
             self.kill_process(pid);
         }
-        self.clean_temp_directory();
+        self.clean_temp_directory().await;
+    }
+
+    /// Determines if an error is transient (worth retrying later) or fatal (should be cleared).
+    fn is_fatal_error(err_msg: &str) -> bool {
+        let msg = err_msg.to_lowercase();
+        // Video missing, Private without auth possibility, or corrupt stream
+        msg.contains("video unavailable") || 
+        msg.contains("this video has been removed") ||
+        (msg.contains("fragment") && msg.contains("not received")) ||
+        msg.contains("http error 404")
     }
 
     async fn handle_message(&mut self, msg: JobMessage) {
@@ -292,9 +302,18 @@ impl JobManagerActor {
                     job.exit_code = payload.exit_code;
                 }
                 
-                // IMPORTANT: Remove failed jobs from persistence so they don't auto-retry on reboot.
-                // They remain in memory (self.jobs) for the UI to display the error.
-                self.persistence_registry.remove(&id);
+                // DEFECT FIX #1: Selective Persistence
+                // If error is fatal/permanent, remove it.
+                // If it's transient (auth, network), update persistence with error details so user can retry later.
+                if Self::is_fatal_error(&payload.error) || Self::is_fatal_error(&payload.stderr) {
+                    self.persistence_registry.remove(&id);
+                } else {
+                    if let Some(reg_entry) = self.persistence_registry.get_mut(&id) {
+                        reg_entry.status = Some("error".to_string());
+                        reg_entry.error = Some(payload.error.clone());
+                        reg_entry.stderr = Some(payload.stderr.clone());
+                    }
+                }
                 self.trigger_save();
 
                 let _ = self.app_handle.emit_all("download-error", payload);
@@ -310,7 +329,7 @@ impl JobManagerActor {
                 }
                 if self.active_process_instances == 0 {
                     self.trigger_finished_notification();
-                    self.clean_temp_directory();
+                    self.clean_temp_directory().await;
                 }
                 self.process_queue();
             },
@@ -345,10 +364,24 @@ impl JobManagerActor {
                                     j.embed_thumbnail = Some(job.embed_thumbnail);
                                     j.restrict_filenames = Some(job.restrict_filenames);
                                     j.live_from_start = Some(job.live_from_start);
+                                    
+                                    // Persistence Hydration
+                                    if let Some(st) = &job.status {
+                                        if st == "error" {
+                                            j.status = JobStatus::Error;
+                                            j.error = job.error.clone();
+                                            j.stderr = job.stderr.clone();
+                                        }
+                                    }
 
-                                    self.jobs.insert(job.id, j);
+                                    self.jobs.insert(job.id, j.clone());
                                     self.persistence_registry.insert(job.id, job.clone());
-                                    self.queue.push_back(job.clone());
+                                    
+                                    // DEFECT FIX #1: Only queue if not already in error state
+                                    if j.status != JobStatus::Error {
+                                        self.queue.push_back(job.clone());
+                                    }
+                                    
                                     resumed.push(job);
                                 }
                             }
@@ -361,7 +394,7 @@ impl JobManagerActor {
             JobMessage::ClearPending => {
                 info!(target: "core::manager", "Clearing pending jobs");
                 let _ = self.persistence_tx.try_send(PersistenceMsg::Clear);
-                self.clean_temp_directory();
+                self.clean_temp_directory().await;
             },
             JobMessage::SyncState(tx) => {
                 let mut downloads: Vec<Download> = Vec::new();
@@ -489,7 +522,8 @@ impl JobManagerActor {
         self.completed_session_count = 0;
     }
 
-    fn clean_temp_directory(&self) {
+    // DEFECT FIX #7: Robust cleanup with retry for Windows locking
+    async fn clean_temp_directory(&self) {
         if !self.queue.is_empty() || !self.persistence_registry.is_empty() { return; }
 
         debug!(target: "core::manager", "Cleaning temp directory");
@@ -497,11 +531,31 @@ impl JobManagerActor {
         let temp_dir = home.join(".multiyt-dlp").join("temp_downloads");
         
         if temp_dir.exists() {
-            if let Ok(entries) = fs::read_dir(&temp_dir) {
-                for entry in entries.flatten() {
-                    if entry.path().is_dir() { let _ = fs::remove_dir_all(entry.path()); }
-                    else { let _ = fs::remove_file(entry.path()); }
+            let mut attempts = 0;
+            while attempts < 3 {
+                let mut success = true;
+                if let Ok(entries) = fs::read_dir(&temp_dir) {
+                    for entry in entries.flatten() {
+                         let path = entry.path();
+                         let res = if path.is_dir() {
+                             fs::remove_dir_all(&path)
+                         } else {
+                             fs::remove_file(&path)
+                         };
+                         
+                         if res.is_err() {
+                             success = false;
+                         }
+                    }
                 }
+                
+                if success {
+                    break;
+                }
+                
+                // Exponential backoff: 500ms, 1000ms, 2000ms
+                time::sleep(Duration::from_millis(500 * 2u64.pow(attempts))).await;
+                attempts += 1;
             }
         }
     }

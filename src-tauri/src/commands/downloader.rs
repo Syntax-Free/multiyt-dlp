@@ -186,6 +186,10 @@ pub async fn start_download(
             restrict_filenames: restrict_filenames.unwrap_or(false),
             filename_template: safe_template.clone(),
             live_from_start: live_from_start.unwrap_or(false),
+            // DEFECT FIX #1: Initialize persistence fields
+            status: None,
+            error: None,
+            stderr: None,
         };
 
         match manager.add_job(job_data).await {
@@ -196,8 +200,6 @@ pub async fn start_download(
             },
             Err(e) => {
                 // This handles "URL already in queue" errors
-                // We don't count these as "History Skips" but rather as "Active Conflicts"
-                // The frontend will handle this via errorDetails.
                 return Err(AppError::ValidationFailed(e));
             }
         }

@@ -147,6 +147,11 @@ pub struct QueuedJob {
     pub filename_template: String,
     pub restrict_filenames: bool,
     pub live_from_start: bool,
+    
+    // Persistence fields added for Defect #1
+    pub status: Option<String>,
+    pub error: Option<String>,
+    pub stderr: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

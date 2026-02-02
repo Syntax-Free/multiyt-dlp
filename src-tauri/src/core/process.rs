@@ -16,13 +16,7 @@ use crate::config::ConfigManager;
 use crate::models::{DownloadFormatPreset, QueuedJob, JobMessage, DownloadErrorPayload};
 use crate::commands::system::get_js_runtime_info;
 
-static MERGER_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r#"^\[Merger\]"#).unwrap());
-static EXTRACT_AUDIO_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\[ExtractAudio\]").unwrap());
-static METADATA_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\[Metadata\]").unwrap());
-static THUMBNAIL_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\[(?:Thumbnails|EmbedThumbnail)\]").unwrap());
 static FIXUP_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\[(?:Fixup\w+)\]").unwrap());
-static MOVE_FILES_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\[MoveFiles\]").unwrap());
-static FFMPEG_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\[ffmpeg\]").unwrap());
 static DOWNLOAD_START_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\[download\]\s+Destination:").unwrap());
 static FILESYSTEM_ERROR_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)(No such file|Invalid argument|cannot be written|WinError 123|Postprocessing: Error opening input files)").unwrap());
 
@@ -350,6 +344,9 @@ pub async fn run_download_process(
         let mut captured_stderr = Vec::new();
         
         while let Some((line, is_stderr)) = rx.recv().await {
+            // DEFECT FIX #6: ReDoS Protection
+            if line.len() > 2048 { continue; }
+            
             let trimmed = line.trim();
             if trimmed.is_empty() { continue; }
             
@@ -379,64 +376,71 @@ pub async fn run_download_process(
             let mut speed_str = "N/A".to_string();
             let mut eta_str = "N/A".to_string();
 
-            if let Ok(progress_json) = serde_json::from_str::<YtDlpJsonProgress>(trimmed) {
-                if let Some(d) = progress_json.downloaded_bytes {
-                     let t = progress_json.total_bytes.or(progress_json.total_bytes_estimate);
-                     if let Some(total) = t { state_percentage = (d as f32 / total as f32) * 100.0; }
-                }
-                if let Some(s) = progress_json.speed { speed_str = format_speed(s); }
-                if let Some(e) = progress_json.eta { eta_str = format_eta(e); }
-                if let Some(f) = progress_json.filename {
-                     if let Some(n) = Path::new(&f).file_name() {
-                         detected_filename_only = detected_filename_only.or(Some(n.to_string_lossy().to_string()));
-                     }
-                }
-                
-                if !state_phase.contains("Merging") && !state_phase.contains("Extracting") 
-                   && !state_phase.contains("Writing") && !state_phase.contains("Embedding") 
-                   && !state_phase.contains("Fixing") && !state_phase.contains("Moving") {
-                    state_phase = "Downloading".to_string();
-                }
-                emit_update = true;
-            } else {
-                if DOWNLOAD_START_REGEX.is_match(trimmed) {
-                    state_phase = "Starting Download".to_string();
+            if trimmed.starts_with('{') {
+                if let Ok(progress_json) = serde_json::from_str::<YtDlpJsonProgress>(trimmed) {
+                    if let Some(d) = progress_json.downloaded_bytes {
+                         let t = progress_json.total_bytes.or(progress_json.total_bytes_estimate);
+                         if let Some(total) = t { state_percentage = (d as f32 / total as f32) * 100.0; }
+                    }
+                    if let Some(s) = progress_json.speed { speed_str = format_speed(s); }
+                    if let Some(e) = progress_json.eta { eta_str = format_eta(e); }
+                    if let Some(f) = progress_json.filename {
+                         if let Some(n) = Path::new(&f).file_name() {
+                             detected_filename_only = detected_filename_only.or(Some(n.to_string_lossy().to_string()));
+                         }
+                    }
+                    
+                    if !state_phase.contains("Merging") && !state_phase.contains("Extracting") 
+                       && !state_phase.contains("Writing") && !state_phase.contains("Embedding") 
+                       && !state_phase.contains("Fixing") && !state_phase.contains("Moving") {
+                        state_phase = "Downloading".to_string();
+                    }
                     emit_update = true;
                 }
-                else if METADATA_REGEX.is_match(trimmed) {
+            } else {
+                // DEFECT FIX #6: Prefix check optimization
+                if trimmed.starts_with("[download]") {
+                     if DOWNLOAD_START_REGEX.is_match(trimmed) {
+                        state_phase = "Starting Download".to_string();
+                        emit_update = true;
+                    }
+                }
+                else if trimmed.starts_with("[Metadata]") {
                     state_phase = "Writing Metadata".to_string();
                     state_percentage = 99.0;
                     emit_update = true;
                 }
-                else if THUMBNAIL_REGEX.is_match(trimmed) {
+                else if trimmed.starts_with("[Thumbnails]") || trimmed.starts_with("[EmbedThumbnail]") {
                     state_phase = "Embedding Thumbnail".to_string();
                     state_percentage = 99.0;
                     emit_update = true;
                 }
-                else if MERGER_REGEX.is_match(trimmed) {
+                else if trimmed.starts_with("[Merger]") {
                     state_phase = "Merging Formats".to_string();
                     state_percentage = 100.0;
                     eta_str = "Done".to_string();
                     emit_update = true;
                 }
-                else if EXTRACT_AUDIO_REGEX.is_match(trimmed) {
+                else if trimmed.starts_with("[ExtractAudio]") {
                     state_phase = "Extracting Audio".to_string();
                     state_percentage = 100.0;
                     eta_str = "Done".to_string();
                     emit_update = true;
                 }
-                else if FIXUP_REGEX.is_match(trimmed) {
-                    state_phase = "Fixing Container".to_string();
-                    state_percentage = 100.0;
-                    emit_update = true;
+                else if trimmed.starts_with("[Fixup") {
+                    if FIXUP_REGEX.is_match(trimmed) {
+                        state_phase = "Fixing Container".to_string();
+                        state_percentage = 100.0;
+                        emit_update = true;
+                    }
                 }
-                else if MOVE_FILES_REGEX.is_match(trimmed) {
+                else if trimmed.starts_with("[MoveFiles]") {
                     state_phase = "Finalizing".to_string();
                     state_percentage = 100.0;
                     emit_update = true;
                 }
-                else if FFMPEG_REGEX.is_match(trimmed) {
-                    if !state_phase.contains("Merging") && !state_phase.contains("Extracting") {
+                else if trimmed.starts_with("[ffmpeg]") {
+                     if !state_phase.contains("Merging") && !state_phase.contains("Extracting") {
                          state_phase = "Processing (FFmpeg)".to_string();
                          emit_update = true;
                     }

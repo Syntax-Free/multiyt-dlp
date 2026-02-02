@@ -136,7 +136,7 @@ export interface Download {
 export interface QueuedJob {
   id: string; 
   url: string;
-  download_path?: string;
+  download_path?: string | null;
   format_preset: DownloadFormatPreset;
   video_resolution: string;
   embed_metadata: boolean;
@@ -144,6 +144,11 @@ export interface QueuedJob {
   filename_template: string;
   restrict_filenames: boolean;
   live_from_start: boolean;
+  
+  // Persistence fields added for Defect #1
+  status?: string;
+  error?: string;
+  stderr?: string;
 }
 
 export type TemplateBlockType = 'variable' | 'separator' | 'text';

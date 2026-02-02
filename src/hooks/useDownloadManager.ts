@@ -42,7 +42,6 @@ export function useDownloadManager() {
 
   useEffect(() => {
     // 1. Recover state on mount (UI Refresh resilience)
-    // Defect Fix #5: Smart Sync Merge
     if (!hasSynced.current) {
         hasSynced.current = true;
         syncDownloadState().then((recovered) => {
@@ -156,28 +155,8 @@ export function useDownloadManager() {
       setDownloads((prev) => {
         const newMap = new Map(prev);
         
-        // Count active downloads to calculate optimistic concurrency slots
-        const currentActiveCount = Array.from(prev.values()).filter(d => 
-            d.status === 'downloading'
-        ).length;
-        
-        let availableSlots = maxConcurrentDownloads - currentActiveCount;
-
         response.job_ids.forEach(jobId => {
             const existing = newMap.get(jobId);
-
-            // If the job is already tracked and active (via event listener), we treat it as occupying a slot.
-            // If it's new, we determine if we have slots available to start it immediately.
-            const isAlreadyActive = existing && existing.status === 'downloading';
-            
-            let initialStatus: 'pending' | 'downloading' = 'pending';
-            let initialPhase: string | undefined = undefined;
-
-            if (!isAlreadyActive && availableSlots > 0) {
-                initialStatus = 'downloading';
-                initialPhase = 'Initializing Process...';
-                availableSlots--;
-            }
 
             if (existing) {
                 // The event listener beat us to creating the entry.
@@ -195,15 +174,17 @@ export function useDownloadManager() {
                     embedThumbnail,
                     restrictFilenames,
                     liveFromStart,
-                    // Important: We do NOT overwrite status, progress, or phase here.
                 });
             } else {
                 // Standard initialization path (we beat the event listener)
+                // DEFECT FIX #5: Optimistic UI Removal
+                // We set status to 'pending' initially. The backend events will flip it to 'downloading'
+                // when it actually starts. This prevents "Split-Brain" states.
                 newMap.set(jobId, {
                     jobId,
                     url,
-                    status: initialStatus,
-                    phase: initialPhase,
+                    status: 'pending',
+                    phase: 'Queued',
                     progress: 0,
                     preset: formatPreset,
                     videoResolution,
@@ -230,10 +211,23 @@ export function useDownloadManager() {
       setDownloads((prev) => {
           const newMap = new Map(prev);
           jobs.forEach(job => {
+              // Map persistence state to UI
+              let initialStatus: 'pending' | 'error' = 'pending';
+              let initialError: string | undefined;
+              let initialStderr: string | undefined;
+
+              if (job.status === 'error') {
+                  initialStatus = 'error';
+                  initialError = job.error || "Unknown Error";
+                  initialStderr = job.stderr;
+              }
+
               newMap.set(job.id, {
                   jobId: job.id,
                   url: job.url,
-                  status: 'pending',
+                  status: initialStatus,
+                  error: initialError,
+                  stderr: initialStderr,
                   progress: 0,
                   preset: job.format_preset,
                   videoResolution: job.video_resolution,
