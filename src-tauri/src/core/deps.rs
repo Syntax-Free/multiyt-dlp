@@ -6,6 +6,7 @@ use std::process::Command;
 use async_trait::async_trait;
 use crate::core::transport::download_file_robust;
 use regex::Regex;
+use tokio::time::{timeout, Duration};
 
 #[cfg(target_os = "windows")]
 const YT_DLP_URL: &str = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe";
@@ -34,7 +35,6 @@ const BUN_URL: &str = "https://github.com/oven-sh/bun/releases/latest/download/b
 const BUN_URL: &str = "https://github.com/oven-sh/bun/releases/latest/download/bun-darwin-aarch64.zip";
 #[cfg(target_os = "linux")]
 const BUN_URL: &str = "https://github.com/oven-sh/bun/releases/latest/download/bun-linux-x64.zip";
-
 
 #[derive(Clone, Serialize)]
 pub struct InstallProgressPayload {
@@ -84,7 +84,7 @@ pub fn compare_date(current: &str, required: &str) -> bool {
 pub async fn get_latest_github_tag(repo: &str) -> Result<String, String> {
     let client = reqwest::Client::builder()
         .user_agent("Multiyt-dlp/2.1")
-        .connect_timeout(std::time::Duration::from_secs(5))
+        .connect_timeout(Duration::from_secs(3))
         .build()
         .map_err(|e| e.to_string())?;
 
@@ -159,7 +159,8 @@ impl DependencyProvider for YtDlpProvider {
     async fn check_update_available(&self, bin_dir: &PathBuf) -> Result<bool, String> {
         let local_path = bin_dir.join(self.get_binaries()[0]);
         if !local_path.exists() { return Ok(true); }
-        let remote_tag = get_latest_github_tag("yt-dlp/yt-dlp").await?;
+        let remote_tag = timeout(Duration::from_secs(2), get_latest_github_tag("yt-dlp/yt-dlp")).await
+            .map_err(|_| "Update check timed out".to_string())??;
         Ok(get_local_version(&local_path, "--version").map_or(true, |v| v.trim() != remote_tag.trim()))
     }
 }
@@ -167,7 +168,7 @@ impl DependencyProvider for YtDlpProvider {
 pub struct FfmpegProvider;
 #[async_trait]
 impl DependencyProvider for FfmpegProvider {
-    fn get_name(&self) -> String { "ffmpeg".to_string() }
+    fn get_name(&self) -> String { "FFmpeg".to_string() }
     fn get_binaries(&self) -> Vec<&str> { if cfg!(windows) { vec!["ffmpeg.exe"] } else { vec!["ffmpeg"] } }
     async fn install(&self, app_handle: AppHandle, target_dir: PathBuf) -> Result<(), String> {
         let archive_path = std::env::temp_dir().join("ffmpeg_tmp");
@@ -183,13 +184,13 @@ impl DependencyProvider for FfmpegProvider {
         let _ = fs::remove_file(archive_path);
         Ok(())
     }
-    async fn check_update_available(&self, _bin_dir: &PathBuf) -> Result<bool, String> { Ok(true) }
+    async fn check_update_available(&self, _bin_dir: &PathBuf) -> Result<bool, String> { Ok(false) }
 }
 
 pub struct DenoProvider;
 #[async_trait]
 impl DependencyProvider for DenoProvider {
-    fn get_name(&self) -> String { "deno".to_string() }
+    fn get_name(&self) -> String { "Deno".to_string() }
     fn get_binaries(&self) -> Vec<&str> { if cfg!(windows) { vec!["deno.exe"] } else { vec!["deno"] } }
     async fn install(&self, app_handle: AppHandle, target_dir: PathBuf) -> Result<(), String> {
         let archive_path = std::env::temp_dir().join("deno.zip");
@@ -208,7 +209,8 @@ impl DependencyProvider for DenoProvider {
     async fn check_update_available(&self, bin_dir: &PathBuf) -> Result<bool, String> {
         let local_path = bin_dir.join(self.get_binaries()[0]);
         if !local_path.exists() { return Ok(true); }
-        let remote_tag = get_latest_github_tag("denoland/deno").await?;
+        let remote_tag = timeout(Duration::from_secs(2), get_latest_github_tag("denoland/deno")).await
+            .map_err(|_| "Update check timed out".to_string())??;
         let clean_remote = remote_tag.replace("v", "");
         Ok(get_local_version(&local_path, "--version").map_or(true, |v| !v.contains(&clean_remote)))
     }
@@ -217,7 +219,7 @@ impl DependencyProvider for DenoProvider {
 pub struct BunProvider;
 #[async_trait]
 impl DependencyProvider for BunProvider {
-    fn get_name(&self) -> String { "bun".to_string() }
+    fn get_name(&self) -> String { "Bun".to_string() }
     fn get_binaries(&self) -> Vec<&str> { if cfg!(windows) { vec!["bun.exe"] } else { vec!["bun"] } }
     async fn install(&self, app_handle: AppHandle, target_dir: PathBuf) -> Result<(), String> {
         let archive_path = std::env::temp_dir().join("bun.zip");
@@ -236,8 +238,9 @@ impl DependencyProvider for BunProvider {
     async fn check_update_available(&self, bin_dir: &PathBuf) -> Result<bool, String> {
         let local_path = bin_dir.join(self.get_binaries()[0]);
         if !local_path.exists() { return Ok(true); }
-        let remote_tag = get_latest_github_tag("oven-sh/bun").await?;
-        let clean_remote = remote_tag.replace("bun-v", "").replace("v", "");
+        let remote_tag = timeout(Duration::from_secs(2), get_latest_github_tag("oven-sh/bun")).await
+            .map_err(|_| "Update check timed out".to_string())??;
+        let clean_remote = remote_tag.replace("v", "");
         Ok(get_local_version(&local_path, "--version").map_or(true, |v| !v.contains(&clean_remote)))
     }
 }
@@ -246,7 +249,7 @@ impl DependencyProvider for BunProvider {
 
 pub async fn auto_update_yt_dlp(app_handle: AppHandle, bin_dir: PathBuf) -> Result<(), String> {
     let provider = YtDlpProvider;
-    if provider.check_update_available(&bin_dir).await.unwrap_or(true) {
+    if provider.check_update_available(&bin_dir).await.unwrap_or(false) {
         provider.install(app_handle, bin_dir).await?;
     }
     Ok(())
@@ -261,7 +264,7 @@ pub async fn install_missing_ffmpeg(app_handle: AppHandle, bin_dir: PathBuf) -> 
 }
 
 pub fn get_provider(name: &str) -> Option<Box<dyn DependencyProvider>> {
-    match name {
+    match name.to_lowercase().as_str() {
         "yt-dlp" => Some(Box::new(YtDlpProvider)),
         "ffmpeg" => Some(Box::new(FfmpegProvider)),
         "deno" => Some(Box::new(DenoProvider)),
@@ -276,6 +279,7 @@ pub async fn install_dep(name: String, app_handle: AppHandle) -> Result<(), Stri
     let bin_dir = app_dir.join("bin");
     if !bin_dir.exists() { fs::create_dir_all(&bin_dir).map_err(|e| e.to_string())?; }
     
+    // Construct the payload to satisfy the compiler and provide initial UI feedback
     let _ = app_handle.emit_all("install-progress", InstallProgressPayload {
         name: provider.get_name(),
         percentage: 0,

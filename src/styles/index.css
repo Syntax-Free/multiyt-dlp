@@ -3,20 +3,16 @@
 @tailwind utilities;
 
 :root {
-  /* Darker base for high contrast */
   --background: 240 10% 3.9%;
   --foreground: 0 0% 98%;
-  
-  /* Custom Neon Colors derived from Icon */
-  --neon-cyan: 176 100% 47%; /* #00f2ea */
-  --neon-red: 341 100% 50%;  /* #ff0050 */
+  --neon-cyan: 176 100% 47%;
+  --neon-red: 341 100% 50%;
 }
 
 body {
   @apply bg-[#050505] text-zinc-200 antialiased font-sans selection:bg-[hsl(var(--neon-cyan))] selection:text-black;
 }
 
-/* Custom Scrollbar */
 ::-webkit-scrollbar {
   width: 5px;
 }
@@ -29,7 +25,6 @@ body {
   @apply bg-zinc-800 rounded-full hover:bg-[hsl(var(--neon-cyan))] transition-colors duration-300;
 }
 
-/* Utilities for Glow effects */
 @layer utilities {
   .shadow-glow-cyan {
     box-shadow: 0 0 15px -3px hsla(var(--neon-cyan), 0.3);
@@ -39,16 +34,15 @@ body {
   }
 }
 
-/* --- Glitch Animation --- */
-
 .glitch-wrapper {
   position: relative;
   display: flex;
   justify-content: center;
   align-items: center;
+  /* Critical: prevent glitch from stealing clicks if it overlaps UI */
+  pointer-events: none; 
 }
 
-/* The visible logo */
 .glitch-logo {
   position: relative;
   width: 120px;
@@ -57,6 +51,7 @@ body {
   background-repeat: no-repeat;
   background-position: center;
   animation: glitch-loop 4s infinite linear alternate-reverse;
+  z-index: 5;
 }
 
 .glitch-logo::before,
@@ -67,7 +62,7 @@ body {
   left: 0;
   width: 100%;
   height: 100%;
-  background: inherit; /* Use parent background image */
+  background: inherit;
   opacity: 0.8;
 }
 

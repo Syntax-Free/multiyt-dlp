@@ -1,17 +1,31 @@
 import { useEffect, useState } from 'react';
 import { getName } from '@tauri-apps/api/app';
+import { listen } from '@tauri-apps/api/event';
 import { checkDependencies, installDependency, openExternalLink } from '@/api/invoke';
 import { DependencyInfo } from '@/types';
 import { Copy, Check, Terminal, AlertCircle, Cpu, Download, Loader2, ArrowUpCircle, RefreshCw } from 'lucide-react';
 import icon from '@/assets/icon.webp';
 import { Button } from '../ui/Button';
+import { Progress } from '../ui/Progress';
 import { useAppContext } from '@/contexts/AppContext';
 
-const DependencyRow = ({ info, onInstall, label }: { info: DependencyInfo, onInstall?: () => void, label?: string }) => {
+interface InstallProgress {
+    name: string;
+    percentage: number;
+    status: string;
+}
+
+const DependencyRow = ({ info, onInstall, installingState, label }: { 
+    info: DependencyInfo, 
+    onInstall?: () => void, 
+    installingState?: InstallProgress | null,
+    label?: string 
+}) => {
     const [copied, setCopied] = useState(false);
     
-    const isManaged = info.path && (info.path.includes('.multiyt-dlp') || info.path.includes('AppData'));
+    const isManaged = info.path && (info.path.includes('.multiyt-dlp') || info.path.includes('AppData') || info.path.includes('Library'));
     const isAvailable = info.available;
+    const isUpdatingThis = installingState && (installingState.name.toLowerCase().includes(info.name.toLowerCase()) || (label && installingState.name.toLowerCase().includes(label.toLowerCase())));
 
     const handleCopy = () => {
         if (info.path) {
@@ -22,14 +36,14 @@ const DependencyRow = ({ info, onInstall, label }: { info: DependencyInfo, onIns
     };
 
     return (
-        <div className="bg-zinc-900/50 border border-zinc-800 rounded-lg p-4 flex flex-col gap-3">
+        <div className="bg-zinc-900/50 border border-zinc-800 rounded-lg p-4 flex flex-col gap-3 transition-all">
             <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
                     <div className="p-2 rounded-md bg-zinc-800 text-zinc-400">
                         <Terminal className="h-4 w-4" />
                     </div>
                     <div>
-                        <div className="font-semibold text-zinc-200 text-sm capitalize">{label || info.name}</div>
+                        <div className="font-semibold text-zinc-200 text-sm">{label || info.name}</div>
                         {isAvailable ? (
                              <div className="text-[10px] text-emerald-500 font-mono flex items-center gap-1">
                                 <Check className="h-3 w-3" /> {info.version || 'Detected'}
@@ -43,18 +57,20 @@ const DependencyRow = ({ info, onInstall, label }: { info: DependencyInfo, onIns
                     </div>
                 </div>
                 
-                {onInstall && !info.is_latest && (
+                {onInstall && (
                     <Button 
                         size="sm" 
                         variant="outline" 
                         onClick={onInstall} 
                         className="h-7 text-xs border-zinc-700 bg-zinc-800 hover:text-white"
-                        disabled={!isManaged && isAvailable}
+                        disabled={(!isManaged && isAvailable) || !!installingState}
                         title={!isManaged && isAvailable ? "Managed by System" : "Update Dependency"}
                     >
-                        {!isManaged && isAvailable ? (
+                        {isUpdatingThis ? (
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (!isManaged && isAvailable) ? (
                              <span className="flex items-center text-zinc-500 cursor-not-allowed">
-                                 System Managed
+                                 System
                              </span>
                         ) : (
                             <>
@@ -66,7 +82,18 @@ const DependencyRow = ({ info, onInstall, label }: { info: DependencyInfo, onIns
                 )}
             </div>
 
-            {info.path && (
+            {/* Installation Progress Bar */}
+            {isUpdatingThis && (
+                <div className="space-y-1.5 animate-fade-in">
+                    <div className="flex justify-between text-[10px] font-mono">
+                        <span className="text-theme-cyan uppercase">{installingState.status}</span>
+                        <span className="text-zinc-400">{installingState.percentage}%</span>
+                    </div>
+                    <Progress value={installingState.percentage} className="h-1" />
+                </div>
+            )}
+
+            {info.path && !isUpdatingThis && (
                 <div className="relative group">
                     <input 
                         readOnly
@@ -90,7 +117,7 @@ export function AboutSettings() {
     const [appName, setAppName] = useState("Loading...");
     const [deps, setDeps] = useState<{ yt_dlp?: DependencyInfo, ffmpeg?: DependencyInfo, js_runtime?: DependencyInfo }>({});
     const [loading, setLoading] = useState(true);
-    const [installing, setInstalling] = useState<string | null>(null);
+    const [activeInstall, setActiveInstall] = useState<InstallProgress | null>(null);
     const [checkingUpdate, setCheckingUpdate] = useState(false);
 
     const { currentVersion, latestVersion, isUpdateAvailable, checkAppUpdate } = useAppContext();
@@ -110,17 +137,29 @@ export function AboutSettings() {
 
     useEffect(() => {
         fetchData();
+
+        // Listen for backend installation events to provide feedback in settings
+        const unlisten = listen<InstallProgress>('install-progress', (event) => {
+            setActiveInstall(event.payload);
+        });
+
+        return () => {
+            unlisten.then(f => f());
+        };
     }, []);
 
-    const handleInstall = async (name: string, display: string) => {
-        setInstalling(display);
+    const handleInstall = async (name: string) => {
+        // Prevent double trigger
+        if (activeInstall) return;
+
         try {
             await installDependency(name);
+            // Refresh data after install completes
             await fetchData();
         } catch (e) {
-            alert(`Failed to update ${display}: ${e}`);
+            console.error(`Installation failed: ${e}`);
         } finally {
-            setInstalling(null);
+            setActiveInstall(null);
         }
     };
 
@@ -147,12 +186,6 @@ export function AboutSettings() {
                         </span>
                     </div>
                 </div>
-                {installing && (
-                    <div className="ml-auto flex items-center gap-2 text-theme-cyan text-xs animate-pulse">
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        Updating {installing}...
-                    </div>
-                )}
             </div>
 
             <div className="space-y-4">
@@ -196,20 +229,24 @@ export function AboutSettings() {
                     {deps.yt_dlp && (
                         <DependencyRow 
                             info={deps.yt_dlp} 
-                            onInstall={() => handleInstall('yt-dlp', 'Core')}
+                            onInstall={() => handleInstall('yt-dlp')}
+                            installingState={activeInstall}
                             label="Core (yt-dlp)"
                         />
                     )}
                     {deps.ffmpeg && (
                         <DependencyRow 
                             info={deps.ffmpeg} 
-                            onInstall={() => handleInstall('ffmpeg', 'FFmpeg')}
+                            onInstall={() => handleInstall('ffmpeg')}
+                            installingState={activeInstall}
+                            label="FFmpeg"
                         />
                     )}
                     {deps.js_runtime && (
                         <DependencyRow 
                             info={deps.js_runtime} 
-                            onInstall={() => handleInstall(deps.js_runtime?.name || 'js_runtime', 'Runtime')} 
+                            onInstall={() => handleInstall(deps.js_runtime?.name?.toLowerCase() || 'deno')} 
+                            installingState={activeInstall}
                             label={`JS Runtime (${deps.js_runtime.name})`}
                         />
                     )}

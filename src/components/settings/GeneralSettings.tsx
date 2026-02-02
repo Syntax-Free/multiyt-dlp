@@ -192,7 +192,7 @@ export function GeneralSettings() {
                                 <div className="space-y-1">
                                     <p className="text-xs font-bold text-red-400">High CPU Usage Warning</p>
                                     <p className="text-[10px] text-red-300/70 leading-relaxed">
-                                        Running more than 10 simultaneous ffmpeg instances may significantly degrade system performance on mid-range hardware (e.g., i5-10600k). Proceed with caution.
+                                        Running more than 10 simultaneous ffmpeg instances may significantly degrade system performance on mid-range hardware or lower. Proceed with caution.
                                     </p>
                                 </div>
                             </div>
