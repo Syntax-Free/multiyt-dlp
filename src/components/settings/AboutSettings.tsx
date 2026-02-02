@@ -231,7 +231,7 @@ export function AboutSettings() {
                             info={deps.yt_dlp} 
                             onInstall={() => handleInstall('yt-dlp')}
                             installingState={activeInstall}
-                            label="Core (yt-dlp)"
+                            label="yt-dlp"
                         />
                     )}
                     {deps.ffmpeg && (
