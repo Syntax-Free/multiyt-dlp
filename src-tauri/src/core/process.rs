@@ -10,38 +10,20 @@ use std::path::{Path, PathBuf};
 use std::fs;
 use serde::Deserialize;
 use std::time::Duration;
+use tracing::{debug, error, warn, trace};
 
 use crate::config::ConfigManager;
 use crate::models::{DownloadFormatPreset, QueuedJob, JobMessage, DownloadErrorPayload};
 use crate::commands::system::get_js_runtime_info;
 
-// --- Regex Definitions ---
-
-// [Merger] Merging formats into "filename"
 static MERGER_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r#"^\[Merger\]"#).unwrap());
-
-// [ExtractAudio] Destination: filename
 static EXTRACT_AUDIO_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\[ExtractAudio\]").unwrap());
-
-// [Metadata] Adding metadata to: filename
 static METADATA_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\[Metadata\]").unwrap());
-
-// [EmbedThumbnail] ...
 static THUMBNAIL_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\[(?:Thumbnails|EmbedThumbnail)\]").unwrap());
-
-// [FixupM3u8] or [FixupM4a]
 static FIXUP_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\[(?:Fixup\w+)\]").unwrap());
-
-// [MoveFiles] Moving file ...
 static MOVE_FILES_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\[MoveFiles\]").unwrap());
-
-// [ffmpeg] ...
 static FFMPEG_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\[ffmpeg\]").unwrap());
-
-// General [download] Destination: ... (catches start before JSON progress)
 static DOWNLOAD_START_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\[download\]\s+Destination:").unwrap());
-
-// Errors usually found in text output
 static FILESYSTEM_ERROR_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)(No such file|Invalid argument|cannot be written|WinError 123|Postprocessing: Error opening input files)").unwrap());
 
 #[derive(Deserialize, Debug)]
@@ -49,12 +31,11 @@ struct YtDlpJsonProgress {
     downloaded_bytes: Option<u64>,
     total_bytes: Option<u64>,
     total_bytes_estimate: Option<u64>,
-    speed: Option<f64>, // bytes per second
-    eta: Option<u64>,   // seconds
+    speed: Option<f64>,
+    eta: Option<u64>, 
     filename: Option<String>,
 }
 
-// --- Windows Job Object Support ---
 #[cfg(target_os = "windows")]
 mod win_job {
     use windows::Win32::System::JobObjects::{
@@ -70,26 +51,21 @@ mod win_job {
         pub fn new() -> Result<Self, String> {
             unsafe {
                 let job = CreateJobObjectW(None, None).map_err(|e| e.to_string())?;
-                
                 let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
                 info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-
                 let success = SetInformationJobObject(
                     job,
                     JobObjectExtendedLimitInformation,
                     &info as *const _ as *const _,
                     std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
                 );
-
                 if !success.as_bool() {
                     let _ = CloseHandle(job);
                     return Err("Failed to set job object information".to_string());
                 }
-
                 Ok(Self(job))
             }
         }
-
         pub fn assign_process(&self, process_handle: std::os::windows::io::RawHandle) -> Result<(), String> {
             unsafe {
                 let success = AssignProcessToJobObject(self.0, HANDLE(process_handle as isize));
@@ -100,16 +76,11 @@ mod win_job {
             }
         }
     }
-
     impl Drop for JobObject {
-        fn drop(&mut self) {
-            unsafe { let _ = CloseHandle(self.0); }
-        }
+        fn drop(&mut self) { unsafe { let _ = CloseHandle(self.0); } }
     }
 }
 
-// --- SAFETY GUARD ---
-// Defect Fix #1: Ensures the concurrency slot is FREED even if the process logic panics.
 struct WorkerGuard {
     tx: mpsc::Sender<JobMessage>,
 }
@@ -122,8 +93,6 @@ impl Drop for WorkerGuard {
         });
     }
 }
-
-// --- Helpers ---
 
 fn format_speed(bytes_per_sec: f64) -> String {
     if bytes_per_sec.is_nan() || bytes_per_sec.is_infinite() { return "N/A".to_string(); }
@@ -145,6 +114,9 @@ fn format_eta(seconds: u64) -> String {
 }
 
 fn construct_error(job_id: uuid::Uuid, msg: String, exit_code: Option<i32>, stderr: String, logs: Vec<String>) -> JobMessage {
+    // Also log to backend tracing
+    error!(target: "core::process", job_id = ?job_id, exit_code = ?exit_code, "Job failed: {}", msg);
+    
     JobMessage::JobError {
         id: job_id,
         payload: DownloadErrorPayload {
@@ -165,7 +137,6 @@ async fn robust_move_file(src: &Path, dest: &Path) -> Result<(), std::io::Error>
             Err(e) => {
                 attempts += 1;
                 if attempts > 5 {
-                    // Fallback to copy-delete
                     if let Ok(_) = fs::copy(src, dest) {
                         let _ = fs::remove_file(src);
                         return Ok(());
@@ -178,20 +149,17 @@ async fn robust_move_file(src: &Path, dest: &Path) -> Result<(), std::io::Error>
     }
 }
 
-// --- Main Process Logic ---
-
 pub async fn run_download_process(
     mut job_data: QueuedJob,
     app_handle: AppHandle,
     tx_actor: mpsc::Sender<JobMessage>,
 ) {
-    // Defect Fix #1: Initialize Guard immediately
     let _guard = WorkerGuard { tx: tx_actor.clone() };
 
     let job_id = job_data.id;
     let url = job_data.url.clone();
 
-    // Notify Start
+    // Start UI update
     let _ = tx_actor.send(JobMessage::UpdateProgress {
         id: job_id,
         percentage: 0.0,
@@ -216,19 +184,16 @@ pub async fn run_download_process(
                 Some(path) => path,
                 None => {
                     let _ = tx_actor.send(construct_error(job_id, "Missing download dir".into(), None, String::new(), vec![])).await;
-                    return; // Guard drops here
+                    return; 
                 }
             }
         };
         
         if !target_dir.exists() { let _ = std::fs::create_dir_all(&target_dir); }
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        
-        // Defect Fix #3: Unique Temp Directory per Job
         let base_temp_dir = home.join(".multiyt-dlp").join("temp_downloads");
         let unique_temp_dir = base_temp_dir.join(job_id.to_string());
 
-        // Ensure clean state for this job
         if unique_temp_dir.exists() { let _ = std::fs::remove_dir_all(&unique_temp_dir); }
         let _ = std::fs::create_dir_all(&unique_temp_dir);
 
@@ -238,7 +203,6 @@ pub async fn run_download_process(
 
         let mut cmd = Command::new(yt_dlp_cmd);
         
-        // Environment Setup
         if let Ok(current_path) = std::env::var("PATH") {
             let new_path = format!("{}{}{}", bin_dir.to_string_lossy(), if cfg!(windows) { ";" } else { ":" }, current_path);
             cmd.env("PATH", new_path);
@@ -247,7 +211,7 @@ pub async fn run_download_process(
         }
         cmd.env("PYTHONUTF8", "1");
         cmd.env("PYTHONIOENCODING", "utf-8");
-        cmd.current_dir(&unique_temp_dir); // Working in isolated dir
+        cmd.current_dir(&unique_temp_dir);
 
         #[cfg(not(target_os = "windows"))]
         {
@@ -272,10 +236,8 @@ pub async fn run_download_process(
             .arg("--newline")
             .arg("--windows-filenames")
             .arg("--encoding").arg("utf-8")
-            // FORCE PROGRESS: Required because --print silences standard output by default
             .arg("--progress") 
             .arg("--progress-template").arg("download:%(progress)j")
-            // PRINT FILEPATH: Captured to determine the final filename
             .arg("--print").arg("after_move:filepath");
 
         cmd.stdout(Stdio::piped());
@@ -322,17 +284,18 @@ pub async fn run_download_process(
             DownloadFormatPreset::AudioM4a => { cmd.arg("-x").args(["--audio-format", "m4a", "--audio-quality", "0"]); }
         }
 
+        // --- Log Process Spawn ---
+        debug!(target: "core::process", job_id = ?job_id, "Spawning process: {:?}", cmd.as_std());
+
         let mut child = match cmd.spawn() {
             Ok(child) => child,
             Err(e) => {
                 let _ = tx_actor.send(construct_error(job_id, format!("Failed to spawn process: {}", e), None, e.to_string(), vec![])).await;
-                // Cleanup temp dir
                 let _ = std::fs::remove_dir_all(&unique_temp_dir);
-                return; // Guard drops
+                return;
             }
         };
 
-        // --- Attach Job Object (Windows) ---
         #[cfg(target_os = "windows")]
         let _job_object = {
             if let Ok(job) = win_job::JobObject::new() {
@@ -390,11 +353,15 @@ pub async fn run_download_process(
             if captured_logs.len() > 100 { captured_logs.remove(0); }
             
             if is_stderr {
+                // IMPORTANT: Mirror stderr to logs at WARN level so we see what's wrong
+                warn!(target: "core::process::stderr", job_id = ?job_id, "{}", trimmed);
                 captured_stderr.push(trimmed.to_string());
                 if captured_stderr.len() > 50 { captured_stderr.remove(0); }
+            } else {
+                // Optional: Trace stdout
+                trace!(target: "core::process::stdout", job_id = ?job_id, "{}", trimmed);
             }
 
-            // Priority detection: Absolute Filepath from --print
             if !is_stderr {
                 let potential_path = PathBuf::from(trimmed);
                 if potential_path.is_absolute() && potential_path.starts_with(&unique_temp_dir) {
@@ -411,7 +378,6 @@ pub async fn run_download_process(
             let mut eta_str = "N/A".to_string();
 
             if let Ok(progress_json) = serde_json::from_str::<YtDlpJsonProgress>(trimmed) {
-                // Handle JSON Progress (The "active download" part)
                 if let Some(d) = progress_json.downloaded_bytes {
                      let t = progress_json.total_bytes.or(progress_json.total_bytes_estimate);
                      if let Some(total) = t { state_percentage = (d as f32 / total as f32) * 100.0; }
@@ -431,8 +397,6 @@ pub async fn run_download_process(
                 }
                 emit_update = true;
             } else {
-                // Handle Standard Text Output (Post-processing phases)
-                
                 if DOWNLOAD_START_REGEX.is_match(trimmed) {
                     state_phase = "Starting Download".to_string();
                     emit_update = true;
@@ -465,12 +429,11 @@ pub async fn run_download_process(
                     emit_update = true;
                 }
                 else if MOVE_FILES_REGEX.is_match(trimmed) {
-                    state_phase = "Finalizing".to_string(); // Moving file to destination
+                    state_phase = "Finalizing".to_string();
                     state_percentage = 100.0;
                     emit_update = true;
                 }
                 else if FFMPEG_REGEX.is_match(trimmed) {
-                    // Generic ffmpeg activity
                     if !state_phase.contains("Merging") && !state_phase.contains("Extracting") {
                          state_phase = "Processing (FFmpeg)".to_string();
                          emit_update = true;
@@ -503,21 +466,15 @@ pub async fn run_download_process(
             }
 
             if final_src_path.is_none() {
-                // If we didn't get a print output, look in the unique temp dir
                 if let Ok(entries) = fs::read_dir(&unique_temp_dir) {
-                    // Find the largest file that isn't a partial download or temp file
-                    // Or ideally, the file matching the detected filename
                     if let Some(fname) = detected_filename_only {
                          let path = unique_temp_dir.join(&fname);
                          if path.exists() { final_src_path = Some(path); }
                     }
-                    
                     if final_src_path.is_none() {
-                        // Fallback: look for any video/audio file
                          for entry in entries.flatten() {
                             let path = entry.path();
                             if path.is_file() {
-                                // Rudimentary check to avoid system files
                                 if let Some(ext) = path.extension() {
                                     let ext_str = ext.to_string_lossy();
                                     if ["mp4", "mkv", "webm", "mp3", "flac", "m4a", "wav"].contains(&ext_str.as_ref()) {
@@ -537,7 +494,6 @@ pub async fn run_download_process(
                 let file_name = src_path.file_name().unwrap();
                 let dest_path = target_dir.join(file_name);
                 
-                // Final UI Update for the move
                 let _ = tx_actor.send(JobMessage::UpdateProgress {
                     id: job_id,
                     percentage: 100.0,
@@ -565,10 +521,14 @@ pub async fn run_download_process(
             let log_blob = captured_logs.join("\n");
             let stderr_blob = captured_stderr.join("\n");
             
+            // Log failure to backend
+            warn!(target: "core::process", job_id = ?job_id, exit_code = ?status.code(), "Process exited with error");
+            
             let is_filesystem_error = FILESYSTEM_ERROR_REGEX.is_match(&log_blob);
             if !job_data.restrict_filenames && is_filesystem_error {
+                warn!(target: "core::process", job_id = ?job_id, "Retrying with restricted filenames");
                 job_data.restrict_filenames = true;
-                continue; // Retry Loop
+                continue; 
             }
 
             let short_msg = if stderr_blob.contains("No supported JavaScript runtime") {
@@ -584,13 +544,10 @@ pub async fn run_download_process(
         }
     }
     
-    // Clean up unique temp directory
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
     let base_temp_dir = home.join(".multiyt-dlp").join("temp_downloads");
     let unique_temp_dir = base_temp_dir.join(job_id.to_string());
     if unique_temp_dir.exists() {
         let _ = std::fs::remove_dir_all(&unique_temp_dir);
     }
-    
-    // Guard drops here automatically calling WorkerFinished
 }

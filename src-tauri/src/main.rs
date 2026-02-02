@@ -31,6 +31,9 @@ fn main() {
         let _ = SetCurrentProcessExplicitAppUserModelID(PCWSTR(wide_id.as_ptr()));
     }
 
+    // REGISTER PANIC HOOK
+    core::logging::register_panic_hook();
+
     let home = dirs::home_dir().expect("Could not find home directory");
     let temp_dir = home.join(".multiyt-dlp").join("temp_downloads");
     if !temp_dir.exists() {
@@ -81,15 +84,11 @@ fn main() {
             tracing::info!("Application startup complete. Window initialized.");
 
             // Background Saver Actor
-            // Debounces save requests to avoid thrashing the disk during resize
             tauri::async_runtime::spawn(async move {
                 while let Some(_) = rx_save.recv().await {
-                    // Drain buffer to get the latest request
+                    // Drain buffer
                     while let Ok(_) = rx_save.try_recv() {}
-                    
-                    // Wait for movement to settle
                     tokio::time::sleep(Duration::from_millis(500)).await;
-                    
                     if let Err(e) = config_manager_saver.save() {
                         tracing::error!("Failed to auto-save window config: {}", e);
                     }
@@ -112,15 +111,7 @@ fn main() {
                     }
                 }
                 if window_label == "main" {
-                    // Defect Fix #6: Graceful Shutdown
                     let app_handle = event.window().app_handle();
-                    
-                    // We must use a blocking call here or the process dies before cleanup.
-                    // However, we can't block the UI thread indefinitely.
-                    // Since 'Destroyed' implies the window is gone, we just need to ensure cleanup happens before `exit`.
-                    // But `Destroyed` is post-facto. `CloseRequested` is pre-facto but cancellable.
-                    // The standard pattern is to catch Destroyed and do cleanup then exit.
-                    
                     let manager = app_handle.state::<JobManagerHandle>();
                     let manager_clone = manager.inner().clone();
                     
@@ -131,21 +122,17 @@ fn main() {
                 }
             }
 
-            // --- ROBUST WINDOW TRACKING START ---
             let window = event.window();
             let is_minimized = window.is_minimized().unwrap_or(false);
 
-            // Only update config if the window is visible/restored
             if !is_minimized {
                 match event.event() {
                     WindowEvent::Moved(pos) => {
-                        // Double check against extreme values (Windows -32000 bug)
                         if pos.x > -10000 && pos.y > -10000 {
                             let mut current_config = config_manager_event.get_config();
                             current_config.window.x = pos.x as f64;
                             current_config.window.y = pos.y as f64;
                             
-                            // .update_window() calls .sanitize() internally
                             config_manager_event.update_window(current_config.window);
                             let _ = tx_save.send(());
                         }
@@ -163,7 +150,6 @@ fn main() {
                     _ => {}
                 }
             }
-            // --- ROBUST WINDOW TRACKING END ---
         })
         .invoke_handler(tauri::generate_handler![
             commands::system::check_dependencies,

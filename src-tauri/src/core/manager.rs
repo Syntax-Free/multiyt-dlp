@@ -6,6 +6,7 @@ use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 use std::fs;
 use std::path::PathBuf;
+use tracing::{info, warn, error, debug};
 
 use crate::models::{
     Job, JobStatus, QueuedJob, JobMessage, 
@@ -71,7 +72,6 @@ impl JobManagerHandle {
     }
 }
 
-// Defect Fix #2: Dedicated persistence thread communication
 enum PersistenceMsg {
     Save(Vec<QueuedJob>),
     Clear
@@ -80,27 +80,23 @@ enum PersistenceMsg {
 struct JobManagerActor {
     app_handle: AppHandle,
     receiver: mpsc::Receiver<JobMessage>,
-    self_sender: mpsc::Sender<JobMessage>, // To pass to workers
+    self_sender: mpsc::Sender<JobMessage>,
 
-    // State
     jobs: HashMap<Uuid, Job>,
     queue: VecDeque<QueuedJob>,
     persistence_registry: HashMap<Uuid, QueuedJob>,
     persistence_tx: mpsc::Sender<PersistenceMsg>,
 
-    // Concurrency
     active_network_jobs: u32,
     active_process_instances: u32,
     completed_session_count: u32,
 
-    // Batching Buffer
     pending_updates: HashMap<Uuid, DownloadProgressPayload>,
 }
 
 impl JobManagerActor {
     fn new(app_handle: AppHandle, receiver: mpsc::Receiver<JobMessage>, self_sender: mpsc::Sender<JobMessage>) -> Self {
         
-        // Defect Fix #2: Serialized Persistence Loop
         let (ptx, mut prx) = mpsc::channel(100);
         tauri::async_runtime::spawn(async move {
             let path = Self::get_persistence_path();
@@ -111,11 +107,15 @@ impl JobManagerActor {
                             let tmp_path = path.with_extension("tmp");
                             if tokio::fs::write(&tmp_path, json).await.is_ok() {
                                 let _ = tokio::fs::rename(tmp_path, &path).await;
+                            } else {
+                                warn!(target: "core::persistence", "Failed to write persistence file");
                             }
                         }
                     },
                     PersistenceMsg::Clear => {
-                        if path.exists() { let _ = tokio::fs::remove_file(&path).await; }
+                        if path.exists() { 
+                            let _ = tokio::fs::remove_file(&path).await; 
+                        }
                     }
                 }
             }
@@ -147,12 +147,14 @@ impl JobManagerActor {
     }
 
     async fn run(mut self) {
+        info!(target: "core::manager", "JobManagerActor started");
         let mut interval = time::interval(Duration::from_millis(100));
 
         loop {
             tokio::select! {
                 Some(msg) = self.receiver.recv() => {
                     if let JobMessage::Shutdown(tx) = msg {
+                        info!(target: "core::manager", "Shutdown requested");
                         self.handle_shutdown().await;
                         let _ = tx.send(());
                         break;
@@ -167,18 +169,16 @@ impl JobManagerActor {
         }
     }
 
-    // Defect Fix #6: Clean up orphans on exit
     async fn handle_shutdown(&mut self) {
-        // Collect all active PIDs
         let pids: Vec<u32> = self.jobs.values()
             .filter_map(|j| j.pid)
             .collect();
         
+        info!(target: "core::manager", "Killing {} active processes", pids.len());
+
         for pid in pids {
             self.kill_process(pid);
         }
-        
-        // Also cleanup temp dirs if possible
         self.clean_temp_directory();
     }
 
@@ -195,7 +195,8 @@ impl JobManagerActor {
                     if is_duplicate_active {
                         let _ = resp.send(Err("URL is already in queue".into()));
                     } else {
-                        // Inherit original QueuedJob props into Job model for UI sync
+                        info!(target: "core::manager", job_id = ?job.id, url = %job.url, "Job added to queue");
+                        
                         let mut j = Job::new(job.id, job.url.clone());
                         j.preset = Some(job.format_preset.clone());
                         j.video_resolution = Some(job.video_resolution.clone());
@@ -216,6 +217,7 @@ impl JobManagerActor {
                 }
             },
             JobMessage::CancelJob { id } => {
+                info!(target: "core::manager", job_id = ?id, "Cancelling job");
                 if let Some(job) = self.jobs.get(&id) {
                     if let Some(pid) = job.pid {
                         self.kill_process(pid);
@@ -232,6 +234,7 @@ impl JobManagerActor {
                 });
             },
             JobMessage::ProcessStarted { id, pid } => {
+                debug!(target: "core::manager", job_id = ?id, pid = pid, "Process started");
                 if let Some(job) = self.jobs.get_mut(&id) {
                     if job.status == JobStatus::Cancelled {
                         self.kill_process(pid);
@@ -242,6 +245,8 @@ impl JobManagerActor {
                 }
             },
             JobMessage::UpdateProgress { id, percentage, speed, eta, filename, phase } => {
+                // Too noisy to log every progress update at info level
+                // trace!(target: "core::manager", job_id = ?id, phase = %phase, "Progress update");
                 if let Some(job) = self.jobs.get_mut(&id) {
                     if job.status == JobStatus::Cancelled { return; }
 
@@ -262,6 +267,7 @@ impl JobManagerActor {
                 }
             },
             JobMessage::JobCompleted { id, output_path } => {
+                info!(target: "core::manager", job_id = ?id, path = %output_path, "Job completed");
                 if let Some(job) = self.jobs.get_mut(&id) {
                     if job.status == JobStatus::Cancelled { return; }
                     job.status = JobStatus::Completed;
@@ -278,6 +284,7 @@ impl JobManagerActor {
                 });
             },
             JobMessage::JobError { id, payload } => {
+                error!(target: "core::manager", job_id = ?id, error = %payload.error, "Job failed");
                 if let Some(job) = self.jobs.get_mut(&id) {
                     if job.status == JobStatus::Cancelled { return; }
                     job.status = JobStatus::Error;
@@ -289,6 +296,7 @@ impl JobManagerActor {
                 let _ = self.app_handle.emit_all("download-error", payload);
             },
             JobMessage::WorkerFinished => {
+                debug!(target: "core::manager", "Worker finished signal received");
                 if self.active_process_instances > 0 {
                     self.active_process_instances -= 1;
                     self.completed_session_count += 1;
@@ -315,6 +323,7 @@ impl JobManagerActor {
                 let _ = tx.send(0);
             },
             JobMessage::ResumePending(tx) => {
+                info!(target: "core::manager", "Resuming pending jobs from disk");
                 let path = Self::get_persistence_path();
                 let mut resumed = Vec::new();
                 if path.exists() {
@@ -346,11 +355,11 @@ impl JobManagerActor {
                 let _ = tx.send(resumed);
             },
             JobMessage::ClearPending => {
+                info!(target: "core::manager", "Clearing pending jobs");
                 let _ = self.persistence_tx.try_send(PersistenceMsg::Clear);
                 self.clean_temp_directory();
             },
             JobMessage::SyncState(tx) => {
-                // Convert internal HashMap<Uuid, Job> to Vec<Download> equivalent
                 let mut downloads: Vec<Download> = Vec::new();
                 for job in self.jobs.values() {
                     downloads.push(Download {
@@ -379,9 +388,7 @@ impl JobManagerActor {
                 }
                 let _ = tx.send(downloads);
             },
-            JobMessage::Shutdown(_) => {
-                // Handled in main loop match
-            }
+            JobMessage::Shutdown(_) => {}
         }
     }
 
@@ -405,6 +412,8 @@ impl JobManagerActor {
                      if job.status == JobStatus::Cancelled { continue; }
                  }
 
+                 debug!(target: "core::manager", job_id = ?next_job.id, "Spawning worker for job");
+                 
                  self.active_network_jobs += 1;
                  self.active_process_instances += 1;
                  
@@ -444,19 +453,16 @@ impl JobManagerActor {
     }
 
     fn kill_process(&self, pid: u32) {
+        debug!(target: "core::manager", pid = pid, "Terminating process");
         #[cfg(not(target_os = "windows"))]
         {
             use nix::sys::signal::{self, Signal};
             use nix::unistd::Pid;
-            // Send SIGTERM to the process group (-pid)
-            // This ensures we kill yt-dlp AND its children (ffmpeg)
             let _ = signal::kill(Pid::from_raw(-(pid as i32)), Signal::SIGTERM);
         }
 
         #[cfg(target_os = "windows")]
         {
-            // With Job Objects implemented in process.rs, we just need to kill the parent.
-            // But taskkill /T /F is a safe fallback if Job Object failed.
             let mut cmd = std::process::Command::new("taskkill");
             cmd.args(&["/F", "/T", "/PID", &pid.to_string()]);
             use std::os::windows::process::CommandExt;
@@ -482,6 +488,7 @@ impl JobManagerActor {
     fn clean_temp_directory(&self) {
         if !self.queue.is_empty() || !self.persistence_registry.is_empty() { return; }
 
+        debug!(target: "core::manager", "Cleaning temp directory");
         let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
         let temp_dir = home.join(".multiyt-dlp").join("temp_downloads");
         

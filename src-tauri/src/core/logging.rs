@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::PathBuf;
-use tracing::{info};
+use tracing::{info, error};
 use tracing_subscriber::{
     fmt, 
     prelude::*, 
@@ -41,6 +41,27 @@ impl LogPaths {
             archive_dir,
         })
     }
+}
+
+// --- Panic Hook ---
+
+pub fn register_panic_hook() {
+    std::panic::set_hook(Box::new(|panic_info| {
+        let location = panic_info.location().map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_else(|| "unknown".to_string());
+        let payload = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+            *s
+        } else if let Some(s) = panic_info.payload().downcast_ref::<String>() {
+            &**s
+        } else {
+            "Box<Any>"
+        };
+        
+        // Log to tracing system (hopefully flush works before exit)
+        error!(target: "panic", "APPLICATION CRASH at {}: {}", location, payload);
+        
+        // Also print to stderr for dev context
+        eprintln!("APPLICATION CRASH at {}: {}", location, payload);
+    }));
 }
 
 // --- Rotation Logic ---
@@ -122,8 +143,6 @@ impl LogManager {
         let paths = LogPaths::new().expect("Could not determine log paths during init");
         
         // 2. Create/Truncate "latest.log"
-        // Since we rotated beforehand, this creates a fresh file. 
-        // If rotation failed, this overwrites/truncates the existing mess, effectively restarting the log.
         let file = std::fs::File::create(&paths.latest_log).expect("Failed to create latest.log");
 
         // 3. Non-blocking Writer
@@ -131,18 +150,20 @@ impl LogManager {
 
         // 4. Layers
         
-        // Layer A: JSON File Output
+        // Layer A: JSON File Output (Machine readable, rich data)
         let file_layer = fmt::layer()
             .json()
             .with_writer(non_blocking)
             .with_target(true)
             .with_file(true)
-            .with_line_number(true);
+            .with_line_number(true)
+            .with_thread_names(true);
 
-        // Layer B: Pretty Console Output
+        // Layer B: Pretty Console Output (Dev friendly)
         let stdout_layer = fmt::layer()
             .pretty()
-            .with_writer(std::io::stdout);
+            .with_writer(std::io::stdout)
+            .with_target(true);
 
         // 5. Filter (Reloadable)
         let filter_str = Self::get_filter_string(log_level);
@@ -179,7 +200,17 @@ impl LogManager {
     }
 
     fn get_filter_string(level: &str) -> String {
-        // Silence noisy libraries
-        format!("{},tao=error,wry=error,hyper=error", level)
+        // Priority:
+        // 1. "multiyt_dlp" (our crate) gets the specific 'level' requested.
+        // 2. The rest of the world defaults to 'warn' to suppress noise, unless 'level' is stricter.
+        // 3. Specific noisy crates are forced to 'error'.
+        
+        let global_level = if level == "trace" || level == "debug" { "info" } else { "warn" };
+        
+        format!(
+            "{global},multiyt_dlp={level},tao=error,wry=error,hyper=error,reqwest=error,h2=error",
+            global = global_level,
+            level = level
+        )
     }
 }
