@@ -13,18 +13,14 @@ use crate::core::{
 };
 use crate::models::{DownloadFormatPreset, QueuedJob, PlaylistResult, PlaylistEntry, StartDownloadResponse};
 
-// Probing Semaphore to prevent "Fork Bombs"
-// Limits concurrent probing tasks to 3
+// Limits concurrent probing tasks to avoid system freezing on large playlists
 static PROBE_SEMAPHORE: std::sync::OnceLock<Arc<Semaphore>> = std::sync::OnceLock::new();
 
 fn get_probe_semaphore() -> Arc<Semaphore> {
     PROBE_SEMAPHORE.get_or_init(|| Arc::new(Semaphore::new(3))).clone()
 }
 
-// --- Probe Helper ---
-
 async fn probe_url(url: &str, app: &AppHandle, config_manager: &Arc<ConfigManager>) -> Result<Vec<PlaylistEntry>, AppError> {
-    // Acquire Permit (Throttling) - FIX: Bind semaphore to extend lifetime before acquire
     let semaphore = get_probe_semaphore();
     let _permit = semaphore.acquire().await.map_err(|_| AppError::ValidationFailed("Semaphore closed".into()))?;
 
@@ -34,7 +30,6 @@ async fn probe_url(url: &str, app: &AppHandle, config_manager: &Arc<ConfigManage
     
     let url_clone = url.to_string();
     
-    // Run blocking process in a spawn_blocking to assume async context in parent
     let result = tauri::async_runtime::spawn_blocking(move || {
         let mut yt_dlp_cmd = "yt-dlp".to_string();
         let local_exe = bin_dir.join(if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" });
@@ -79,7 +74,7 @@ async fn probe_url(url: &str, app: &AppHandle, config_manager: &Arc<ConfigManage
 
         let json_str = String::from_utf8_lossy(&output.stdout);
         let parsed: serde_json::Value = serde_json::from_str(&json_str)
-            .map_err(|e| AppError::ValidationFailed(format!("Failed to parse JSON: {}", e)))?;
+            .map_err(|e| AppError::ValidationFailed(format!("Failed to parse probe JSON: {}", e)))?;
 
         let mut entries = Vec::new();
 
@@ -115,10 +110,7 @@ pub async fn expand_playlist(
 ) -> Result<PlaylistResult, AppError> {
     let app_handle = app.clone();
     let config_manager = config.inner().clone();
-    
-    // Probing is now throttled internally via semaphore
     let entries = probe_url(&url, &app_handle, &config_manager).await?;
-
     Ok(PlaylistResult { entries })
 }
 
@@ -148,9 +140,6 @@ pub async fn start_download(
     let safe_template = if filename_template.trim().is_empty() {
         "%(title)s.%(ext)s".to_string()
     } else {
-        if filename_template.contains("..") || filename_template.starts_with("/") || filename_template.starts_with("\\") {
-             return Err(AppError::ValidationFailed("Invalid characters in filename template.".into()));
-        }
         filename_template
     };
 
@@ -159,9 +148,8 @@ pub async fn start_download(
     let url_clone = url.clone();
     let is_forced = force_download.unwrap_or(false);
 
-    // 1. Probe URL (Throttled)
+    // 1. Probe for entries
     let entries = probe_url(&url_clone, &app_handle, &config_manager).await?;
-
     let total_found = entries.len() as u32;
 
     let mut created_job_ids = Vec::new();
@@ -170,16 +158,16 @@ pub async fn start_download(
 
     let whitelist_set: Option<HashSet<String>> = url_whitelist.map(|list| list.into_iter().collect());
 
-    // 2. Filter and Queue Jobs
+    // 2. Process entries
     for entry in entries {
-        // WHITELIST CHECK
+        // If whitelist is provided (manual retry), skip anything not in the list
         if let Some(ref wl) = whitelist_set {
             if !wl.contains(&entry.url) {
                 continue;
             }
         }
 
-        // HISTORY CHECK (O(1) in-memory)
+        // Check history if not forced
         if !is_forced && history.exists(&entry.url) {
             skipped_urls.push(entry.url.clone());
             continue;
@@ -203,18 +191,19 @@ pub async fn start_download(
         match manager.add_job(job_data).await {
             Ok(_) => {
                 created_job_ids.push(job_id);
-                // Queue for async append to file
-                if !history.exists(&entry.url) {
-                    urls_to_add.push(entry.url);
-                }
+                // Queue for background history addition once download starts
+                urls_to_add.push(entry.url);
             },
             Err(e) => {
-                println!("Job ignored (Duplicate/Error): {}", e);
+                // This handles "URL already in queue" errors
+                // We don't count these as "History Skips" but rather as "Active Conflicts"
+                // The frontend will handle this via errorDetails.
+                return Err(AppError::ValidationFailed(e));
             }
         }
     }
 
-    // 3. Update History Asynchronously
+    // 3. Update History for the new URLs
     if !urls_to_add.is_empty() {
         let history_handle = history.inner().clone();
         tauri::async_runtime::spawn(async move {

@@ -100,7 +100,6 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
   const [showForceOptions, setShowForceOptions] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   
-  // Store full error details, not just string
   const [errorDetails, setErrorDetails] = useState<{ message: string, stderr?: string } | null>(null);
   const [skipInfo, setSkipInfo] = useState<{ skipped: number, total: number, url: string, skippedUrls: string[] } | null>(null);
 
@@ -121,7 +120,7 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
     const isYoutube = url.includes('youtube.com') || url.includes('youtu.be');
     if (isYoutube && isJsRuntimeMissing) {
         const confirmed = window.confirm(
-            "JavaScript Runtime Missing\n\nProceed anyway?"
+            "JavaScript Runtime Missing\n\nYouTube downloads rely heavily on a JS runtime for extraction. Proceed anyway?"
         );
         if (!confirmed) return;
     }
@@ -144,10 +143,10 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
             preferences.embed_metadata, 
             preferences.embed_thumbnail, 
             template,
-            false, // restrictFilenames default
-            force, // forceDownload
-            undefined, // whitelist
-            preferences.live_from_start // liveFromStart
+            false, 
+            force, 
+            undefined, 
+            preferences.live_from_start 
         );
 
         if (response.skipped_count > 0) {
@@ -159,7 +158,11 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
             });
         }
 
-        setUrl('');
+        // Only clear the input if something was actually queued or if it was a total history skip
+        // This keeps the URL visible if the user needs to correct something after a partial failure
+        if (response.job_ids.length > 0 || response.skipped_count === response.total_found) {
+            setUrl('');
+        }
     } catch (err: any) {
         console.error("Failed to start download", err);
         const extracted = extractErrorDetails(err);
@@ -175,10 +178,8 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
           const urlsToRetry = skipInfo.skippedUrls;
           
           setIsProcessing(true);
-          setSkipInfo(null);
-          setErrorDetails(null);
-          
           const template = getTemplateString();
+
           onDownload(
             retryUrl, 
             defaultDownloadPath || undefined, 
@@ -188,18 +189,11 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
             preferences.embed_thumbnail, 
             template,
             false,
-            true, // FORCE TRUE to bypass history check
-            urlsToRetry, // WHITELIST ONLY SKIPPED to bypass active downloads check and target specific items
+            true, // FORCE history bypass
+            urlsToRetry, // Only target the items that were skipped
             preferences.live_from_start
-          ).then((res) => {
-              if (res.skipped_count > 0) {
-                   setSkipInfo({ 
-                       skipped: res.skipped_count, 
-                       total: res.total_found, 
-                       url: retryUrl, 
-                       skippedUrls: res.skipped_urls 
-                   });
-              }
+          ).then(() => {
+              setSkipInfo(null);
               setUrl('');
           }).catch((err: any) => {
                const extracted = extractErrorDetails(err);
@@ -250,7 +244,6 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
   const currentMode = preferences.mode as DownloadMode;
   
   const filteredPresets = formatPresets.filter(p => p.mode === currentMode);
-  
   const isSubmitDisabled = !isValidUrl || isProcessing;
 
   return (
@@ -275,7 +268,11 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
                 <input
                     type="text"
                     value={url}
-                    onChange={(e) => { setUrl(e.target.value); setErrorDetails(null); setSkipInfo(null); }}
+                    onChange={(e) => { 
+                        setUrl(e.target.value); 
+                        setErrorDetails(null); 
+                        if (skipInfo) setSkipInfo(null);
+                    }}
                     disabled={isProcessing}
                     placeholder="https://youtube.com/watch?v=... or Playlist URL"
                     className={twMerge(
@@ -299,7 +296,7 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
                 </div>
             )}
 
-            {/* Skipped Items Feedback */}
+            {/* Skipped Items Notice */}
             {skipInfo && (
                 <div className="animate-fade-in relative p-3 rounded-lg border bg-zinc-900 border-zinc-800 text-zinc-300">
                     <button 
@@ -307,7 +304,7 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
                         onClick={() => setSkipInfo(null)}
                         className="absolute top-2 right-2 text-zinc-500 hover:text-white transition-colors"
                     >
-                        <X className="h-3 w-3" />
+                        <X className="h-3.5 w-3.5" />
                     </button>
                     
                     <div className="flex items-start gap-3 pr-4">
@@ -315,15 +312,15 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
                              <Filter className="h-4 w-4" />
                         </div>
                         <div className="flex-1 min-w-0">
-                            <div className="text-xs font-semibold text-zinc-200">
+                            <div className="text-xs font-semibold text-zinc-100">
                                 {skipInfo.skipped === skipInfo.total 
                                     ? "All items already in history" 
                                     : `${skipInfo.skipped} item${skipInfo.skipped > 1 ? 's' : ''} filtered from queue`}
                             </div>
                             <div className="text-[11px] text-zinc-500 mt-0.5 mb-2 leading-tight">
                                 {skipInfo.skipped === skipInfo.total 
-                                    ? "These URLs match entries in your download archive."
-                                    : `${skipInfo.total - skipInfo.skipped} new items were queued. Duplicates were skipped.`
+                                    ? "These URLs match entries in your archive database."
+                                    : `${skipInfo.total - skipInfo.skipped} new items were added. Duplicates were ignored.`
                                 }
                             </div>
                             
@@ -393,7 +390,6 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
                             <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-zinc-500 pointer-events-none" />
                          </div>
 
-                         {/* Resolution Dropdown - Only show for Video */}
                          {currentMode === 'video' && (
                              <div className="relative flex-1">
                                 <select
@@ -412,7 +408,6 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
                          )}
                      </div>
 
-                     {/* Post Processing Options */}
                      <div className="flex gap-2">
                          <button
                             type="button"
@@ -423,7 +418,7 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
                                     ? "bg-zinc-800 border-theme-cyan/50 text-theme-cyan"
                                     : "bg-surfaceHighlight border-border text-zinc-500 hover:text-zinc-300"
                             )}
-                            title="Embed Metadata (Tags)"
+                            title="Embed Metadata"
                          >
                             <FileText className="h-3.5 w-3.5" />
                             Metadata
@@ -438,7 +433,7 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
                                     ? "bg-zinc-800 border-theme-cyan/50 text-theme-cyan"
                                     : "bg-surfaceHighlight border-border text-zinc-500 hover:text-zinc-300"
                             )}
-                            title="Embed Thumbnail (Cover Art)"
+                            title="Embed Thumbnail"
                          >
                             <ImageIcon className="h-3.5 w-3.5" />
                             Thumbnail
@@ -522,7 +517,6 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
                     disabled={isSubmitDisabled}
                     onClick={() => setShowForceOptions(!showForceOptions)}
                     className="w-12 h-full rounded-l-none px-0 flex items-center justify-center bg-theme-cyan/90 hover:bg-theme-cyan/80"
-                    title="Download Options"
                 >
                     <ChevronDown className={twMerge("h-5 w-5 transition-transform", showForceOptions ? "rotate-180" : "")} />
                 </Button>
@@ -541,7 +535,7 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
                         <div>
                             <div className="text-sm font-bold text-zinc-200">Force Download</div>
                             <div className="text-xs text-zinc-500 mt-0.5">
-                                Bypass download history check.
+                                Bypass history check and download immediately.
                             </div>
                         </div>
                     </button>
