@@ -2,7 +2,8 @@ import { useAppContext } from '@/contexts/AppContext';
 import { AlertCircle, Trash2, FileText, Check, Save, X, Loader2, Database, AlertTriangle } from 'lucide-react';
 import { Button } from '../ui/Button';
 import { clearDownloadHistory, getDownloadHistory, saveDownloadHistory } from '@/api/invoke';
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
+import { twMerge } from 'tailwind-merge';
 
 export function GeneralSettings() {
     const { 
@@ -13,13 +14,47 @@ export function GeneralSettings() {
         setLogLevel
     } = useAppContext();
 
-    const [clearStatus, setClearStatus] = useState<'idle' | 'cleared'>('idle');
+    // --- History Management State ---
+    const [clearStatus, setClearStatus] = useState<'idle' | 'confirming' | 'cleared'>('idle');
+    const [clearTimer, setClearTimer] = useState(100);
+    const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
     
     // Editor State
     const [isEditingHistory, setIsEditingHistory] = useState(false);
     const [historyContent, setHistoryContent] = useState('');
+    const originalHistoryRef = useRef(''); 
     const [isLoadingHistory, setIsLoadingHistory] = useState(false);
     const [isSavingHistory, setIsSavingHistory] = useState(false);
+
+    // Helper to handle line ending differences between OS files and Textarea
+    const normalize = (str: string) => str.replace(/\r\n/g, '\n');
+
+    // --- Confirmation Timer Logic ---
+    useEffect(() => {
+        if (clearStatus === 'confirming') {
+            setClearTimer(100);
+            const startTime = Date.now();
+            const duration = 5000; // 5 seconds
+
+            timerRef.current = setInterval(() => {
+                const elapsed = Date.now() - startTime;
+                const remaining = Math.max(0, 100 - (elapsed / duration) * 100);
+                
+                setClearTimer(remaining);
+
+                if (remaining <= 0) {
+                    setClearStatus('idle');
+                    if (timerRef.current) clearInterval(timerRef.current);
+                }
+            }, 16);
+        } else {
+            if (timerRef.current) clearInterval(timerRef.current);
+        }
+
+        return () => {
+            if (timerRef.current) clearInterval(timerRef.current);
+        };
+    }, [clearStatus]);
 
     const handleChange = (key: 'max_concurrent_downloads' | 'max_total_instances', value: number) => {
         let concurrent = maxConcurrentDownloads;
@@ -40,14 +75,19 @@ export function GeneralSettings() {
     };
 
     const handleClearHistory = async () => {
-        if (confirm("Are you sure you want to clear your download history? This will allow previously downloaded videos to be downloaded again.")) {
+        if (clearStatus === 'idle') {
+            setClearStatus('confirming');
+            return;
+        }
+
+        if (clearStatus === 'confirming') {
             try {
                 await clearDownloadHistory();
                 setClearStatus('cleared');
                 setTimeout(() => setClearStatus('idle'), 2000);
             } catch (error) {
                 console.error("Failed to clear history", error);
-                alert("Failed to clear history: " + error);
+                setClearStatus('idle');
             }
         }
     };
@@ -57,6 +97,7 @@ export function GeneralSettings() {
         try {
             const content = await getDownloadHistory();
             setHistoryContent(content);
+            originalHistoryRef.current = content;
             setIsEditingHistory(true);
         } catch (error) {
             console.error("Failed to load history", error);
@@ -66,10 +107,30 @@ export function GeneralSettings() {
         }
     };
 
+    const handleCloseEditor = (e?: React.MouseEvent) => {
+        if (e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+
+        const isDirty = normalize(historyContent) !== normalize(originalHistoryRef.current);
+        
+        // Syn: even gemini 3 couldn't fix this confirmation dialogue.
+        if (isDirty) {
+            const confirmed = window.confirm("You have unsaved changes in your archive file. Are you sure you want to discard them?");
+            if (!confirmed) return;
+        }
+
+        // Reset to original to avoid state retention issues
+        setHistoryContent(originalHistoryRef.current);
+        setIsEditingHistory(false);
+    };
+
     const handleSaveEditor = async () => {
         setIsSavingHistory(true);
         try {
             await saveDownloadHistory(historyContent);
+            originalHistoryRef.current = historyContent; // Update reference so it's no longer dirty
             setIsEditingHistory(false);
         } catch (error) {
             console.error("Failed to save history", error);
@@ -81,6 +142,8 @@ export function GeneralSettings() {
 
     // --- FULL SCREEN EDITOR MODE ---
     if (isEditingHistory) {
+        const isDirty = normalize(historyContent) !== normalize(originalHistoryRef.current);
+
         return (
             <div className="absolute inset-0 bg-zinc-950 z-50 flex flex-col animate-fade-in">
                 {/* Editor Header */}
@@ -90,14 +153,21 @@ export function GeneralSettings() {
                             <FileText className="h-5 w-5" />
                          </div>
                          <div>
-                             <h3 className="font-bold text-zinc-100">Archive Editor</h3>
+                             <div className="flex items-center gap-2">
+                                <h3 className="font-bold text-zinc-100">Archive Editor</h3>
+                                {isDirty && (
+                                    <span className="text-[10px] bg-theme-cyan/20 text-theme-cyan px-1.5 py-0.5 rounded font-bold uppercase tracking-widest border border-theme-cyan/30">
+                                        Modified
+                                    </span>
+                                )}
+                             </div>
                              <p className="text-xs text-zinc-500 font-mono">downloads.txt</p>
                          </div>
                     </div>
                     <div className="flex items-center gap-2">
                         <Button 
                             variant="secondary"
-                            onClick={() => setIsEditingHistory(false)}
+                            onClick={handleCloseEditor}
                             className="h-8 gap-2"
                             disabled={isSavingHistory}
                         >
@@ -211,8 +281,8 @@ export function GeneralSettings() {
                 </div>
                 <hr className="border-zinc-800" />
 
-                <div className="bg-zinc-900/30 px-5 py-4 rounded-lg border border-zinc-800/50 flex flex-col sm:flex-row items-center justify-between gap-4">
-                    <div className="flex items-center gap-3 w-full sm:w-auto">
+                <div className="bg-zinc-900/30 px-5 py-4 rounded-lg border border-zinc-800/50 flex items-center justify-between gap-4">
+                    <div className="flex items-center gap-3">
                         <div className="p-2.5 bg-zinc-800 rounded-md text-zinc-400">
                             <Database className="h-5 w-5" />
                         </div>
@@ -222,32 +292,61 @@ export function GeneralSettings() {
                         </div>
                     </div>
 
-                    <div className="flex items-center gap-2 w-full sm:w-auto">
+                    <div className="flex flex-col gap-2 w-[220px]">
                         <Button 
                             variant="secondary" 
                             size="sm" 
-                            className="h-9 px-4 border-zinc-700 hover:border-zinc-500 flex-1 sm:flex-none"
+                            className="h-9 border-zinc-700 hover:border-zinc-500 hover:text-white"
                             onClick={handleOpenEditor}
-                            disabled={isLoadingHistory}
+                            disabled={isLoadingHistory || clearStatus === 'confirming'}
                         >
                             {isLoadingHistory ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-2" /> : <FileText className="h-3.5 w-3.5 mr-2" />}
-                            Edit
+                            Edit Archive Manually
                         </Button>
 
-                        <Button 
-                            variant="destructive" 
-                            size="sm" 
-                            className="h-9 w-9 p-0 flex-shrink-0"
-                            onClick={handleClearHistory}
+                        <button 
                             disabled={clearStatus === 'cleared'}
-                            title="Clear History"
-                        >
-                            {clearStatus === 'cleared' ? (
-                                <Check className="h-4 w-4" />
-                            ) : (
-                                <Trash2 className="h-4 w-4" />
+                            onClick={handleClearHistory}
+                            className={twMerge(
+                                "relative h-9 rounded-md transition-all duration-300 flex items-center justify-center overflow-hidden border",
+                                clearStatus === 'idle' && "bg-zinc-900 border-zinc-800 text-zinc-400 hover:border-red-500/50 hover:text-red-400",
+                                clearStatus === 'confirming' && "bg-zinc-900 border-red-500 text-red-500",
+                                clearStatus === 'cleared' && "bg-emerald-500/10 border-emerald-500/50 text-emerald-500"
                             )}
-                        </Button>
+                        >
+                            {/* Visual Wipe Indicator */}
+                            {clearStatus === 'confirming' && (
+                                <div 
+                                    className="absolute inset-0 bg-red-600/20"
+                                    style={{ 
+                                        width: `${clearTimer}%`, 
+                                        transition: 'width 16ms linear',
+                                        left: 0
+                                    }}
+                                />
+                            )}
+
+                            <span className="relative z-10 flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest">
+                                {clearStatus === 'idle' && (
+                                    <>
+                                        <Trash2 className="h-3.5 w-3.5" />
+                                        Clear History
+                                    </>
+                                )}
+                                {clearStatus === 'confirming' && (
+                                    <>
+                                        <AlertTriangle className="h-3.5 w-3.5 animate-pulse" />
+                                        Click Again to Erase
+                                    </>
+                                )}
+                                {clearStatus === 'cleared' && (
+                                    <>
+                                        <Check className="h-3.5 w-3.5" />
+                                        Database Cleared
+                                    </>
+                                )}
+                            </span>
+                        </button>
                     </div>
                 </div>
             </div>

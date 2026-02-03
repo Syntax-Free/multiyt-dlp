@@ -3,6 +3,13 @@ import { TemplateBlock, PreferenceConfig } from '@/types';
 import { getAppConfig, saveGeneralConfig, savePreferenceConfig, checkDependencies, getLatestAppVersion } from '@/api/invoke';
 import { getVersion } from '@tauri-apps/api/app';
 
+export interface SkipNotice {
+    skipped: number;
+    total: number;
+    url: string;
+    skippedUrls: string[];
+}
+
 interface AppContextType {
   // State
   isConfigLoaded: boolean;
@@ -16,6 +23,10 @@ interface AppContextType {
   openSettings: (tab?: string, sectionId?: string) => void;
   closeSettings: () => void;
   setSettingsActiveTab: (tab: string) => void;
+
+  // Global Notifications
+  skipNotice: SkipNotice | null;
+  setSkipNotice: (notice: SkipNotice | null) => void;
 
   // General Config
   defaultDownloadPath: string | null;
@@ -80,6 +91,9 @@ export const AppProvider = ({ children }: { children: React.ReactNode }) => {
   const [settingsActiveTab, setSettingsActiveTab] = useState('general');
   const [settingsActiveSection, setSettingsActiveSection] = useState<string | null>(null);
 
+  // Notifications
+  const [skipNotice, setSkipNotice] = useState<SkipNotice | null>(null);
+
   // Config State
   const [defaultDownloadPath, _setDownloadPath] = useState<string | null>(null);
   const [filenameTemplateBlocks, _setTemplateBlocks] = useState<TemplateBlock[]>(DEFAULT_TEMPLATE_BLOCKS);
@@ -102,9 +116,6 @@ export const AppProvider = ({ children }: { children: React.ReactNode }) => {
   const [latestVersion, setLatestVersion] = useState<string | null>(null);
   const [currentVersion, setCurrentVersion] = useState<string | null>(null);
 
-  // DEFECT FIX #2: Debouncing for config save
-  // We use a ref to store the latest config state, and a useEffect to trigger save with delay.
-  // This prevents UI lag and file locking issues on the backend.
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // --- Settings Navigation Logic ---
@@ -117,7 +128,6 @@ export const AppProvider = ({ children }: { children: React.ReactNode }) => {
 
   const closeSettings = useCallback(() => {
     setIsSettingsOpen(false);
-    // Reset section but keep tab
     setSettingsActiveSection(null);
   }, []);
 
@@ -202,7 +212,6 @@ export const AppProvider = ({ children }: { children: React.ReactNode }) => {
     }).join('');
   }, [filenameTemplateBlocks]);
 
-  // Debounced Save Trigger
   const triggerDebouncedSave = useCallback(() => {
       if (saveTimeoutRef.current) {
           clearTimeout(saveTimeoutRef.current);
@@ -220,7 +229,7 @@ export const AppProvider = ({ children }: { children: React.ReactNode }) => {
             cookies_path: cookiesPath,
             cookies_from_browser: cookiesBrowser
           }).catch(e => console.error("Failed to save general config:", e));
-      }, 500); // 500ms debounce
+      }, 500);
   }, [
       defaultDownloadPath, 
       filenameTemplateBlocks, 
@@ -233,7 +242,6 @@ export const AppProvider = ({ children }: { children: React.ReactNode }) => {
       getTemplateString
   ]);
 
-  // Whenever dependencies change, schedule a save
   useEffect(() => {
       if (isConfigLoaded) {
           triggerDebouncedSave();
@@ -274,7 +282,6 @@ export const AppProvider = ({ children }: { children: React.ReactNode }) => {
   const updatePreferences = (updates: Partial<PreferenceConfig>) => {
       const newPrefs = { ...preferences, ...updates };
       _setPreferences(newPrefs);
-      // Preferences are usually user-interaction driven and less frequent than sliders, can save immediately
       savePreferenceConfig(newPrefs).catch(e => console.error("Failed to save preferences:", e));
   };
 
@@ -288,6 +295,8 @@ export const AppProvider = ({ children }: { children: React.ReactNode }) => {
     openSettings,
     closeSettings,
     setSettingsActiveTab,
+    skipNotice,
+    setSkipNotice,
     defaultDownloadPath,
     setDefaultDownloadPath,
     filenameTemplateBlocks,

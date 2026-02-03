@@ -60,10 +60,10 @@ const Block = React.forwardRef<HTMLDivElement, BlockProps>(({ block, isOverlay, 
         <div
             ref={ref}
             className={twMerge(
-                "relative flex items-center gap-2 px-3 py-2 rounded-md border text-xs font-bold uppercase tracking-wide select-none transition-all",
-                "whitespace-nowrap flex-shrink-0", // Prevent squishing and wrapping
+                "relative flex items-center gap-2 px-3 py-2 rounded-md border text-[10px] font-bold uppercase tracking-wider select-none transition-all",
+                "whitespace-nowrap flex-shrink-0 min-w-[60px] h-8", // Defect #3: Fixed height and min-width
                 isVar ? "bg-theme-cyan/10 text-theme-cyan border-theme-cyan/30" : "bg-zinc-800 text-zinc-400 border-zinc-700",
-                isOverlay ? "shadow-xl scale-105 cursor-grabbing z-50" : "cursor-grab active:cursor-grabbing",
+                isOverlay ? "shadow-2xl scale-110 cursor-grabbing z-50 border-theme-cyan/50" : "cursor-grab active:cursor-grabbing",
                 className
             )}
             {...props}
@@ -71,7 +71,7 @@ const Block = React.forwardRef<HTMLDivElement, BlockProps>(({ block, isOverlay, 
             <GripVertical className="h-3 w-3 opacity-50" />
             <span>{block.label}</span>
             {onRemove && (
-                <button onClick={(e) => { e.stopPropagation(); onRemove(); }} className="ml-1 hover:text-red-500 transition-colors">
+                <button onClick={(e) => { e.stopPropagation(); onRemove(); }} className="ml-auto hover:text-red-500 transition-colors pl-2">
                     <Trash2 className="h-3 w-3" />
                 </button>
             )}
@@ -84,10 +84,11 @@ const SortableBlock = ({ block, onRemove }: { block: TemplateBlock, onRemove: (i
     const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: block.id });
     
     const style = {
-        // Use Translate to avoid scaling/stretching distortions on variable width items
         transform: CSS.Translate.toString(transform),
         transition,
         opacity: isDragging ? 0.3 : 1,
+        // Defect #3: Ensure no internal layout shift during transition
+        zIndex: isDragging ? 50 : 1,
     };
 
     return (
@@ -122,7 +123,6 @@ export function TemplateEditor({ blocks, onChange }: TemplateEditorProps) {
         setActiveId(event.active.id as string);
     };
 
-    // For variable width lists, sorting must happen onDragOver to trigger layout reflow
     const handleDragOver = (event: DragOverEvent) => {
         const { active, over } = event;
         if (over && active.id !== over.id) {
@@ -157,16 +157,17 @@ export function TemplateEditor({ blocks, onChange }: TemplateEditorProps) {
         <div className="space-y-6">
             {/* Preview Section */}
             <div className="bg-zinc-950 p-4 rounded-lg border border-zinc-800">
-                <div className="text-xs text-zinc-500 mb-2 uppercase font-bold tracking-wider">Output Preview</div>
-                <div className="font-mono text-sm text-zinc-300 break-all">
+                <div className="text-[10px] text-zinc-600 mb-2 uppercase font-black tracking-widest">Output Preview</div>
+                <div className="font-mono text-sm text-zinc-300 break-all bg-black/30 p-2 rounded border border-white/5">
                     {previewString || <span className="text-zinc-600 italic">Empty template...</span>}
                 </div>
             </div>
 
             {/* Editor Area */}
             <div className="space-y-2">
-                 <div className="text-xs text-zinc-500 uppercase font-bold tracking-wider">Active Template</div>
-                 <div className="min-h-[80px] p-4 bg-zinc-900/50 border border-dashed border-zinc-700 rounded-lg flex flex-wrap gap-2 items-center">
+                 <div className="text-[10px] text-zinc-600 uppercase font-black tracking-widest">Active Template (Drag to reorder)</div>
+                 {/* Defect #3: Stable flex container with specific gap to prevent jitter */}
+                 <div className="min-h-[100px] p-4 bg-zinc-900/50 border border-dashed border-zinc-700 rounded-lg flex flex-wrap gap-2.5 items-center content-start">
                     <DndContext 
                         sensors={sensors} 
                         collisionDetection={closestCenter} 
@@ -181,12 +182,11 @@ export function TemplateEditor({ blocks, onChange }: TemplateEditorProps) {
                         </SortableContext>
                         
                         {blocks.length === 0 && (
-                            <div className="w-full text-center text-zinc-600 text-sm">
+                            <div className="w-full text-center text-zinc-600 text-sm py-4">
                                 Drag and drop is ready. Add blocks from below.
                             </div>
                         )}
 
-                        {/* FIX: Render overlay in Portal to escape Parent Transforms (Modal animation) */}
                         {createPortal(
                             <DragOverlay dropAnimation={{
                                 sideEffects: defaultDropAnimationSideEffects({ styles: { active: { opacity: '0.5' } } }),
@@ -202,7 +202,7 @@ export function TemplateEditor({ blocks, onChange }: TemplateEditorProps) {
             {/* Toolbox */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="space-y-3">
-                    <div className="text-xs text-zinc-500 uppercase font-bold tracking-wider">Variables</div>
+                    <div className="text-[10px] text-zinc-600 uppercase font-black tracking-widest">Available Variables</div>
                     <div className="flex flex-wrap gap-2">
                         {AVAILABLE_VARS.map((v) => (
                             <button 
@@ -218,7 +218,7 @@ export function TemplateEditor({ blocks, onChange }: TemplateEditorProps) {
                 </div>
 
                 <div className="space-y-3">
-                    <div className="text-xs text-zinc-500 uppercase font-bold tracking-wider">Separators</div>
+                    <div className="text-[10px] text-zinc-600 uppercase font-black tracking-widest">Separators</div>
                     <div className="flex flex-wrap gap-2">
                         {AVAILABLE_SEPARATORS.map((s) => (
                             <button 

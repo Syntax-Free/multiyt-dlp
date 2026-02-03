@@ -5,23 +5,24 @@ import { DownloadQueue } from './components/DownloadQueue';
 import { useDownloadManager } from './hooks/useDownloadManager';
 import { Layout } from './components/Layout';
 import { SplashWindow } from './components/SplashWindow';
-import { Activity, CheckCircle2, AlertCircle, List, Database, Hourglass, LayoutGrid, Trash2, RefreshCw } from 'lucide-react';
+import { Activity, CheckCircle2, AlertCircle, List, Database, Hourglass, LayoutGrid, Trash2, RefreshCw, Filter, X } from 'lucide-react';
 import { twMerge } from 'tailwind-merge';
+import { useAppContext } from './contexts/AppContext';
+import { Button } from './components/ui/Button';
 
 function App() {
+  const { skipNotice, setSkipNotice, getTemplateString, preferences } = useAppContext();
   const [windowLabel, setWindowLabel] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
+  const [isProcessingRetry, setIsProcessingRetry] = useState(false);
   const { downloads, startDownload, cancelDownload, removeDownload } = useDownloadManager();
   
-  // Track previous count to handle auto-switching logic cleanly
   const prevCountRef = useRef(0);
 
   useEffect(() => {
-    // appWindow.label is a string, not a Promise
     setWindowLabel(appWindow.label);
   }, []);
 
-  // Auto-switch to Grid view if downloads exceed 20
   useEffect(() => {
     const count = downloads.size;
     const prevCount = prevCountRef.current;
@@ -35,7 +36,6 @@ function App() {
 
   if (!windowLabel) return null;
 
-  // --- SPLASH SCREEN ROUTE ---
   if (windowLabel === 'splashscreen') {
       return <SplashWindow />;
   }
@@ -49,14 +49,8 @@ function App() {
 
   const handleRetryFailed = () => {
     const failedJobs = Array.from(downloads.values()).filter(d => d.status === 'error');
-    
     failedJobs.forEach(job => {
-        // Remove the error entry first
         removeDownload(job.jobId);
-        
-        // Start a fresh download with preserved settings
-        // FORCE restrictFilenames to true for manual retries
-        // FORCE forceDownload to true to bypass history check (since it failed but might have been added to history)
         startDownload(
             job.url,
             job.downloadPath,
@@ -65,17 +59,41 @@ function App() {
             job.embedMetadata || false,
             job.embedThumbnail || false,
             job.filenameTemplate || "%(title)s.%(ext)s",
-            true, // restrictFilenames
-            true  // forceDownload
+            true, 
+            true  
         );
     });
+  };
+
+  const handleRetrySkipped = async () => {
+    if (!skipNotice) return;
+    
+    setIsProcessingRetry(true);
+    try {
+        await startDownload(
+            skipNotice.url,
+            undefined, // Use default
+            preferences.format_preset as any,
+            preferences.video_resolution,
+            preferences.embed_metadata,
+            preferences.embed_thumbnail,
+            getTemplateString(),
+            false,
+            true, // Force history bypass
+            skipNotice.skippedUrls,
+            preferences.live_from_start
+        );
+        setSkipNotice(null);
+    } catch (e) {
+        console.error("Retry failed", e);
+    } finally {
+        setIsProcessingRetry(false);
+    }
   };
 
   const toggleViewMode = () => {
       setViewMode(prev => prev === 'list' ? 'grid' : 'list');
   };
-
-  // --- MAIN APP ROUTE ---
 
   // Calculate Stats
   const total = downloads.size;
@@ -92,9 +110,8 @@ function App() {
         MainContent={
           <>
             {/* Executive Summary Header */}
-            <div className="flex items-center justify-between mb-6 bg-zinc-900/40 border border-zinc-800 rounded-lg p-4">
+            <div className="flex items-center justify-between mb-4 bg-zinc-900/40 border border-zinc-800 rounded-lg p-4">
                 <div className="flex items-center gap-4">
-                    {/* View Toggle Icon Button */}
                     <button 
                         onClick={toggleViewMode}
                         className="p-2 rounded-md bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-theme-cyan hover:border-theme-cyan/50 hover:bg-zinc-800 transition-all cursor-pointer group"
@@ -150,7 +167,6 @@ function App() {
                         
                         <div className="w-px h-8 bg-zinc-800" />
                         
-                        {/* DONE Column with Clear Overlay */}
                         <div className={twMerge("relative flex flex-col items-end min-w-[40px]", completed > 0 ? "group cursor-pointer" : "")}>
                             <div className={twMerge("flex flex-col items-end transition-opacity duration-200", completed > 0 && "group-hover:opacity-0")}>
                                 <span className="text-[10px] text-zinc-600 uppercase tracking-wider font-bold">Done</span>
@@ -173,7 +189,6 @@ function App() {
                         
                         <div className="w-px h-8 bg-zinc-800" />
                         
-                        {/* FAILED Column with Retry Overlay */}
                         <div className={twMerge("relative flex flex-col items-end min-w-[40px]", failed > 0 ? "group cursor-pointer" : "")}>
                             <div className={twMerge("flex flex-col items-end transition-opacity duration-200", failed > 0 && "group-hover:opacity-0")}>
                                 <span className="text-[10px] text-zinc-600 uppercase tracking-wider font-bold">Failed</span>
@@ -196,6 +211,49 @@ function App() {
                     </div>
                 </div>
             </div>
+
+            {/* Defect #6: Skip Notification moved to Main View */}
+            {skipNotice && (
+                <div className="mb-4 animate-fade-in relative p-4 rounded-lg border bg-zinc-900/60 border-theme-cyan/20 backdrop-blur-sm flex items-center justify-between gap-4 shadow-lg shadow-theme-cyan/5">
+                    <div className="flex items-center gap-4">
+                        <div className="p-2.5 bg-theme-cyan/10 rounded-full text-theme-cyan ring-1 ring-theme-cyan/20">
+                             <Filter className="h-5 w-5" />
+                        </div>
+                        <div>
+                            <div className="text-sm font-black text-zinc-100 uppercase tracking-wider">
+                                {skipNotice.skipped === skipNotice.total 
+                                    ? "Duplicate Blocked" 
+                                    : "Partial Duplicate Filter"}
+                            </div>
+                            <div className="text-xs text-zinc-400 mt-0.5">
+                                {skipNotice.skipped === skipNotice.total 
+                                    ? "The requested URL already exists in your download history."
+                                    : `Filtered ${skipNotice.skipped} duplicates. ${skipNotice.total - skipNotice.skipped} new items were added to the queue.`
+                                }
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div className="flex items-center gap-3">
+                         <Button
+                            variant="neon"
+                            size="sm"
+                            className="h-8 px-4 text-[10px] font-black"
+                            disabled={isProcessingRetry}
+                            onClick={handleRetrySkipped}
+                        >
+                            {isProcessingRetry ? <RefreshCw className="h-3 w-3 animate-spin mr-2" /> : <RefreshCw className="h-3 w-3 mr-2" />}
+                            FORCE DOWNLOAD
+                        </Button>
+                        <button 
+                            onClick={() => setSkipNotice(null)}
+                            className="p-1 text-zinc-600 hover:text-white transition-colors"
+                        >
+                            <X className="h-4 w-4" />
+                        </button>
+                    </div>
+                </div>
+            )}
 
             <DownloadQueue 
                 downloads={downloads} 

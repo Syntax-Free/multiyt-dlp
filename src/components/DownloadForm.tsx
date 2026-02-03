@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Button } from './ui/Button';
 import { Card, CardContent } from './ui/Card';
-import { Download, FolderOpen, Link2, MonitorPlay, Headphones, FileText, Image as ImageIcon, AlertTriangle, Loader2, ChevronDown, CheckCheck, RefreshCw, Filter, Radio, X } from 'lucide-react';
+import { Download, FolderOpen, Link2, MonitorPlay, Headphones, FileText, Image as ImageIcon, AlertTriangle, Loader2, ChevronDown, Radio } from 'lucide-react';
 import { selectDirectory } from '@/api/invoke';
 import { DownloadFormatPreset, PreferenceConfig, StartDownloadResponse } from '@/types';
 import { useAppContext } from '@/contexts/AppContext';
@@ -92,16 +92,15 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
     preferences, 
     updatePreferences, 
     defaultDownloadPath, 
-    setDefaultDownloadPath 
+    setDefaultDownloadPath,
+    setSkipNotice
   } = useAppContext();
   
   const [url, setUrl] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [showForceOptions, setShowForceOptions] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
-  
   const [errorDetails, setErrorDetails] = useState<{ message: string, stderr?: string } | null>(null);
-  const [skipInfo, setSkipInfo] = useState<{ skipped: number, total: number, url: string, skippedUrls: string[] } | null>(null);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -129,7 +128,7 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
 
     setIsProcessing(true);
     setErrorDetails(null);
-    setSkipInfo(null);
+    setSkipNotice(null); // Clear global notice
     setShowForceOptions(false);
 
     try {
@@ -150,7 +149,7 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
         );
 
         if (response.skipped_count > 0) {
-            setSkipInfo({
+            setSkipNotice({
                 skipped: response.skipped_count,
                 total: response.total_found,
                 url: currentUrl,
@@ -158,8 +157,6 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
             });
         }
 
-        // Only clear the input if something was actually queued or if it was a total history skip
-        // This keeps the URL visible if the user needs to correct something after a partial failure
         if (response.job_ids.length > 0 || response.skipped_count === response.total_found) {
             setUrl('');
         }
@@ -170,38 +167,6 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
     } finally {
         setIsProcessing(false);
     }
-  };
-
-  const handleDownloadSkipped = () => {
-      if (skipInfo?.url && skipInfo.skippedUrls.length > 0) {
-          const retryUrl = skipInfo.url;
-          const urlsToRetry = skipInfo.skippedUrls;
-          
-          setIsProcessing(true);
-          const template = getTemplateString();
-
-          onDownload(
-            retryUrl, 
-            defaultDownloadPath || undefined, 
-            preferences.format_preset as DownloadFormatPreset,
-            preferences.video_resolution,
-            preferences.embed_metadata, 
-            preferences.embed_thumbnail, 
-            template,
-            false,
-            true, // FORCE history bypass
-            urlsToRetry, // Only target the items that were skipped
-            preferences.live_from_start
-          ).then(() => {
-              setSkipInfo(null);
-              setUrl('');
-          }).catch((err: any) => {
-               const extracted = extractErrorDetails(err);
-               setErrorDetails(extracted);
-          }).finally(() => {
-              setIsProcessing(false);
-          });
-      }
   };
 
   const handleSelectDirectory = async () => {
@@ -271,7 +236,6 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
                     onChange={(e) => { 
                         setUrl(e.target.value); 
                         setErrorDetails(null); 
-                        if (skipInfo) setSkipInfo(null);
                     }}
                     disabled={isProcessing}
                     placeholder="https://youtube.com/watch?v=... or Playlist URL"
@@ -293,58 +257,6 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
                         error={errorDetails.message} 
                         stderr={errorDetails.stderr} 
                     />
-                </div>
-            )}
-
-            {/* Skipped Items Notice */}
-            {skipInfo && (
-                <div className="animate-fade-in relative p-3 rounded-lg border bg-zinc-900 border-zinc-800 text-zinc-300">
-                    <button 
-                        type="button"
-                        onClick={() => setSkipInfo(null)}
-                        className="absolute top-2 right-2 text-zinc-500 hover:text-white transition-colors"
-                    >
-                        <X className="h-3.5 w-3.5" />
-                    </button>
-                    
-                    <div className="flex items-start gap-3 pr-4">
-                        <div className="p-2 bg-zinc-800 rounded text-zinc-400">
-                             <Filter className="h-4 w-4" />
-                        </div>
-                        <div className="flex-1 min-w-0">
-                            <div className="text-xs font-semibold text-zinc-100">
-                                {skipInfo.skipped === skipInfo.total 
-                                    ? "All items already in history" 
-                                    : `${skipInfo.skipped} item${skipInfo.skipped > 1 ? 's' : ''} filtered from queue`}
-                            </div>
-                            <div className="text-[11px] text-zinc-500 mt-0.5 mb-2 leading-tight">
-                                {skipInfo.skipped === skipInfo.total 
-                                    ? "These URLs match entries in your archive database."
-                                    : `${skipInfo.total - skipInfo.skipped} new items were added. Duplicates were ignored.`
-                                }
-                            </div>
-                            
-                            <div className="flex items-center gap-2">
-                                <Button
-                                    type="button"
-                                    onClick={handleDownloadSkipped}
-                                    variant="outline"
-                                    size="sm"
-                                    className="h-7 text-[10px] border-zinc-700 bg-zinc-800/50 hover:bg-zinc-700 hover:text-white"
-                                >
-                                    <RefreshCw className="h-3 w-3 mr-1.5" />
-                                    Download Skipped
-                                </Button>
-                                
-                                {skipInfo.skipped < skipInfo.total && (
-                                     <div className="flex items-center gap-1.5 px-2 py-1 text-[10px] text-emerald-500 font-medium bg-emerald-500/5 rounded border border-emerald-500/10">
-                                         <CheckCheck className="h-3 w-3" />
-                                         <span>Others Queued</span>
-                                     </div>
-                                )}
-                            </div>
-                        </div>
-                    </div>
                 </div>
             )}
           </div>

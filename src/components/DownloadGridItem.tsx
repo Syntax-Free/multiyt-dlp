@@ -9,11 +9,22 @@ interface DownloadGridItemProps {
   onCancel: (jobId: string) => void;
 }
 
+/**
+ * Truncates string in the middle to preserve unique identifiers at the end
+ * (e.g. "Long Title Part 1.mp4" -> "Long Tit...rt 1.mp4")
+ */
+function middleTruncate(str: string, maxLength: number) {
+    if (str.length <= maxLength) return str;
+    const partLen = Math.floor((maxLength - 3) / 2);
+    return str.substring(0, partLen) + '...' + str.substring(str.length - partLen);
+}
+
 export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) {
   const { jobId, status, progress, error, phase, preset, embedThumbnail, filename, url, outputPath, stderr } = download;
 
   const isAudio = preset?.startsWith('audio');
-  const displayTitle = filename || url;
+  const rawTitle = filename || url;
+  const displayTitle = middleTruncate(rawTitle, 40);
   
   // State Flags
   const isQueued = status === 'pending';
@@ -51,22 +62,22 @@ export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) 
       if (isProcessingPhase || isMetaPhase) return "border-amber-500/50 bg-amber-950/20 shadow-[0_0_15px_-5px_rgba(245,158,11,0.3)]";
       if (isActive) return "border-theme-cyan/50 bg-zinc-900 shadow-[0_0_15px_-5px_rgba(6,182,212,0.3)]";
       if (isCancelled) return "border-zinc-800 bg-zinc-950 opacity-60";
-      return "border-zinc-800 bg-zinc-900"; // Queued
+      return "border-zinc-800 bg-zinc-900"; 
   };
 
   const IconComponent = () => {
-    if (isError) return <AlertTriangle className="h-8 w-8 text-red-500 drop-shadow-lg" />;
-    if (isCompleted) return <CheckCircle2 className="h-8 w-8 text-emerald-500 drop-shadow-lg" />;
-    if (isCancelled) return <X className="h-8 w-8 text-zinc-600" />;
-    if (isQueued) return <Hourglass className="h-8 w-8 text-zinc-500 animate-pulse" />;
+    if (isError) return <AlertTriangle className="h-7 w-7 text-red-500 drop-shadow-lg" />;
+    if (isCompleted) return <CheckCircle2 className="h-7 w-7 text-emerald-500 drop-shadow-lg" />;
+    if (isCancelled) return <X className="h-7 w-7 text-zinc-600" />;
+    if (isQueued) return <Hourglass className="h-7 w-7 text-zinc-500 animate-pulse" />;
     
-    if (isMetaPhase) return <Tags className="h-8 w-8 text-amber-400 animate-pulse" />;
-    if (isProcessingPhase) return <FileOutput className="h-8 w-8 text-amber-400 animate-pulse" />;
-    if (embedThumbnail && phase?.includes('Thumbnail')) return <ImageIcon className="h-8 w-8 text-amber-400 animate-pulse" />;
+    if (isMetaPhase) return <Tags className="h-7 w-7 text-amber-400 animate-pulse" />;
+    if (isProcessingPhase) return <FileOutput className="h-7 w-7 text-amber-400 animate-pulse" />;
+    if (embedThumbnail && phase?.includes('Thumbnail')) return <ImageIcon className="h-7 w-7 text-amber-400 animate-pulse" />;
 
     return isAudio 
-        ? <Headphones className="h-8 w-8 text-theme-red" /> 
-        : <MonitorPlay className="h-8 w-8 text-theme-cyan" />;
+        ? <Headphones className="h-7 w-7 text-theme-red" /> 
+        : <MonitorPlay className="h-7 w-7 text-theme-cyan" />;
   };
 
   let badgeText = isAudio ? 'AUDIO' : 'VIDEO';
@@ -80,7 +91,7 @@ export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) 
   return (
     <div 
         className={twMerge(
-            "group relative aspect-square w-full min-h-[140px] rounded-xl border-2 overflow-hidden transition-all duration-300 select-none flex flex-col",
+            "group relative aspect-square w-full min-h-[160px] rounded-xl border-2 overflow-hidden transition-all duration-300 select-none flex flex-col",
             getContainerStyles()
         )}
     >
@@ -89,64 +100,51 @@ export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) 
             <div className="absolute inset-0 opacity-10 bg-[repeating-linear-gradient(45deg,transparent,transparent_10px,#ef4444_10px,#ef4444_20px)]" />
         )}
 
-        {/* PROGRESS FILL (Active Only) */}
+        {/* PROGRESS FILL (Active Only) - Reversed: Fills from bottom for cleaner look */}
         {isActive && !isProcessingPhase && !isMetaPhase && (
             <div 
                 className="absolute bottom-0 left-0 right-0 bg-theme-cyan/10 transition-all duration-300 ease-out z-0"
                 style={{ height: `${progress}%` }}
             >
-                {/* Glow line at the top of progress */}
                 <div className="w-full h-[1px] bg-theme-cyan/50 shadow-[0_0_10px_rgba(6,182,212,0.8)]" />
             </div>
         )}
 
-        {/* PROCESSING STRIPES */}
-        {(isQueued || isProcessingPhase || isMetaPhase) && (
-            <div className="absolute inset-0 w-full h-full bg-[linear-gradient(45deg,transparent_25%,rgba(255,255,255,0.03)_25%,rgba(255,255,255,0.03)_50%,transparent_50%,transparent_75%,rgba(255,255,255,0.03)_75%,rgba(255,255,255,0.03)_100%)] bg-[length:40px_40px] animate-[progress-stripes_1s_linear_infinite] pointer-events-none opacity-50" />
-        )}
-
-        {/* --- MAIN CONTENT CENTER --- */}
-        <div className="relative z-10 flex-1 flex flex-col items-center justify-center p-4 group-hover:scale-105 transition-transform duration-300">
-            {isActive && !isProcessingPhase && !isMetaPhase ? (
-                <div className="flex flex-col items-center animate-fade-in space-y-1">
-                    <span className="text-3xl font-black tracking-tighter text-zinc-100 tabular-nums drop-shadow-md">
-                        {progress.toFixed(0)}<span className="text-sm font-medium text-zinc-500 align-top ml-0.5">%</span>
-                    </span>
-                    <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-black/20 backdrop-blur-sm border border-white/5">
-                        <Activity className="h-3 w-3 text-theme-cyan animate-pulse" />
-                        <span className="text-[10px] font-mono text-theme-cyan/80">DOWNLOADING</span>
-                    </div>
-                </div>
-            ) : (
-                <div className={twMerge("transition-transform duration-300 p-3 rounded-full bg-black/20 backdrop-blur-sm border border-white/5", isActive && "animate-pulse")}>
-                    <IconComponent />
-                </div>
-            )}
-            
-            {/* Status Text (Non-Active states) */}
-            {!isActive && (
-                <div className={twMerge(
-                    "mt-3 text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded border backdrop-blur-sm",
-                    isError ? "text-red-400 border-red-500/30 bg-red-950/40" :
-                    isCompleted ? "text-emerald-400 border-emerald-500/30 bg-emerald-950/40" :
-                    isCancelled ? "text-zinc-500 border-zinc-700 bg-zinc-900" :
-                    "text-zinc-400 border-zinc-700 bg-zinc-800"
-                )}>
-                    {isError ? 'FAILED' : isCompleted ? 'DONE' : isCancelled ? 'CANCELLED' : 'QUEUED'}
-                </div>
-            )}
-        </div>
-
-        {/* --- TITLE FOOTER --- */}
-        <div className="relative z-10 w-full p-2 bg-black/40 backdrop-blur-sm border-t border-white/5">
-            <div className="text-[10px] font-medium text-zinc-300 truncate text-center px-1" title={displayTitle}>
+        {/* --- TITLE HEADER --- */}
+        <div className="relative z-10 w-full p-2.5 bg-black/40 backdrop-blur-md border-b border-white/5 h-[52px] flex items-center">
+            <div className="text-[11px] font-black leading-tight text-zinc-100 line-clamp-2 text-center w-full" title={rawTitle}>
                 {displayTitle}
             </div>
         </div>
 
+        {/* --- MAIN CONTENT CENTER --- */}
+        <div className="relative z-10 flex-1 flex flex-col items-center justify-center p-3 group-hover:scale-105 transition-transform duration-300">
+            {isActive && !isProcessingPhase && !isMetaPhase ? (
+                <div className="flex flex-col items-center animate-fade-in">
+                    <span className="text-2xl font-black tracking-tighter text-zinc-100 tabular-nums">
+                        {progress.toFixed(0)}<span className="text-[10px] font-medium text-zinc-500 align-top ml-0.5">%</span>
+                    </span>
+                    <div className="mt-1 flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-theme-cyan/10 border border-theme-cyan/20">
+                         <Activity className="h-2.5 w-2.5 text-theme-cyan animate-pulse" />
+                         <span className="text-[9px] font-black tracking-widest text-theme-cyan">DL</span>
+                    </div>
+                </div>
+            ) : (
+                <div className={twMerge("transition-transform duration-300", isActive && "animate-pulse")}>
+                    <IconComponent />
+                </div>
+            )}
+            
+            {/* Phase Text (When active/processing) */}
+            {(isActive || isQueued) && (
+                <div className="mt-2 text-[8px] font-black uppercase tracking-[0.2em] text-zinc-500">
+                    {phase || (isQueued ? 'Queued' : 'Init')}
+                </div>
+            )}
+        </div>
+
         {/* --- HOVER OVERLAY ACTIONS --- */}
-        <div className="absolute inset-0 z-20 bg-zinc-950/90 backdrop-blur-[2px] opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex flex-col p-3">
-            {/* Top Bar Badges */}
+        <div className="absolute inset-0 z-20 bg-zinc-950/95 backdrop-blur-[2px] opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex flex-col p-3">
             <div className="flex gap-1 mb-auto">
                 <span className={twMerge(
                     "text-[9px] font-bold px-1.5 py-0.5 rounded border uppercase",
@@ -154,26 +152,19 @@ export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) 
                 )}>
                     {badgeText}
                 </span>
-                {(isProcessingPhase || isMetaPhase) && (
-                     <span className="text-[9px] font-bold px-1.5 py-0.5 rounded border uppercase bg-amber-500/10 text-amber-400 border-amber-500/20 animate-pulse">
-                        PROCESSING
-                    </span>
-                )}
             </div>
 
-            {/* Error Details Preview */}
             {isError && (
-                <div className="mb-auto text-[10px] text-red-300 leading-tight font-mono break-words line-clamp-3 bg-red-950/30 p-1.5 rounded border border-red-900/50">
+                <div className="mb-auto mt-2 text-[10px] text-red-300 leading-tight font-mono break-words line-clamp-4 bg-red-950/30 p-2 rounded border border-red-900/50">
                     {friendlyError}
                 </div>
             )}
 
-            {/* Action Buttons Container */}
             <div className="mt-auto grid grid-cols-1 gap-2">
                 {isCompleted && outputPath ? (
                     <button
                         onClick={(e) => { e.stopPropagation(); showInFolder(outputPath); }}
-                        className="flex items-center justify-center gap-2 w-full py-1.5 rounded bg-zinc-800 hover:bg-emerald-600 hover:text-white text-zinc-300 text-[10px] font-bold transition-colors border border-zinc-700 hover:border-emerald-500"
+                        className="flex items-center justify-center gap-2 w-full py-1.5 rounded bg-theme-cyan/10 hover:bg-theme-cyan text-theme-cyan hover:text-black text-[10px] font-black transition-all border border-theme-cyan/20"
                     >
                         <FolderSearch className="h-3.5 w-3.5" />
                         OPEN FOLDER
@@ -184,9 +175,9 @@ export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) 
                      <button
                         onClick={(e) => { e.stopPropagation(); onCancel(jobId); }}
                         className={twMerge(
-                            "flex items-center justify-center gap-2 w-full py-1.5 rounded text-[10px] font-bold transition-colors border",
+                            "flex items-center justify-center gap-2 w-full py-1.5 rounded text-[10px] font-black transition-all border",
                             isError 
-                                ? "bg-zinc-800 hover:bg-red-600 text-zinc-300 hover:text-white border-zinc-700 hover:border-red-500"
+                                ? "bg-red-600/10 hover:bg-red-600 text-red-500 hover:text-white border-red-500/20"
                                 : "bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-zinc-200 border-zinc-700"
                         )}
                     >
