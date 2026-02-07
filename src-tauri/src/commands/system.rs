@@ -6,6 +6,12 @@ use crate::core::deps;
 use std::path::PathBuf;
 use tracing::{info, warn, error, debug};
 use tokio::time::{timeout, Duration};
+use once_cell::sync::Lazy;
+use std::sync::Mutex;
+use std::collections::HashSet;
+
+// GLOBAL LOCK to prevent concurrent dependency installs
+static INSTALL_LOCKS: Lazy<Mutex<HashSet<String>>> = Lazy::new(|| Mutex::new(HashSet::new()));
 
 #[derive(Serialize, Clone, Debug)]
 pub struct DependencyInfo {
@@ -55,7 +61,6 @@ fn new_silent_command(program: &str) -> Command {
     cmd
 }
 
-/// Probes a binary for availability and version with a strict timeout.
 pub fn resolve_binary_info(bin_name: &str, version_flag: &str, local_bin_path: &PathBuf) -> DependencyInfo {
     let local_path = local_bin_path.join(bin_name);
     let local_available = local_path.exists();
@@ -77,7 +82,6 @@ pub fn resolve_binary_info(bin_name: &str, version_flag: &str, local_bin_path: &
     let mut version = None;
 
     if let Some(ref p) = final_path {
-        // Shorter internal timeout for the command execution itself
         if let Ok(output) = new_silent_command(p).arg(version_flag).output() {
              if output.status.success() {
                  let out_str = String::from_utf8_lossy(&output.stdout).to_string();
@@ -98,8 +102,6 @@ pub fn resolve_binary_info(bin_name: &str, version_flag: &str, local_bin_path: &
     }
 }
 
-/// Helper used by process.rs to configure yt-dlp arguments.
-/// Returns (EngineName, ExecutablePath)
 pub fn get_js_runtime_info(bin_path: &PathBuf) -> Option<(String, String)> {
     let providers = [
         ("deno", "deno"),
@@ -111,14 +113,11 @@ pub fn get_js_runtime_info(bin_path: &PathBuf) -> Option<(String, String)> {
 
     for (exec_base, engine_name) in providers {
         let exec = if cfg!(windows) { format!("{}.exe", exec_base) } else { exec_base.to_string() };
-        
-        // Fast path: Check existence in bin folder first
         let local = bin_path.join(&exec);
         if local.exists() {
             return Some((engine_name.to_string(), local.to_string_lossy().to_string()));
         }
 
-        // Slow path: Check system PATH
         let path_cmd = if cfg!(target_os = "windows") { "where" } else { "which" };
         let found = new_silent_command(path_cmd)
             .arg(&exec)
@@ -135,7 +134,6 @@ pub fn get_js_runtime_info(bin_path: &PathBuf) -> Option<(String, String)> {
     None
 }
 
-/// Detailed analysis used for Splash boot check and Settings UI.
 pub async fn analyze_js_runtime(_app_handle: &AppHandle, bin_path: &PathBuf) -> DependencyInfo {
     let providers = [
         ("deno", "Deno", "--version"),
@@ -206,7 +204,6 @@ pub async fn check_dependencies(app_handle: AppHandle) -> AppDependencies {
             let mut info = resolve_binary_info(exec_name, "--version", &bin_dir);
             info.name = "aria2c".to_string();
             if let Some(ref v) = info.version {
-                // aria2 version 1.36.0
                 let re = Regex::new(r"aria2 version ([^\s]+)").unwrap();
                 if let Some(caps) = re.captures(v) {
                     info.version = Some(caps[1].to_string());
@@ -227,7 +224,25 @@ pub async fn check_dependencies(app_handle: AppHandle) -> AppDependencies {
 
 #[tauri::command]
 pub async fn install_dependency(app_handle: AppHandle, name: String) -> Result<(), String> {
-    deps::install_dep(name, app_handle).await
+    // Check Global Lock
+    {
+        let mut locks = INSTALL_LOCKS.lock().unwrap();
+        if locks.contains(&name) {
+            return Err(format!("Installation of {} is already in progress", name));
+        }
+        locks.insert(name.clone());
+    }
+
+    // Execute with cleanup guard
+    let result = deps::install_dep(name.clone(), app_handle).await;
+
+    // Release Lock
+    {
+        let mut locks = INSTALL_LOCKS.lock().unwrap();
+        locks.remove(&name);
+    }
+    
+    result
 }
 
 #[tauri::command]

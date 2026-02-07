@@ -6,6 +6,8 @@ use reqwest::{Client, header};
 use tokio::fs::{self, OpenOptions};
 use tokio::io::{AsyncWriteExt};
 use futures_util::StreamExt;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use crate::core::transport::retry::{RetryPolicy, TransportError};
 
 // Constants
@@ -55,8 +57,6 @@ impl TransportEngine {
         let (content_len, accepts_ranges) = self.probe().await?;
 
         // 2. Path Decision
-        // We filter out Some(0) because a 0-byte dependency is an invalid state 
-        // usually caused by a HEAD request redirecting incorrectly.
         let validated_len = content_len.filter(|&s| s > 0);
 
         if let Some(total_size) = validated_len {
@@ -88,14 +88,21 @@ impl TransportEngine {
         Ok((len, accepts_ranges))
     }
 
-    // --- LINEAR DOWNLOAD (Fallback / Small Files) ---
+    fn calculate_deterministic_hash(&self) -> String {
+        let mut hasher = DefaultHasher::new();
+        self.target_path.hash(&mut hasher);
+        format!("{:x}", hasher.finish())
+    }
+
+    // --- LINEAR DOWNLOAD ---
     
     async fn download_linear<F>(&self, total_size: Option<u64>, on_progress: F) -> Result<(), TransportError>
     where
         F: Fn(u64, u64, f64) + Send + Sync + 'static,
     {
-        let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let part_path = self.target_path.with_extension(format!("part.linear.{}", timestamp));
+        // Use hash-based naming to prevent zombies and allow resume attempt in future
+        let hash = self.calculate_deterministic_hash();
+        let part_path = self.target_path.with_extension(format!("part.linear.{}", hash));
 
         let mut retry_policy = RetryPolicy::new(5);
 
@@ -106,6 +113,8 @@ impl TransportEngine {
                     return Ok(());
                 },
                 Err(e) => {
+                    // For linear, we can't easily resume without range support logic here
+                    // so we just truncate on retry (classic behavior for non-ranged)
                     let _ = fs::remove_file(&part_path).await;
 
                     if let TransportError::HttpStatus(404) = e {
@@ -159,7 +168,6 @@ impl TransportEngine {
 
         file.flush().await?;
 
-        // Only validate if total_size is known and greater than 0
         if let Some(total) = total_size {
             if total > 0 && downloaded != total {
                 return Err(TransportError::Validation(format!("Expected {}, got {}", total, downloaded)));
@@ -169,7 +177,7 @@ impl TransportEngine {
         Ok(())
     }
 
-    // --- CONCURRENT DOWNLOAD (High Performance) ---
+    // --- CONCURRENT DOWNLOAD ---
 
     async fn download_concurrent<F>(&self, total_size: u64, on_progress: F) -> Result<(), TransportError>
     where
@@ -188,13 +196,24 @@ impl TransportEngine {
             chunks.push(Chunk { index: i, start, end, len: end - start + 1 });
         }
 
+        // Initialize progress tracker with existing file sizes
         let bytes_downloaded = Arc::new(AtomicU64::new(0));
-        let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let mut tasks = Vec::new();
+        let hash = self.calculate_deterministic_hash();
+        
+        let mut initial_progress = 0;
+        for i in 0..self.concurrency {
+            let p = self.target_path.with_extension(format!("part.{}.{}", hash, i));
+            if let Ok(m) = fs::metadata(&p).await {
+                initial_progress += m.len();
+            }
+        }
+        bytes_downloaded.store(initial_progress, Ordering::Relaxed);
 
+        let mut tasks = Vec::new();
         let bytes_downloaded_monitor = bytes_downloaded.clone();
         let on_progress_monitor = on_progress.clone();
         
+        // Monitor Thread
         let monitor_handle = tokio::spawn(async move {
             let mut last_bytes = 0;
             let mut last_time = Instant::now();
@@ -202,7 +221,6 @@ impl TransportEngine {
             loop {
                 tokio::time::sleep(Duration::from_millis(500)).await;
                 let current = bytes_downloaded_monitor.load(Ordering::Relaxed);
-                
                 if current >= total_size { break; }
                 
                 let now = Instant::now();
@@ -219,16 +237,17 @@ impl TransportEngine {
             }
         });
 
+        // Worker Threads
         for chunk in chunks {
             let client = self.client.clone();
             let url = self.url.clone();
             let total_bytes_atomic = bytes_downloaded.clone();
-            let part_path = self.target_path.with_extension(format!("part.{}.{}", timestamp, chunk.index));
+            let part_path = self.target_path.with_extension(format!("part.{}.{}", hash, chunk.index));
             
             tasks.push(tokio::spawn(async move {
-                let mut retry_policy = RetryPolicy::new(5);
+                let mut retry_policy = RetryPolicy::new(10); // More retries for chunks
                 loop {
-                    match Self::download_chunk(&client, &url, &part_path, &chunk, &total_bytes_atomic).await {
+                    match Self::download_chunk_resumable(&client, &url, &part_path, &chunk, &total_bytes_atomic).await {
                         Ok(_) => return Ok(part_path),
                         Err(e) => {
                             match retry_policy.next_backoff() {
@@ -255,46 +274,68 @@ impl TransportEngine {
         }
 
         if failed {
-            self.cleanup_parts(timestamp).await;
+            // Do NOT cleanup parts on failure, allowing resume next time
             return Err(TransportError::Validation("One or more chunks failed".to_string()));
         }
 
-        match self.merge_parts(&part_paths).await {
+        // Merge Phase: Append to Part 0 to avoid double disk usage
+        match self.merge_parts_optimized(&part_paths).await {
             Ok(_) => {
                 on_progress(total_size, total_size, 0.0);
                 Ok(())
             },
-            Err(e) => {
-                self.cleanup_parts(timestamp).await;
-                Err(e)
-            }
+            Err(e) => Err(e)
         }
     }
 
-    async fn download_chunk(
+    async fn download_chunk_resumable(
         client: &Client,
         url: &str,
         path: &Path,
         chunk: &Chunk,
         global_bytes: &AtomicU64
     ) -> Result<(), TransportError> {
-        let req = client.get(url).header(header::RANGE, format!("bytes={}-{}", chunk.start, chunk.end));
+        // Check for existing data
+        let mut current_len = 0;
+        if path.exists() {
+            if let Ok(m) = fs::metadata(path).await {
+                current_len = m.len();
+            }
+        }
+
+        if current_len >= chunk.len {
+            // Already downloaded
+            return Ok(());
+        }
+
+        // Calculate Range
+        let range_start = chunk.start + current_len;
+        let range_end = chunk.end;
+
+        let req = client.get(url).header(header::RANGE, format!("bytes={}-{}", range_start, range_end));
         let response = req.send().await?;
         
         if !response.status().is_success() {
             return Err(TransportError::HttpStatus(response.status().as_u16()));
         }
 
-        let mut file = OpenOptions::new().create(true).write(true).truncate(true).open(path).await?;
+        // Open in Append Mode
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .append(true)
+            .open(path)
+            .await?;
+            
         let mut stream = response.bytes_stream();
-        let mut downloaded_in_chunk = 0;
+        let mut downloaded_in_this_session = 0;
 
         while let Some(chunk_res) = tokio::time::timeout(IO_TIMEOUT, stream.next()).await.ok() {
             match chunk_res {
                 Some(Ok(bytes)) => {
                     file.write_all(&bytes).await?;
                     let len = bytes.len() as u64;
-                    downloaded_in_chunk += len;
+                    downloaded_in_this_session += len;
                     global_bytes.fetch_add(len, Ordering::Relaxed);
                 },
                 Some(Err(e)) => return Err(TransportError::Network(e)),
@@ -303,66 +344,39 @@ impl TransportEngine {
         }
 
         file.flush().await?;
-
-        if downloaded_in_chunk != chunk.len {
-             global_bytes.fetch_sub(downloaded_in_chunk, Ordering::Relaxed);
-             return Err(TransportError::Validation(format!("Chunk incomplete. Got {}, expected {}", downloaded_in_chunk, chunk.len)));
+        
+        let final_len = current_len + downloaded_in_this_session;
+        if final_len != chunk.len {
+            // Adjust global stats back down if we failed
+            global_bytes.fetch_sub(downloaded_in_this_session, Ordering::Relaxed);
+            return Err(TransportError::Validation(format!("Chunk incomplete. Got {}, expected {}", final_len, chunk.len)));
         }
 
         Ok(())
     }
 
-    async fn merge_parts(&self, parts: &[PathBuf]) -> Result<(), TransportError> {
-        let merge_path = self.target_path.with_extension("merging");
-        let mut merge_file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&merge_path)
-            .await?;
-        
-        for part_path in parts {
+    // Optimized Merge: Append everything to the first part
+    async fn merge_parts_optimized(&self, parts: &[PathBuf]) -> Result<(), TransportError> {
+        if parts.is_empty() { return Ok(()); }
+
+        let first_part = &parts[0];
+        let mut target_file = OpenOptions::new().write(true).append(true).open(first_part).await?;
+
+        // Append subsequent parts
+        for part_path in parts.iter().skip(1) {
             let mut part_file = fs::File::open(part_path).await?;
-            tokio::io::copy(&mut part_file, &mut merge_file).await?;
-        }
-        
-        merge_file.flush().await?;
-        
-        for part_path in parts {
+            tokio::io::copy(&mut part_file, &mut target_file).await?;
+            // Delete immediately after append to save space
             let _ = fs::remove_file(part_path).await;
         }
-
-        self.finalize(&merge_path).await
-    }
-
-    async fn cleanup_parts(&self, timestamp: u128) {
-        let pattern = format!("part.{}.", timestamp);
-        if let Some(parent) = self.target_path.parent() {
-            if let Ok(mut entries) = fs::read_dir(parent).await {
-                while let Ok(Some(entry)) = entries.next_entry().await {
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    if name.contains(&pattern) {
-                        let _ = fs::remove_file(entry.path()).await;
-                    }
-                }
-            }
-        }
+        
+        target_file.flush().await?;
+        self.finalize(first_part).await
     }
 
     async fn finalize(&self, source_path: &Path) -> Result<(), TransportError> {
         if self.target_path.exists() {
-            if let Err(e) = fs::remove_file(&self.target_path).await {
-                if e.kind() == std::io::ErrorKind::PermissionDenied {
-                    let mut old_path = self.target_path.clone();
-                    let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-                    let ext = old_path.extension().unwrap_or_default().to_string_lossy();
-                    old_path.set_extension(format!("{}.old.{}", ext, timestamp));
-                    
-                    fs::rename(&self.target_path, &old_path).await?;
-                } else {
-                    return Err(e.into());
-                }
-            }
+            let _ = fs::remove_file(&self.target_path).await;
         }
         
         fs::rename(source_path, &self.target_path).await?;

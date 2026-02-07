@@ -11,6 +11,7 @@ use std::fs;
 use serde::Deserialize;
 use std::time::Duration;
 use tracing::{debug, error, warn, trace};
+use walkdir::WalkDir;
 
 use crate::config::ConfigManager;
 use crate::models::{DownloadFormatPreset, QueuedJob, JobMessage, DownloadErrorPayload};
@@ -122,6 +123,7 @@ fn construct_error(job_id: uuid::Uuid, msg: String, exit_code: Option<i32>, stde
     }
 }
 
+// Robust move that retries on lock failures
 async fn robust_move_file(src: &Path, dest: &Path) -> Result<(), std::io::Error> {
     let mut attempts = 0;
     loop {
@@ -136,7 +138,7 @@ async fn robust_move_file(src: &Path, dest: &Path) -> Result<(), std::io::Error>
                     }
                     return Err(e);
                 }
-                tokio::time::sleep(Duration::from_millis(50 * 2u64.pow(attempts))).await;
+                tokio::time::sleep(Duration::from_millis(100 * 2u64.pow(attempts))).await;
             }
         }
     }
@@ -344,7 +346,6 @@ pub async fn run_download_process(
         let mut captured_stderr = Vec::new();
         
         while let Some((line, is_stderr)) = rx.recv().await {
-            // DEFECT FIX #6: ReDoS Protection
             if line.len() > 2048 { continue; }
             
             let trimmed = line.trim();
@@ -376,11 +377,16 @@ pub async fn run_download_process(
             let mut speed_str = "N/A".to_string();
             let mut eta_str = "N/A".to_string();
 
+            // Optimization: Only try parsing JSON if it looks like JSON
             if trimmed.starts_with('{') {
                 if let Ok(progress_json) = serde_json::from_str::<YtDlpJsonProgress>(trimmed) {
                     if let Some(d) = progress_json.downloaded_bytes {
                          let t = progress_json.total_bytes.or(progress_json.total_bytes_estimate);
-                         if let Some(total) = t { state_percentage = (d as f32 / total as f32) * 100.0; }
+                         if let Some(total) = t { 
+                             if total > 0 {
+                                 state_percentage = (d as f32 / total as f32) * 100.0; 
+                             }
+                         }
                     }
                     if let Some(s) = progress_json.speed { speed_str = format_speed(s); }
                     if let Some(e) = progress_json.eta { eta_str = format_eta(e); }
@@ -398,7 +404,6 @@ pub async fn run_download_process(
                     emit_update = true;
                 }
             } else {
-                // DEFECT FIX #6: Prefix check optimization
                 if trimmed.starts_with("[download]") {
                      if DOWNLOAD_START_REGEX.is_match(trimmed) {
                         state_phase = "Starting Download".to_string();
@@ -471,22 +476,23 @@ pub async fn run_download_process(
                 }
             }
 
+            // Fallback: Recursive search using WalkDir if stdout capture failed
             if final_src_path.is_none() {
-                if let Ok(entries) = fs::read_dir(&unique_temp_dir) {
-                    if let Some(fname) = detected_filename_only {
-                         let path = unique_temp_dir.join(&fname);
-                         if path.exists() { final_src_path = Some(path); }
-                    }
-                    if final_src_path.is_none() {
-                         for entry in entries.flatten() {
-                            let path = entry.path();
-                            if path.is_file() {
-                                if let Some(ext) = path.extension() {
-                                    let ext_str = ext.to_string_lossy();
-                                    if ["mp4", "mkv", "webm", "mp3", "flac", "m4a", "wav"].contains(&ext_str.as_ref()) {
-                                        final_src_path = Some(path);
-                                        break;
-                                    }
+                 if let Some(fname) = detected_filename_only {
+                     let path = unique_temp_dir.join(&fname);
+                     if path.exists() { final_src_path = Some(path); }
+                 }
+            }
+
+            if final_src_path.is_none() {
+                for entry in WalkDir::new(&unique_temp_dir).min_depth(1).max_depth(3) {
+                    if let Ok(e) = entry {
+                        if e.file_type().is_file() {
+                             if let Some(ext) = e.path().extension() {
+                                let ext_str = ext.to_string_lossy();
+                                if ["mp4", "mkv", "webm", "mp3", "flac", "m4a", "wav"].contains(&ext_str.as_ref()) {
+                                    final_src_path = Some(e.path().to_path_buf());
+                                    break;
                                 }
                             }
                         }
@@ -520,7 +526,7 @@ pub async fn run_download_process(
                     }
                 }
             } else {
-                let _ = tx_actor.send(construct_error(job_id, "Download succeeded but file not found".into(), status.code(), "Could not locate output file".into(), captured_logs)).await;
+                let _ = tx_actor.send(construct_error(job_id, "Download succeeded but file not found".into(), status.code(), "Could not locate output file in temp dir".into(), captured_logs)).await;
                 break;
             }
         } else {
@@ -549,10 +555,23 @@ pub async fn run_download_process(
         }
     }
     
+    // Robust cleanup on exit
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
     let base_temp_dir = home.join(".multiyt-dlp").join("temp_downloads");
     let unique_temp_dir = base_temp_dir.join(job_id.to_string());
+    
+    // Helper used for robust deletion
+    async fn robust_remove_dir_internal(path: &Path) {
+        for i in 0..5 {
+            match fs::remove_dir_all(path) {
+                Ok(_) => return,
+                Err(_) => { tokio::time::sleep(Duration::from_millis(100 * 2u64.pow(i))).await; }
+            }
+        }
+        let _ = fs::remove_dir_all(path);
+    }
+
     if unique_temp_dir.exists() {
-        let _ = std::fs::remove_dir_all(&unique_temp_dir);
+        robust_remove_dir_internal(&unique_temp_dir).await;
     }
 }
