@@ -3,7 +3,7 @@ import { getName } from '@tauri-apps/api/app';
 import { listen } from '@tauri-apps/api/event';
 import { checkDependencies, installDependency, openExternalLink } from '@/api/invoke';
 import { DependencyInfo } from '@/types';
-import { Copy, Check, Terminal, AlertCircle, Cpu, Download, Loader2, ArrowUpCircle, RefreshCw } from 'lucide-react';
+import { Copy, Check, Terminal, AlertCircle, Cpu, Download, Loader2, ArrowUpCircle, RefreshCw, Zap } from 'lucide-react';
 import icon from '@/assets/icon.webp';
 import { Button } from '../ui/Button';
 import { Progress } from '../ui/Progress';
@@ -15,11 +15,12 @@ interface InstallProgress {
     status: string;
 }
 
-const DependencyRow = ({ info, onInstall, installingState, label }: { 
+const DependencyRow = ({ info, onInstall, installingState, label, description }: { 
     info: DependencyInfo, 
     onInstall?: () => void, 
     installingState?: InstallProgress | null,
-    label?: string 
+    label?: string,
+    description?: string
 }) => {
     const [copied, setCopied] = useState(false);
     
@@ -40,7 +41,7 @@ const DependencyRow = ({ info, onInstall, installingState, label }: {
             <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
                     <div className="p-2 rounded-md bg-zinc-800 text-zinc-400">
-                        <Terminal className="h-4 w-4" />
+                        {label?.includes('Aria2') ? <Zap className="h-4 w-4 text-theme-cyan" /> : <Terminal className="h-4 w-4" />}
                     </div>
                     <div>
                         <div className="font-semibold text-zinc-200 text-sm">{label || info.name}</div>
@@ -51,7 +52,7 @@ const DependencyRow = ({ info, onInstall, installingState, label }: {
                              </div>
                         ) : (
                              <div className="text-[10px] text-theme-red font-mono flex items-center gap-1">
-                                <AlertCircle className="h-3 w-3" /> Not Found
+                                <AlertCircle className="h-3 w-3" /> Not Installed
                              </div>
                         )}
                     </div>
@@ -81,6 +82,13 @@ const DependencyRow = ({ info, onInstall, installingState, label }: {
                     </Button>
                 )}
             </div>
+
+            {/* Description for Optional Deps */}
+            {description && !isAvailable && !isUpdatingThis && (
+                <div className="text-[10px] text-zinc-500 leading-relaxed bg-zinc-950/50 p-2 rounded border border-zinc-800/50">
+                    {description}
+                </div>
+            )}
 
             {/* Installation Progress Bar */}
             {isUpdatingThis && (
@@ -115,7 +123,7 @@ const DependencyRow = ({ info, onInstall, installingState, label }: {
 
 export function AboutSettings() {
     const [appName, setAppName] = useState("Loading...");
-    const [deps, setDeps] = useState<{ yt_dlp?: DependencyInfo, ffmpeg?: DependencyInfo, js_runtime?: DependencyInfo }>({});
+    const [deps, setDeps] = useState<{ yt_dlp?: DependencyInfo, ffmpeg?: DependencyInfo, js_runtime?: DependencyInfo, aria2?: DependencyInfo }>({});
     const [loading, setLoading] = useState(true);
     const [activeInstall, setActiveInstall] = useState<InstallProgress | null>(null);
     const [checkingUpdate, setCheckingUpdate] = useState(false);
@@ -138,7 +146,6 @@ export function AboutSettings() {
     useEffect(() => {
         fetchData();
 
-        // Listen for backend installation events to provide feedback in settings
         const unlisten = listen<InstallProgress>('install-progress', (event) => {
             setActiveInstall(event.payload);
         });
@@ -149,12 +156,10 @@ export function AboutSettings() {
     }, []);
 
     const handleInstall = async (name: string) => {
-        // Prevent double trigger
         if (activeInstall) return;
 
         try {
             await installDependency(name);
-            // Refresh data after install completes
             await fetchData();
         } catch (e) {
             console.error(`Installation failed: ${e}`);
@@ -240,6 +245,15 @@ export function AboutSettings() {
                             onInstall={() => handleInstall('ffmpeg')}
                             installingState={activeInstall}
                             label="FFmpeg"
+                        />
+                    )}
+                    {deps.aria2 && (
+                        <DependencyRow 
+                            info={deps.aria2} 
+                            onInstall={() => handleInstall('aria2')}
+                            installingState={activeInstall}
+                            label="Aria2c (Accelerator)"
+                            description="Optional high-speed downloader. Improves update speed for dependencies by using multiple concurrent connections."
                         />
                     )}
                     {deps.js_runtime && (

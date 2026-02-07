@@ -34,6 +34,7 @@ tar = "0.4"
 xz2 = "0.1"
 flate2 = "1.0"
 async-trait = "0.1" 
+walkdir = "2.5.0"
 
 [target.'cfg(not(windows))'.dependencies]
 nix = { version = "0.27", features = ["signal"] }

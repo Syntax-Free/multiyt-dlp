@@ -23,6 +23,7 @@ pub struct AppDependencies {
     pub yt_dlp: DependencyInfo,
     pub ffmpeg: DependencyInfo,
     pub js_runtime: DependencyInfo,
+    pub aria2: DependencyInfo,
 }
 
 #[derive(Deserialize)]
@@ -181,7 +182,7 @@ pub async fn check_dependencies(app_handle: AppHandle) -> AppDependencies {
     let app_dir = app_handle.path_resolver().app_data_dir().unwrap();
     let bin_dir = app_dir.join("bin");
 
-    let (yt_res, ff_res, js_res) = tokio::join!(
+    let (yt_res, ff_res, aria_res, js_res) = tokio::join!(
         async {
             let exec_name = if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" };
             let mut info = resolve_binary_info(exec_name, "--version", &bin_dir);
@@ -200,6 +201,19 @@ pub async fn check_dependencies(app_handle: AppHandle) -> AppDependencies {
             }
             info
         },
+        async {
+            let exec_name = if cfg!(windows) { "aria2c.exe" } else { "aria2c" };
+            let mut info = resolve_binary_info(exec_name, "--version", &bin_dir);
+            info.name = "aria2c".to_string();
+            if let Some(ref v) = info.version {
+                // aria2 version 1.36.0
+                let re = Regex::new(r"aria2 version ([^\s]+)").unwrap();
+                if let Some(caps) = re.captures(v) {
+                    info.version = Some(caps[1].to_string());
+                }
+            }
+            info
+        },
         analyze_js_runtime(&app_handle, &bin_dir)
     );
 
@@ -207,6 +221,7 @@ pub async fn check_dependencies(app_handle: AppHandle) -> AppDependencies {
         yt_dlp: yt_res,
         ffmpeg: ff_res,
         js_runtime: js_res,
+        aria2: aria_res,
     }
 }
 

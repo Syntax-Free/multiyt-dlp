@@ -35,7 +35,7 @@ export interface AppConfig {
 }
 
 export interface DependencyInfo {
-    name: string;
+    name: String;
     available: boolean;
     version: string | null;
     path: string | null;
@@ -48,6 +48,7 @@ export interface AppDependencies {
   yt_dlp: DependencyInfo;
   ffmpeg: DependencyInfo;
   js_runtime: DependencyInfo;
+  aria2: DependencyInfo;
 }
 
 export type AppError = {
