@@ -84,6 +84,7 @@ pub struct PreferenceConfig {
     pub embed_metadata: bool,
     pub embed_thumbnail: bool,
     pub live_from_start: bool,
+    pub enable_playlist_selection: bool,
 }
 
 impl Default for PreferenceConfig {
@@ -97,6 +98,7 @@ impl Default for PreferenceConfig {
             embed_metadata: false,
             embed_thumbnail: false,
             live_from_start: false,
+            enable_playlist_selection: true,
         }
     }
 }
@@ -145,7 +147,7 @@ impl ConfigManager {
             })
             .unwrap_or_else(AppConfig::default);
 
-        // Sanitize immediately upon load to fix any existing bad states
+        // Sanitize immediately upon load to fix any existing bad states from previous versions
         config.window.sanitize();
 
         let manager = Self {
