@@ -49,7 +49,7 @@ export function SplashWindow() {
     } catch (e) {
         console.error("Sync Error:", e);
         setStatus('error');
-        setErrorDetails(String(e));
+        setErrorDetails(`${e}`);
         setMessage('Critical synchronization failure.');
     }
   };
@@ -63,7 +63,7 @@ export function SplashWindow() {
               await closeSplash(); 
           } catch (err) {
               console.error("Failed to transition window", err);
-              setErrorDetails("Window transition failed. Please restart.");
+              setErrorDetails(`${err}`);
               setStatus('error');
           }
       }, 400); 
@@ -77,7 +77,7 @@ export function SplashWindow() {
           await performSync();
       } catch (e) {
           setStatus('error');
-          setErrorDetails(String(e));
+          setErrorDetails(`${e}`);
       }
   };
 
@@ -97,7 +97,7 @@ export function SplashWindow() {
           await performSync();
       } catch (e) {
           setStatus('error');
-          setErrorDetails(String(e));
+          setErrorDetails(`${e}`);
       }
   };
 

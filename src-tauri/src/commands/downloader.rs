@@ -150,17 +150,25 @@ pub async fn start_download(
 
     // 1. Probe for entries
     let entries = probe_url(&url_clone, &app_handle, &config_manager).await?;
-    let total_found = entries.len() as u32;
+    
+    let whitelist_set: Option<HashSet<String>> = url_whitelist.map(|list| list.into_iter().collect());
+    
+    // FIX: total_found should reflect the items the user actually REQUESTED.
+    // If we have a whitelist (manual selection), the total is the whitelist size.
+    // Otherwise, it's the entire probed result (e.g. single URL or auto-playlist).
+    let total_found = if let Some(ref wl) = whitelist_set {
+        wl.len() as u32
+    } else {
+        entries.len() as u32
+    };
 
     let mut created_job_ids = Vec::new();
     let mut skipped_urls = Vec::new();
     let mut urls_to_add = Vec::new();
 
-    let whitelist_set: Option<HashSet<String>> = url_whitelist.map(|list| list.into_iter().collect());
-
     // 2. Process entries
     for entry in entries {
-        // If whitelist is provided (manual retry), skip anything not in the list
+        // If whitelist is provided (manual selection), skip anything not explicitly chosen by user
         if let Some(ref wl) = whitelist_set {
             if !wl.contains(&entry.url) {
                 continue;
@@ -186,7 +194,6 @@ pub async fn start_download(
             restrict_filenames: restrict_filenames.unwrap_or(false),
             filename_template: safe_template.clone(),
             live_from_start: live_from_start.unwrap_or(false),
-            // DEFECT FIX #1: Initialize persistence fields
             status: None,
             error: None,
             stderr: None,
@@ -195,11 +202,9 @@ pub async fn start_download(
         match manager.add_job(job_data).await {
             Ok(_) => {
                 created_job_ids.push(job_id);
-                // Queue for background history addition once download starts
                 urls_to_add.push(entry.url);
             },
             Err(e) => {
-                // This handles "URL already in queue" errors
                 return Err(AppError::ValidationFailed(e));
             }
         }

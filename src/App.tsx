@@ -212,7 +212,6 @@ function App() {
                 </div>
             </div>
 
-            {/* Defect #6: Skip Notification moved to Main View */}
             {skipNotice && (
                 <div className="mb-4 animate-fade-in relative p-4 rounded-lg border bg-zinc-900/60 border-theme-cyan/20 backdrop-blur-sm flex items-center justify-between gap-4 shadow-lg shadow-theme-cyan/5">
                     <div className="flex items-center gap-4">

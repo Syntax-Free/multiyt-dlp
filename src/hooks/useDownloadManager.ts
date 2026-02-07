@@ -126,7 +126,7 @@ export function useDownloadManager() {
 
   const startDownload = useCallback(async (
     url: string, 
-    downloadPath: string | undefined, 
+    downloadPath: string | null | undefined, 
     formatPreset: DownloadFormatPreset = 'best',
     videoResolution: string,
     embedMetadata: boolean = false,
@@ -140,7 +140,7 @@ export function useDownloadManager() {
     try {
       const response = await apiStartDownload(
           url, 
-          downloadPath, 
+          downloadPath ?? undefined, 
           formatPreset,
           videoResolution, 
           embedMetadata, 
@@ -168,7 +168,7 @@ export function useDownloadManager() {
                     url,
                     preset: formatPreset,
                     videoResolution,
-                    downloadPath,
+                    downloadPath: downloadPath ?? undefined,
                     filenameTemplate,
                     embedMetadata,
                     embedThumbnail,
@@ -177,9 +177,6 @@ export function useDownloadManager() {
                 });
             } else {
                 // Standard initialization path (we beat the event listener)
-                // DEFECT FIX #5: Optimistic UI Removal
-                // We set status to 'pending' initially. The backend events will flip it to 'downloading'
-                // when it actually starts. This prevents "Split-Brain" states.
                 newMap.set(jobId, {
                     jobId,
                     url,
@@ -188,7 +185,7 @@ export function useDownloadManager() {
                     progress: 0,
                     preset: formatPreset,
                     videoResolution,
-                    downloadPath,
+                    downloadPath: downloadPath ?? undefined,
                     filenameTemplate,
                     embedMetadata,
                     embedThumbnail,
@@ -198,7 +195,7 @@ export function useDownloadManager() {
             }
         });
         return newMap;
-      });
+    });
 
       return response;
     } catch (error) {
@@ -231,7 +228,7 @@ export function useDownloadManager() {
                   progress: 0,
                   preset: job.format_preset,
                   videoResolution: job.video_resolution,
-                  downloadPath: job.download_path,
+                  downloadPath: job.download_path ?? undefined,
                   filenameTemplate: job.filename_template,
                   embedMetadata: job.embed_metadata,
                   embedThumbnail: job.embed_thumbnail,
