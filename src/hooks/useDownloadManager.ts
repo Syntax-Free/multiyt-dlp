@@ -62,13 +62,10 @@ export function useDownloadManager() {
                         const localJob = newMap.get(remoteJob.jobId);
                         
                         // ZOMBIE FIX: We trust the backend state regarding status.
-                        // However, we still check sequence_id to avoid overwriting a very fresh event 
-                        // that happened while the sync request was in flight.
                         if (localJob && localJob.sequence_id > remoteJob.sequence_id) {
                             return;
                         }
                         
-                        // Trust the sync
                         newMap.set(remoteJob.jobId, remoteJob);
                     });
                     return newMap;
@@ -164,12 +161,8 @@ export function useDownloadManager() {
             const existing = newMap.get(jobId);
 
             if (existing) {
-                // RACE CONDITION FIX:
-                // If the job already exists (event fired before API returned), we ONLY update
-                // the static configuration metadata. We do NOT touch status, progress, or sequence_id.
                 newMap.set(jobId, {
                     ...existing,
-                    // Metadata Backfill Only
                     url,
                     preset: formatPreset,
                     videoResolution,
@@ -181,7 +174,6 @@ export function useDownloadManager() {
                     liveFromStart,
                 });
             } else {
-                // Initialization path
                 newMap.set(jobId, {
                     jobId,
                     url,
@@ -214,7 +206,6 @@ export function useDownloadManager() {
       setDownloads((prev) => {
           const newMap = new Map(prev);
           jobs.forEach(job => {
-              // Map persistence state to UI
               let initialStatus: 'pending' | 'error' = 'pending';
               let initialError: string | undefined;
               let initialStderr: string | undefined;
@@ -232,7 +223,7 @@ export function useDownloadManager() {
                   error: initialError,
                   stderr: initialStderr,
                   progress: 0,
-                  sequence_id: 0, // Reset seq on resume
+                  sequence_id: 0,
                   preset: job.format_preset,
                   videoResolution: job.video_resolution,
                   downloadPath: job.download_path ?? undefined,
@@ -272,5 +263,23 @@ export function useDownloadManager() {
     }
   }, [downloads, removeDownload]);
 
-  return { downloads, startDownload, cancelDownload, removeDownload, importResumedJobs };
+  /**
+   * Bulk action to cancel all active or queued downloads.
+   */
+  const cancelAllDownloads = useCallback(async () => {
+      const targets = Array.from(downloads.values()).filter(d => 
+          d.status === 'downloading' || d.status === 'pending'
+      );
+      
+      for (const job of targets) {
+          try {
+              await apiCancelDownload(job.jobId);
+              updateDownload(job.jobId, { status: 'cancelled', phase: 'Cancelling...' });
+          } catch (e) {
+              console.error(`Bulk cancel failed for ${job.jobId}`, e);
+          }
+      }
+  }, [downloads]);
+
+  return { downloads, startDownload, cancelDownload, removeDownload, importResumedJobs, cancelAllDownloads };
 }

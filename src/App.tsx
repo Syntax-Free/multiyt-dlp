@@ -5,7 +5,7 @@ import { DownloadQueue } from './components/DownloadQueue';
 import { useDownloadManager } from './hooks/useDownloadManager';
 import { Layout } from './components/Layout';
 import { SplashWindow } from './components/SplashWindow';
-import { Activity, CheckCircle2, AlertCircle, List, Database, Hourglass, LayoutGrid, Trash2, RefreshCw, Filter, X } from 'lucide-react';
+import { Activity, CheckCircle2, AlertCircle, List, Database, Hourglass, LayoutGrid, Trash2, RefreshCw, Filter, X, Ban } from 'lucide-react';
 import { twMerge } from 'tailwind-merge';
 import { useAppContext } from './contexts/AppContext';
 import { Button } from './components/ui/Button';
@@ -15,8 +15,13 @@ function App() {
   const [windowLabel, setWindowLabel] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
   const [isProcessingRetry, setIsProcessingRetry] = useState(false);
-  const { downloads, startDownload, cancelDownload, removeDownload } = useDownloadManager();
   
+  // Bulk Cancel State
+  const [cancelStatus, setCancelStatus] = useState<'idle' | 'confirming'>('idle');
+  const [cancelTimer, setCancelTimer] = useState(100);
+  const cancelTimerInterval = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const { downloads, startDownload, cancelDownload, removeDownload, cancelAllDownloads } = useDownloadManager();
   const prevCountRef = useRef(0);
 
   useEffect(() => {
@@ -33,6 +38,29 @@ function App() {
     
     prevCountRef.current = count;
   }, [downloads.size, viewMode]);
+
+  // Handle Global Cancel Confirmation Timer
+  useEffect(() => {
+    if (cancelStatus === 'confirming') {
+        setCancelTimer(100);
+        const startTime = Date.now();
+        const duration = 4000; // 4 second window to confirm
+
+        cancelTimerInterval.current = setInterval(() => {
+            const elapsed = Date.now() - startTime;
+            const remaining = Math.max(0, 100 - (elapsed / duration) * 100);
+            setCancelTimer(remaining);
+
+            if (remaining <= 0) {
+                setCancelStatus('idle');
+                if (cancelTimerInterval.current) clearInterval(cancelTimerInterval.current);
+            }
+        }, 16);
+    } else {
+        if (cancelTimerInterval.current) clearInterval(cancelTimerInterval.current);
+    }
+    return () => { if (cancelTimerInterval.current) clearInterval(cancelTimerInterval.current); };
+  }, [cancelStatus]);
 
   if (!windowLabel) return null;
 
@@ -65,6 +93,15 @@ function App() {
     });
   };
 
+  const handleBulkCancel = () => {
+      if (cancelStatus === 'idle') {
+          setCancelStatus('confirming');
+      } else {
+          cancelAllDownloads();
+          setCancelStatus('idle');
+      }
+  };
+
   const handleRetrySkipped = async () => {
     if (!skipNotice) return;
     
@@ -72,14 +109,14 @@ function App() {
     try {
         await startDownload(
             skipNotice.url,
-            undefined, // Use default
+            undefined, 
             preferences.format_preset as any,
             preferences.video_resolution,
             preferences.embed_metadata,
             preferences.embed_thumbnail,
             getTemplateString(),
             false,
-            true, // Force history bypass
+            true, 
             skipNotice.skippedUrls,
             preferences.live_from_start
         );
@@ -109,7 +146,6 @@ function App() {
         }
         MainContent={
           <>
-            {/* Executive Summary Header */}
             <div className="flex items-center justify-between mb-4 bg-zinc-900/40 border border-zinc-800 rounded-lg p-4">
                 <div className="flex items-center gap-4">
                     <button 
@@ -135,8 +171,35 @@ function App() {
                 </div>
 
                 <div className="flex items-center gap-6">
-                    {/* Stats */}
                     <div className="flex items-center gap-6 text-sm">
+                        
+                        {/* Cancel All Action Area */}
+                        {(active > 0 || queued > 0) && (
+                            <div className="flex items-center">
+                                <button
+                                    onClick={handleBulkCancel}
+                                    className={twMerge(
+                                        "relative h-8 px-3 rounded-md border text-[10px] font-black uppercase tracking-widest transition-all duration-300 flex items-center gap-2 overflow-hidden",
+                                        cancelStatus === 'idle' 
+                                            ? "bg-zinc-900 border-zinc-800 text-zinc-500 hover:border-theme-red/50 hover:text-theme-red"
+                                            : "bg-theme-red/10 border-theme-red text-theme-red"
+                                    )}
+                                >
+                                    {cancelStatus === 'confirming' && (
+                                        <div 
+                                            className="absolute inset-0 bg-theme-red/10"
+                                            style={{ width: `${cancelTimer}%`, transition: 'width 16ms linear' }}
+                                        />
+                                    )}
+                                    <span className="relative z-10 flex items-center gap-2">
+                                        <Ban className={twMerge("h-3 w-3", cancelStatus === 'confirming' && "animate-pulse")} />
+                                        {cancelStatus === 'idle' ? "Cancel All" : "Confirm Cancel"}
+                                    </span>
+                                </button>
+                                <div className="w-px h-8 bg-zinc-800 ml-6" />
+                            </div>
+                        )}
+
                         <div className="flex flex-col items-end">
                             <span className="text-[10px] text-zinc-600 uppercase tracking-wider font-bold">Total</span>
                             <div className="flex items-center gap-1.5 text-zinc-200 font-mono">
