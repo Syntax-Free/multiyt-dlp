@@ -3,11 +3,12 @@ import { getName } from '@tauri-apps/api/app';
 import { listen } from '@tauri-apps/api/event';
 import { checkDependencies, installDependency, openExternalLink } from '@/api/invoke';
 import { DependencyInfo } from '@/types';
-import { Copy, Check, Terminal, AlertCircle, Cpu, Download, Loader2, ArrowUpCircle, RefreshCw, Zap } from 'lucide-react';
+import { Copy, Check, Terminal, AlertCircle, Cpu, Download, Loader2, ArrowUpCircle, RefreshCw, Zap, Box, Lock } from 'lucide-react';
 import icon from '@/assets/icon.webp';
 import { Button } from '../ui/Button';
 import { Progress } from '../ui/Progress';
 import { useAppContext } from '@/contexts/AppContext';
+import { useDownloadManager } from '@/hooks/useDownloadManager';
 
 interface InstallProgress {
     name: string;
@@ -15,18 +16,31 @@ interface InstallProgress {
     status: string;
 }
 
-const DependencyRow = ({ info, onInstall, installingState, label, description }: { 
-    info: DependencyInfo, 
-    onInstall?: () => void, 
-    installingState?: InstallProgress | null,
-    label?: string,
-    description?: string
-}) => {
+interface DependencyRowProps {
+    info: DependencyInfo;
+    onInstall?: () => void;
+    installingState?: InstallProgress | null;
+    label?: string;
+    description?: string;
+    isQueueBusy: boolean;
+}
+
+const DependencyRow = ({ info, onInstall, installingState, label, description, isQueueBusy }: DependencyRowProps) => {
     const [copied, setCopied] = useState(false);
     
-    const isManaged = info.path && (info.path.includes('.multiyt-dlp') || info.path.includes('AppData') || info.path.includes('Library'));
+    // Detection logic for isolated (managed) vs system-wide binaries
+    const isManaged = info.path && (
+        info.path.includes('.multiyt-dlp') || 
+        info.path.includes('AppData') || 
+        info.path.includes('Library/Application Support') ||
+        info.path.includes('.local/share')
+    );
     const isAvailable = info.available;
-    const isUpdatingThis = installingState && (installingState.name.toLowerCase().includes(info.name.toLowerCase()) || (label && installingState.name.toLowerCase().includes(label.toLowerCase())));
+    const isSystemOnly = isAvailable && !isManaged;
+    const isUpdatingThis = installingState && (
+        installingState.name.toLowerCase().includes(info.name.toLowerCase()) || 
+        (label && installingState.name.toLowerCase().includes(label.toLowerCase()))
+    );
 
     const handleCopy = () => {
         if (info.path) {
@@ -44,11 +58,17 @@ const DependencyRow = ({ info, onInstall, installingState, label, description }:
                         {label?.includes('Aria2') ? <Zap className="h-4 w-4 text-theme-cyan" /> : <Terminal className="h-4 w-4" />}
                     </div>
                     <div>
-                        <div className="font-semibold text-zinc-200 text-sm">{label || info.name}</div>
+                        <div className="font-semibold text-zinc-200 text-sm">
+                            {label || info.name}
+                            {isSystemOnly && (
+                                <span className="ml-2 text-[9px] bg-zinc-800 text-zinc-500 px-1.5 py-0.5 rounded border border-zinc-700 uppercase">System Path</span>
+                            )}
+                        </div>
                         {isAvailable ? (
                              <div className="text-[10px] text-emerald-500 font-mono flex items-center gap-1">
                                 <Check className="h-3 w-3" /> {info.version || 'Detected'}
-                                {!info.is_recommended && <span className="text-amber-500 ml-2">Legacy Build</span>}
+                                {!info.is_supported && <span className="text-theme-red ml-2 font-bold uppercase tracking-tighter">Incompatible</span>}
+                                {info.is_supported && !info.is_recommended && <span className="text-amber-500 ml-2">Legacy Build</span>}
                              </div>
                         ) : (
                              <div className="text-[10px] text-theme-red font-mono flex items-center gap-1">
@@ -61,29 +81,42 @@ const DependencyRow = ({ info, onInstall, installingState, label, description }:
                 {onInstall && (
                     <Button 
                         size="sm" 
-                        variant="outline" 
+                        variant={isSystemOnly ? "neon" : "outline"}
                         onClick={onInstall} 
-                        className="h-7 text-xs border-zinc-700 bg-zinc-800 hover:text-white"
-                        disabled={(!isManaged && isAvailable) || !!installingState}
-                        title={!isManaged && isAvailable ? "Managed by System" : "Update Dependency"}
+                        className="h-7 text-[10px] uppercase font-bold tracking-wider"
+                        disabled={!!installingState || isQueueBusy}
+                        title={isQueueBusy ? "Modifications locked during active downloads" : ""}
                     >
                         {isUpdatingThis ? (
                             <Loader2 className="h-3 w-3 animate-spin" />
-                        ) : (!isManaged && isAvailable) ? (
-                             <span className="flex items-center text-zinc-500 cursor-not-allowed">
-                                 System
-                             </span>
-                        ) : (
+                        ) : isSystemOnly ? (
+                            <>
+                                <Box className="h-3 w-3 mr-1" /> 
+                                Localize
+                            </>
+                        ) : isAvailable ? (
                             <>
                                 <RefreshCw className="h-3 w-3 mr-1" /> 
-                                {isAvailable ? "Update" : "Install"}
+                                Update
+                            </>
+                        ) : (
+                            <>
+                                <Download className="h-3 w-3 mr-1" /> 
+                                Install
                             </>
                         )}
                     </Button>
                 )}
             </div>
 
-            {/* Description for Optional Deps */}
+            {/* Help text for Localization */}
+            {isSystemOnly && !isUpdatingThis && !isQueueBusy && (
+                <div className="text-[10px] text-zinc-500 leading-relaxed bg-theme-cyan/5 p-2 rounded border border-theme-cyan/20">
+                    <span className="text-theme-cyan font-bold">Note:</span> This binary is currently provided by your operating system. Click <span className="text-zinc-300">"Localize"</span> to download an app-managed version for better stability and automatic updates.
+                </div>
+            )}
+
+            {/* Description for Optional/Indeterminate Deps */}
             {description && !isAvailable && !isUpdatingThis && (
                 <div className="text-[10px] text-zinc-500 leading-relaxed bg-zinc-950/50 p-2 rounded border border-zinc-800/50">
                     {description}
@@ -129,6 +162,12 @@ export function AboutSettings() {
     const [checkingUpdate, setCheckingUpdate] = useState(false);
 
     const { currentVersion, latestVersion, isUpdateAvailable, checkAppUpdate } = useAppContext();
+    const { downloads } = useDownloadManager();
+
+    // Check if any job is currently active or queued
+    const isQueueBusy = Array.from(downloads.values()).some(
+        d => d.status === 'downloading' || d.status === 'pending'
+    );
 
     const fetchData = async () => {
         try {
@@ -156,7 +195,7 @@ export function AboutSettings() {
     }, []);
 
     const handleInstall = async (name: string) => {
-        if (activeInstall) return;
+        if (activeInstall || isQueueBusy) return;
 
         try {
             await installDependency(name);
@@ -212,6 +251,7 @@ export function AboutSettings() {
                                 size="sm" 
                                 variant="neon" 
                                 className="h-8 text-xs"
+                                disabled={isQueueBusy}
                                 onClick={() => openExternalLink("https://github.com/zqily/multiyt-dlp/releases/latest")}
                             >
                                 <Download className="h-3 w-3 mr-1" /> Update
@@ -225,10 +265,24 @@ export function AboutSettings() {
             </div>
 
             <div id="section-deps" className="space-y-3 pt-4 border-t border-zinc-800 scroll-mt-6">
-                <div className="flex items-center gap-2 text-sm text-zinc-400 font-medium">
-                    <Cpu className="h-4 w-4" />
-                    <span>System Dependencies</span>
+                <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-sm text-zinc-400 font-medium">
+                        <Cpu className="h-4 w-4" />
+                        <span>System Dependencies</span>
+                    </div>
+                    {isQueueBusy && (
+                        <div className="flex items-center gap-2 text-[10px] font-bold text-amber-500 bg-amber-500/10 px-2 py-1 rounded border border-amber-500/20 animate-pulse">
+                            <Lock className="h-3 w-3" />
+                            <span>MODIFICATIONS LOCKED</span>
+                        </div>
+                    )}
                 </div>
+
+                {isQueueBusy && (
+                    <div className="p-3 bg-zinc-900/80 border border-zinc-800 rounded-lg text-xs text-zinc-400 leading-relaxed mb-2">
+                        Dependencies cannot be installed or updated while downloads are in progress. Please wait for the queue to finish or cancel active tasks to unlock these settings.
+                    </div>
+                )}
                 
                 <div className="grid grid-cols-1 gap-3">
                     {deps.yt_dlp && (
@@ -237,6 +291,7 @@ export function AboutSettings() {
                             onInstall={() => handleInstall('yt-dlp')}
                             installingState={activeInstall}
                             label="yt-dlp"
+                            isQueueBusy={isQueueBusy}
                         />
                     )}
                     {deps.ffmpeg && (
@@ -245,6 +300,7 @@ export function AboutSettings() {
                             onInstall={() => handleInstall('ffmpeg')}
                             installingState={activeInstall}
                             label="FFmpeg"
+                            isQueueBusy={isQueueBusy}
                         />
                     )}
                     {deps.aria2 && (
@@ -254,6 +310,7 @@ export function AboutSettings() {
                             installingState={activeInstall}
                             label="Aria2c (Accelerator)"
                             description="Optional high-speed downloader. Improves update speed for dependencies by using multiple concurrent connections."
+                            isQueueBusy={isQueueBusy}
                         />
                     )}
                     {deps.js_runtime && (
@@ -262,6 +319,7 @@ export function AboutSettings() {
                             onInstall={() => handleInstall(deps.js_runtime?.name?.toLowerCase() || 'deno')} 
                             installingState={activeInstall}
                             label={`JS Runtime (${deps.js_runtime.name})`}
+                            isQueueBusy={isQueueBusy}
                         />
                     )}
                 </div>
