@@ -106,6 +106,7 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
   // Playlist state
   const [playlistEntries, setPlaylistEntries] = useState<PlaylistEntry[]>([]);
   const [isPlaylistModalOpen, setIsPlaylistModalOpen] = useState(false);
+  const [pendingForce, setPendingForce] = useState(false); // Defect Fix #1: Preserves force state through modal
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -118,7 +119,8 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
   }, [dropdownRef]);
 
   /**
-   * Finalizes the download process by invoking the manager
+   * Finalizes the download process by invoking the manager.
+   * Note: This function manages its own isProcessing state but is wrapped by callers.
    */
   const triggerDownload = async (targetUrl: string, force: boolean = false, whitelist?: string[]) => {
       setIsProcessing(true);
@@ -180,16 +182,17 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
     setErrorDetails(null);
     setSkipNotice(null);
     setShowForceOptions(false);
+    setPendingForce(force); // Store intent for potential playlist confirmation
 
     try {
-        // If selection modal is enabled, probe first
-        if (preferences.enable_playlist_selection && !force) {
+        // If selection modal is enabled, probe for contents first.
+        // Defect Fix #1: We expand regardless of 'force' flag so user can still choose items.
+        if (preferences.enable_playlist_selection) {
             const result = await expandPlaylist(currentUrl);
             if (result.entries.length > 1) {
                 setPlaylistEntries(result.entries);
                 setIsPlaylistModalOpen(true);
-                // Note: We DO NOT set isProcessing to false here. 
-                // We want the button behind the modal to stay in the "Analyzing" state.
+                // We leave isProcessing true so the background button stays "Analyzing"
                 return;
             }
         }
@@ -205,11 +208,12 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
   };
 
   /**
-   * Handler for when user confirms selection in the playlist modal
+   * Handler for when user confirms selection in the playlist modal.
+   * Defect Fix #2: Modal is closed, but isProcessing remains true until triggerDownload resolves.
    */
-  const handlePlaylistConfirm = (selectedUrls: string[]) => {
+  const handlePlaylistConfirm = async (selectedUrls: string[]) => {
       setIsPlaylistModalOpen(false);
-      triggerDownload(url, false, selectedUrls);
+      await triggerDownload(url, pendingForce, selectedUrls);
   };
 
   /**
@@ -218,6 +222,7 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
   const handlePlaylistCancel = () => {
       setIsPlaylistModalOpen(false);
       setIsProcessing(false);
+      setPendingForce(false);
   };
 
   const handleSelectDirectory = async () => {
@@ -260,7 +265,6 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
   const currentMode = preferences.mode as DownloadMode;
   
   const filteredPresets = formatPresets.filter(p => p.mode === currentMode);
-  // Button is disabled if URL is invalid OR we are currently processing (probing or downloading)
   const isSubmitDisabled = !isValidUrl || isProcessing;
 
   return (
