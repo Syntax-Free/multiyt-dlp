@@ -11,12 +11,10 @@ export interface SkipNotice {
 }
 
 interface AppContextType {
-  // State
   isConfigLoaded: boolean;
   isJsRuntimeMissing: boolean;
   setIsJsRuntimeMissing: (missing: boolean) => void;
 
-  // Settings Modal State (Global)
   isSettingsOpen: boolean;
   settingsActiveTab: string;
   settingsActiveSection: string | null;
@@ -24,33 +22,27 @@ interface AppContextType {
   closeSettings: () => void;
   setSettingsActiveTab: (tab: string) => void;
 
-  // Global Notifications
   skipNotice: SkipNotice | null;
   setSkipNotice: (notice: SkipNotice | null) => void;
 
-  // General Config
   defaultDownloadPath: string | null;
   setDefaultDownloadPath: (path: string) => void;
   filenameTemplateBlocks: TemplateBlock[];
   setFilenameTemplateBlocks: (blocks: TemplateBlock[]) => void;
   getTemplateString: (blocks?: TemplateBlock[]) => string;
   
-  // Cookies Config
   cookiesPath: string | null;
   setCookiesPath: (path: string | null) => void;
   cookiesBrowser: string | null;
   setCookiesBrowser: (browser: string | null) => void;
   
-  // Concurrency
   maxConcurrentDownloads: number;
   maxTotalInstances: number;
   setConcurrency: (concurrent: number, total: number) => void;
 
-  // Logs
   logLevel: string;
   setLogLevel: (level: string) => void;
 
-  // Update
   checkForUpdates: boolean;
   setCheckForUpdates: (enabled: boolean) => void;
   isUpdateAvailable: boolean;
@@ -58,7 +50,6 @@ interface AppContextType {
   currentVersion: string | null;
   checkAppUpdate: () => Promise<void>;
 
-  // Preferences
   preferences: PreferenceConfig;
   updatePreferences: (updates: Partial<PreferenceConfig>) => void;
 }
@@ -77,7 +68,8 @@ const DEFAULT_PREFS: PreferenceConfig = {
     video_resolution: 'best',
     embed_metadata: false,
     embed_thumbnail: false,
-    live_from_start: false
+    live_from_start: false,
+    enable_playlist_selection: true // NEW
 };
 
 export const AppContext = React.createContext<AppContextType | undefined>(undefined);
@@ -86,31 +78,24 @@ export const AppProvider = ({ children }: { children: React.ReactNode }) => {
   const [isConfigLoaded, setIsConfigLoaded] = useState(false);
   const [isJsRuntimeMissing, setIsJsRuntimeMissing] = useState(false);
 
-  // Settings Modal State
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settingsActiveTab, setSettingsActiveTab] = useState('general');
   const [settingsActiveSection, setSettingsActiveSection] = useState<string | null>(null);
 
-  // Notifications
   const [skipNotice, setSkipNotice] = useState<SkipNotice | null>(null);
 
-  // Config State
   const [defaultDownloadPath, _setDownloadPath] = useState<string | null>(null);
   const [filenameTemplateBlocks, _setTemplateBlocks] = useState<TemplateBlock[]>(DEFAULT_TEMPLATE_BLOCKS);
   const [preferences, _setPreferences] = useState<PreferenceConfig>(DEFAULT_PREFS);
   
-  // Cookie State
   const [cookiesPath, _setCookiesPath] = useState<string | null>(null);
   const [cookiesBrowser, _setCookiesBrowser] = useState<string | null>(null);
 
-  // Concurrency State
   const [maxConcurrentDownloads, _setMaxConcurrentDownloads] = useState(4);
   const [maxTotalInstances, _setMaxTotalInstances] = useState(10);
   
-  // Log State
   const [logLevel, _setLogLevel] = useState('info');
 
-  // Update State
   const [checkForUpdates, _setCheckForUpdates] = useState(true);
   const [isUpdateAvailable, setIsUpdateAvailable] = useState(false);
   const [latestVersion, setLatestVersion] = useState<string | null>(null);
@@ -118,7 +103,6 @@ export const AppProvider = ({ children }: { children: React.ReactNode }) => {
 
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // --- Settings Navigation Logic ---
   const openSettings = useCallback((tab?: string, sectionId?: string) => {
     if (tab) setSettingsActiveTab(tab);
     if (sectionId) setSettingsActiveSection(sectionId);

@@ -1,5 +1,5 @@
 import { useAppContext } from '@/contexts/AppContext';
-import { FileKey, FolderOpen, Lock, X } from 'lucide-react';
+import { FileKey, FolderOpen, Lock, ListChecks, X } from 'lucide-react';
 import { open } from '@tauri-apps/api/dialog';
 import { Button } from '../ui/Button';
 import { TemplateEditor } from './TemplateEditor';
@@ -22,7 +22,9 @@ export function YtdlpSettings() {
         cookiesBrowser,
         setCookiesBrowser,
         filenameTemplateBlocks,
-        setFilenameTemplateBlocks
+        setFilenameTemplateBlocks,
+        preferences,
+        updatePreferences
     } = useAppContext();
 
     const handleSelectCookieFile = async () => {
@@ -42,6 +44,37 @@ export function YtdlpSettings() {
     return (
         <div className="space-y-10 animate-fade-in pb-12">
             
+            {/* Playlist Behavior */}
+            <div id="section-playlist" className="space-y-4 scroll-mt-6">
+                 <div>
+                    <h3 className="text-base font-medium text-zinc-100">Playlist Behavior</h3>
+                    <p className="text-sm text-zinc-500">
+                        Configure how the app handles links containing multiple videos.
+                    </p>
+                </div>
+                <hr className="border-zinc-800" />
+
+                <div className="bg-zinc-900/30 p-5 rounded-lg border border-zinc-800/50">
+                    <button 
+                        onClick={() => updatePreferences({ enable_playlist_selection: !preferences.enable_playlist_selection })}
+                        className="flex items-center justify-between w-full group"
+                    >
+                        <div className="flex items-center gap-4">
+                            <div className={`p-2 rounded-md transition-colors ${preferences.enable_playlist_selection ? 'bg-theme-cyan/10 text-theme-cyan' : 'bg-zinc-800 text-zinc-500'}`}>
+                                <ListChecks className="h-5 w-5" />
+                            </div>
+                            <div className="text-left">
+                                <div className="text-sm font-medium text-zinc-200 group-hover:text-white transition-colors">Manual Playlist Selection</div>
+                                <div className="text-xs text-zinc-500">Show a selection screen for playlists and channels.</div>
+                            </div>
+                        </div>
+                        <div className={`w-10 h-5 rounded-full relative transition-colors ${preferences.enable_playlist_selection ? 'bg-theme-cyan' : 'bg-zinc-700'}`}>
+                            <div className={`absolute top-1 w-3 h-3 bg-white rounded-full transition-all ${preferences.enable_playlist_selection ? 'left-6' : 'left-1'}`} />
+                        </div>
+                    </button>
+                </div>
+            </div>
+
             {/* Filename Formatting */}
             <div id="section-formatting" className="space-y-4 scroll-mt-6">
                  <div>

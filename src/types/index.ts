@@ -19,6 +19,8 @@ export interface PreferenceConfig {
   embed_metadata: boolean;
   embed_thumbnail: boolean;
   live_from_start: boolean;
+  // NEW: Toggle for the selection modal
+  enable_playlist_selection: boolean;
 }
 
 export interface WindowConfig {
@@ -146,7 +148,6 @@ export interface QueuedJob {
   restrict_filenames: boolean;
   live_from_start: boolean;
   
-  // Persistence fields added for Defect #1
   status?: string;
   error?: string;
   stderr?: string;
@@ -171,8 +172,6 @@ export interface PlaylistResult {
     entries: PlaylistEntry[];
 }
 
-// --- ERROR HANDLING SYSTEM ---
-
 export type ErrorActionType = 'OPEN_SETTINGS' | 'OPEN_URL' | 'RETRY_WITH_AUTH';
 
 export interface ErrorPattern {
@@ -182,5 +181,5 @@ export interface ErrorPattern {
   description: string;
   actionLabel?: string;
   actionType?: ErrorActionType;
-  actionTarget?: string; // e.g. 'ytdlp:section-cookies'
+  actionTarget?: string;
 }

@@ -2,12 +2,13 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Button } from './ui/Button';
 import { Card, CardContent } from './ui/Card';
 import { Download, FolderOpen, Link2, MonitorPlay, Headphones, FileText, Image as ImageIcon, AlertTriangle, Loader2, ChevronDown, Radio } from 'lucide-react';
-import { selectDirectory } from '@/api/invoke';
-import { DownloadFormatPreset, PreferenceConfig, StartDownloadResponse } from '@/types';
+import { selectDirectory, expandPlaylist } from '@/api/invoke';
+import { DownloadFormatPreset, PreferenceConfig, StartDownloadResponse, PlaylistEntry } from '@/types';
 import { useAppContext } from '@/contexts/AppContext';
 import { twMerge } from 'tailwind-merge';
 import { SmartError } from './ui/SmartError';
 import { extractErrorDetails } from '@/utils/errorRegistry';
+import { PlaylistSelectionModal } from './PlaylistSelectionModal';
 
 interface DownloadFormProps {
   onDownload: (
@@ -102,6 +103,10 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
   const dropdownRef = useRef<HTMLDivElement>(null);
   const [errorDetails, setErrorDetails] = useState<{ message: string, stderr?: string } | null>(null);
 
+  // Playlist state
+  const [playlistEntries, setPlaylistEntries] = useState<PlaylistEntry[]>([]);
+  const [isPlaylistModalOpen, setIsPlaylistModalOpen] = useState(false);
+
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
@@ -111,6 +116,42 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [dropdownRef]);
+
+  const triggerDownload = async (targetUrl: string, force: boolean = false, whitelist?: string[]) => {
+      try {
+          const template = getTemplateString();
+          const response = await onDownload(
+              targetUrl, 
+              defaultDownloadPath || undefined, 
+              preferences.format_preset as DownloadFormatPreset,
+              preferences.video_resolution,
+              preferences.embed_metadata, 
+              preferences.embed_thumbnail, 
+              template,
+              false, 
+              force, 
+              whitelist, 
+              preferences.live_from_start 
+          );
+
+          if (response.skipped_count > 0) {
+              setSkipNotice({
+                  skipped: response.skipped_count,
+                  total: response.total_found,
+                  url: targetUrl,
+                  skippedUrls: response.skipped_urls
+              });
+          }
+
+          if (response.job_ids.length > 0 || response.skipped_count === response.total_found) {
+              setUrl('');
+          }
+      } catch (err: any) {
+          console.error("Failed to start download", err);
+          const extracted = extractErrorDetails(err);
+          setErrorDetails(extracted);
+      }
+  };
 
   const handleSubmit = async (e: React.FormEvent | React.MouseEvent, force: boolean = false) => {
     if (e) e.preventDefault();
@@ -128,45 +169,34 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
 
     setIsProcessing(true);
     setErrorDetails(null);
-    setSkipNotice(null); // Clear global notice
+    setSkipNotice(null);
     setShowForceOptions(false);
 
     try {
-        const template = getTemplateString();
-        
-        const response = await onDownload(
-            currentUrl, 
-            defaultDownloadPath || undefined, 
-            preferences.format_preset as DownloadFormatPreset,
-            preferences.video_resolution,
-            preferences.embed_metadata, 
-            preferences.embed_thumbnail, 
-            template,
-            false, 
-            force, 
-            undefined, 
-            preferences.live_from_start 
-        );
-
-        if (response.skipped_count > 0) {
-            setSkipNotice({
-                skipped: response.skipped_count,
-                total: response.total_found,
-                url: currentUrl,
-                skippedUrls: response.skipped_urls
-            });
+        // If selection modal is enabled, probe first
+        if (preferences.enable_playlist_selection && !force) {
+            const result = await expandPlaylist(currentUrl);
+            if (result.entries.length > 1) {
+                setPlaylistEntries(result.entries);
+                setIsPlaylistModalOpen(true);
+                setIsProcessing(false);
+                return;
+            }
         }
 
-        if (response.job_ids.length > 0 || response.skipped_count === response.total_found) {
-            setUrl('');
-        }
+        // Standard flow for single video or disabled selection
+        await triggerDownload(currentUrl, force);
     } catch (err: any) {
-        console.error("Failed to start download", err);
+        console.error("Failed to expand playlist", err);
         const extracted = extractErrorDetails(err);
         setErrorDetails(extracted);
     } finally {
         setIsProcessing(false);
     }
+  };
+
+  const handlePlaylistConfirm = (selectedUrls: string[]) => {
+      triggerDownload(url, false, selectedUrls);
   };
 
   const handleSelectDirectory = async () => {
@@ -214,6 +244,14 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
   return (
     <Card className="bg-transparent border-0 shadow-none p-0">
       <CardContent className="p-0">
+        <PlaylistSelectionModal 
+            isOpen={isPlaylistModalOpen}
+            onClose={() => setIsPlaylistModalOpen(false)}
+            entries={playlistEntries}
+            onConfirm={handlePlaylistConfirm}
+            title="Configure Playlist Items"
+        />
+
         <form onSubmit={(e) => handleSubmit(e, false)} className="flex flex-col gap-6">
           
           {/* URL Input */}
@@ -250,7 +288,6 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
                 />
             </div>
             
-            {/* Error Feedback */}
             {errorDetails && (
                 <div className="animate-fade-in">
                     <SmartError 
