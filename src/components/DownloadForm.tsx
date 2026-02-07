@@ -117,7 +117,11 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [dropdownRef]);
 
+  /**
+   * Finalizes the download process by invoking the manager
+   */
   const triggerDownload = async (targetUrl: string, force: boolean = false, whitelist?: string[]) => {
+      setIsProcessing(true);
       try {
           const template = getTemplateString();
           const response = await onDownload(
@@ -150,9 +154,14 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
           console.error("Failed to start download", err);
           const extracted = extractErrorDetails(err);
           setErrorDetails(extracted);
+      } finally {
+          setIsProcessing(false);
       }
   };
 
+  /**
+   * Primary form submission handler
+   */
   const handleSubmit = async (e: React.FormEvent | React.MouseEvent, force: boolean = false) => {
     if (e) e.preventDefault();
     if (!url.trim()) return;
@@ -179,7 +188,8 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
             if (result.entries.length > 1) {
                 setPlaylistEntries(result.entries);
                 setIsPlaylistModalOpen(true);
-                setIsProcessing(false);
+                // Note: We DO NOT set isProcessing to false here. 
+                // We want the button behind the modal to stay in the "Analyzing" state.
                 return;
             }
         }
@@ -190,13 +200,24 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
         console.error("Failed to expand playlist", err);
         const extracted = extractErrorDetails(err);
         setErrorDetails(extracted);
-    } finally {
         setIsProcessing(false);
     }
   };
 
+  /**
+   * Handler for when user confirms selection in the playlist modal
+   */
   const handlePlaylistConfirm = (selectedUrls: string[]) => {
+      setIsPlaylistModalOpen(false);
       triggerDownload(url, false, selectedUrls);
+  };
+
+  /**
+   * Handler for when the user closes the playlist modal without selecting
+   */
+  const handlePlaylistCancel = () => {
+      setIsPlaylistModalOpen(false);
+      setIsProcessing(false);
   };
 
   const handleSelectDirectory = async () => {
@@ -239,6 +260,7 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
   const currentMode = preferences.mode as DownloadMode;
   
   const filteredPresets = formatPresets.filter(p => p.mode === currentMode);
+  // Button is disabled if URL is invalid OR we are currently processing (probing or downloading)
   const isSubmitDisabled = !isValidUrl || isProcessing;
 
   return (
@@ -246,7 +268,7 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
       <CardContent className="p-0">
         <PlaylistSelectionModal 
             isOpen={isPlaylistModalOpen}
-            onClose={() => setIsPlaylistModalOpen(false)}
+            onClose={handlePlaylistCancel}
             entries={playlistEntries}
             onConfirm={handlePlaylistConfirm}
             title="Configure Playlist Items"

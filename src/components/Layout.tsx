@@ -42,10 +42,10 @@ export function Layout({ SidebarContent, MainContent }: LayoutProps) {
                 variant="ghost" 
                 size="icon" 
                 title="Settings" 
-                className="text-zinc-500 hover:text-white"
+                className="group text-zinc-500 hover:text-white"
                 onClick={() => openSettings('general')}
             >
-                <Settings className="h-5 w-5" />
+                <Settings className="h-5 w-5 transition-all duration-500 group-hover:animate-[spin_3s_linear_infinite]" />
             </Button>
         </div>
 
