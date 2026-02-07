@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { Modal } from './ui/Modal';
 import { Button } from './ui/Button';
 import { PlaylistEntry } from '@/types';
@@ -16,10 +16,34 @@ interface PlaylistSelectionModalProps {
 export function PlaylistSelectionModal({ isOpen, onClose, entries, onConfirm, title }: PlaylistSelectionModalProps) {
     const [search, setSearch] = useState('');
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set(entries.map(e => e.url)));
+    const searchRef = useRef<HTMLInputElement>(null);
 
+    // Filter logic
     const filteredEntries = useMemo(() => {
         return entries.filter(e => e.title.toLowerCase().includes(search.toLowerCase()));
     }, [entries, search]);
+
+    // Auto-focus and Shortcut logic
+    useEffect(() => {
+        if (isOpen) {
+            // Short timeout to ensure Modal animation/mount is complete before focusing
+            const timer = setTimeout(() => searchRef.current?.focus(), 50);
+
+            const handleKeyDown = (e: KeyboardEvent) => {
+                if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'k')) {
+                    e.preventDefault();
+                    searchRef.current?.focus();
+                    searchRef.current?.select();
+                }
+            };
+
+            window.addEventListener('keydown', handleKeyDown);
+            return () => {
+                clearTimeout(timer);
+                window.removeEventListener('keydown', handleKeyDown);
+            };
+        }
+    }, [isOpen]);
 
     const handleToggleAll = () => {
         if (selectedIds.size === entries.length) {
@@ -55,8 +79,9 @@ export function PlaylistSelectionModal({ isOpen, onClose, entries, onConfirm, ti
                     <div className="relative group">
                         <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-zinc-500 group-focus-within:text-theme-cyan transition-colors" />
                         <input 
+                            ref={searchRef}
                             type="text"
-                            placeholder="Search in playlist..."
+                            placeholder="Search in playlist... (Ctrl+F)"
                             value={search}
                             onChange={(e) => setSearch(e.target.value)}
                             className="w-full bg-zinc-950 border border-zinc-800 rounded-md pl-10 pr-4 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-theme-cyan/30 focus:border-theme-cyan/30"

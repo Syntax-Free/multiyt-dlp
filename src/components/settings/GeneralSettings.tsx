@@ -1,5 +1,5 @@
 import { useAppContext } from '@/contexts/AppContext';
-import { AlertCircle, Trash2, FileText, Check, Save, X, Loader2, Database, AlertTriangle } from 'lucide-react';
+import { AlertCircle, Trash2, FileText, Check, Save, X, Loader2, Database, AlertTriangle, Search, ChevronDown } from 'lucide-react';
 import { Button } from '../ui/Button';
 import { clearDownloadHistory, getDownloadHistory, saveDownloadHistory } from '@/api/invoke';
 import { useState, useRef, useEffect } from 'react';
@@ -25,6 +25,13 @@ export function GeneralSettings() {
     const originalHistoryRef = useRef(''); 
     const [isLoadingHistory, setIsLoadingHistory] = useState(false);
     const [isSavingHistory, setIsSavingHistory] = useState(false);
+
+    // Search State
+    const [isSearchOpen, setIsSearchOpen] = useState(false);
+    const [searchTerm, setSearchTerm] = useState('');
+    const [lastMatchIndex, setLastMatchIndex] = useState(-1);
+    const searchInputRef = useRef<HTMLInputElement>(null);
+    const textareaRef = useRef<HTMLTextAreaElement>(null);
 
     // Helper to handle line ending differences between OS files and Textarea
     const normalize = (str: string) => str.replace(/\r\n/g, '\n');
@@ -55,6 +62,28 @@ export function GeneralSettings() {
             if (timerRef.current) clearInterval(timerRef.current);
         };
     }, [clearStatus]);
+
+    // Handle Editor Shortcuts
+    useEffect(() => {
+        if (isEditingHistory) {
+            const handleKeyDown = (e: KeyboardEvent) => {
+                if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'k')) {
+                    e.preventDefault();
+                    setIsSearchOpen(true);
+                    setTimeout(() => {
+                        searchInputRef.current?.focus();
+                        searchInputRef.current?.select();
+                    }, 50);
+                }
+                if (e.key === 'Escape' && isSearchOpen) {
+                    setIsSearchOpen(false);
+                    textareaRef.current?.focus();
+                }
+            };
+            window.addEventListener('keydown', handleKeyDown);
+            return () => window.removeEventListener('keydown', handleKeyDown);
+        }
+    }, [isEditingHistory, isSearchOpen]);
 
     const handleChange = (key: 'max_concurrent_downloads' | 'max_total_instances', value: number) => {
         let concurrent = maxConcurrentDownloads;
@@ -115,28 +144,56 @@ export function GeneralSettings() {
 
         const isDirty = normalize(historyContent) !== normalize(originalHistoryRef.current);
         
-        // Syn: even gemini 3 couldn't fix this confirmation dialogue.
         if (isDirty) {
             const confirmed = window.confirm("You have unsaved changes in your archive file. Are you sure you want to discard them?");
             if (!confirmed) return;
         }
 
-        // Reset to original to avoid state retention issues
         setHistoryContent(originalHistoryRef.current);
         setIsEditingHistory(false);
+        setIsSearchOpen(false);
+        setSearchTerm('');
     };
 
     const handleSaveEditor = async () => {
         setIsSavingHistory(true);
         try {
             await saveDownloadHistory(historyContent);
-            originalHistoryRef.current = historyContent; // Update reference so it's no longer dirty
+            originalHistoryRef.current = historyContent;
             setIsEditingHistory(false);
         } catch (error) {
             console.error("Failed to save history", error);
             alert("Failed to save history file: " + error);
         } finally {
             setIsSavingHistory(false);
+        }
+    };
+
+    const handleFindNext = (e?: React.FormEvent) => {
+        if (e) e.preventDefault();
+        if (!searchTerm || !textareaRef.current) return;
+
+        const content = textareaRef.current.value;
+        const searchLower = searchTerm.toLowerCase();
+        const startPos = lastMatchIndex + 1;
+
+        let nextIndex = content.toLowerCase().indexOf(searchLower, startPos);
+
+        // Wrap around if not found
+        if (nextIndex === -1) {
+            nextIndex = content.toLowerCase().indexOf(searchLower, 0);
+        }
+
+        if (nextIndex !== -1) {
+            textareaRef.current.focus();
+            textareaRef.current.setSelectionRange(nextIndex, nextIndex + searchTerm.length);
+            
+            // Scroll to the selection
+            const lineHeight = 16; 
+            const line = content.substring(0, nextIndex).split('\n').length;
+            textareaRef.current.scrollTop = (line - 5) * lineHeight;
+
+            setLastMatchIndex(nextIndex);
         }
     };
 
@@ -147,48 +204,100 @@ export function GeneralSettings() {
         return (
             <div className="absolute inset-0 bg-zinc-950 z-50 flex flex-col animate-fade-in">
                 {/* Editor Header */}
-                <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-800 bg-zinc-900">
-                    <div className="flex items-center gap-3">
-                         <div className="p-2 rounded bg-zinc-800 text-zinc-400">
-                            <FileText className="h-5 w-5" />
-                         </div>
-                         <div>
-                             <div className="flex items-center gap-2">
-                                <h3 className="font-bold text-zinc-100">Archive Editor</h3>
-                                {isDirty && (
-                                    <span className="text-[10px] bg-theme-cyan/20 text-theme-cyan px-1.5 py-0.5 rounded font-bold uppercase tracking-widest border border-theme-cyan/30">
-                                        Modified
-                                    </span>
+                <div className="flex flex-col border-b border-zinc-800 bg-zinc-900 shadow-xl z-10">
+                    <div className="flex items-center justify-between px-6 py-4">
+                        <div className="flex items-center gap-3">
+                            <div className="p-2 rounded bg-zinc-800 text-zinc-400">
+                                <FileText className="h-5 w-5" />
+                            </div>
+                            <div>
+                                <div className="flex items-center gap-2">
+                                    <h3 className="font-bold text-zinc-100">Archive Editor</h3>
+                                    {isDirty && (
+                                        <span className="text-[10px] bg-theme-cyan/20 text-theme-cyan px-1.5 py-0.5 rounded font-bold uppercase tracking-widest border border-theme-cyan/30">
+                                            Modified
+                                        </span>
+                                    )}
+                                </div>
+                                <p className="text-xs text-zinc-500 font-mono">downloads.txt</p>
+                            </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <Button 
+                                variant="secondary"
+                                onClick={() => setIsSearchOpen(!isSearchOpen)}
+                                className={twMerge("h-8 gap-2", isSearchOpen && "bg-zinc-800 text-theme-cyan")}
+                                title="Find (Ctrl+F)"
+                            >
+                                <Search className="h-4 w-4" />
+                                Find
+                            </Button>
+                            <div className="w-px h-6 bg-zinc-800 mx-1" />
+                            <Button 
+                                variant="secondary"
+                                onClick={handleCloseEditor}
+                                className="h-8 gap-2"
+                                disabled={isSavingHistory}
+                            >
+                                <X className="h-4 w-4" />
+                                Close
+                            </Button>
+                            <Button 
+                                variant="default"
+                                onClick={handleSaveEditor}
+                                className="h-8 gap-2 min-w-[100px]"
+                                disabled={isSavingHistory}
+                            >
+                                {isSavingHistory ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                                Save
+                            </Button>
+                        </div>
+                    </div>
+
+                    {/* Search Sub-header */}
+                    {isSearchOpen && (
+                        <div className="px-6 py-3 bg-zinc-950 border-t border-zinc-800 flex items-center gap-3 animate-fade-in">
+                            <form onSubmit={handleFindNext} className="flex-1 max-w-md relative">
+                                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-500" />
+                                <input 
+                                    ref={searchInputRef}
+                                    type="text"
+                                    placeholder="Find in file..."
+                                    value={searchTerm}
+                                    onChange={(e) => {
+                                        setSearchTerm(e.target.value);
+                                        setLastMatchIndex(-1);
+                                    }}
+                                    className="w-full bg-zinc-900 border border-zinc-800 rounded px-9 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-theme-cyan/50 focus:ring-1 focus:ring-theme-cyan/50"
+                                />
+                                {searchTerm && (
+                                    <button 
+                                        type="button"
+                                        onClick={() => setSearchTerm('')}
+                                        className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300"
+                                    >
+                                        <X className="h-3 w-3" />
+                                    </button>
                                 )}
-                             </div>
-                             <p className="text-xs text-zinc-500 font-mono">downloads.txt</p>
-                         </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                        <Button 
-                            variant="secondary"
-                            onClick={handleCloseEditor}
-                            className="h-8 gap-2"
-                            disabled={isSavingHistory}
-                        >
-                            <X className="h-4 w-4" />
-                            Close
-                        </Button>
-                        <Button 
-                            variant="default"
-                            onClick={handleSaveEditor}
-                            className="h-8 gap-2 min-w-[100px]"
-                            disabled={isSavingHistory}
-                        >
-                            {isSavingHistory ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                            Save
-                        </Button>
-                    </div>
+                            </form>
+                            <Button size="sm" variant="secondary" className="h-7 text-[10px] gap-1" onClick={() => handleFindNext()}>
+                                <ChevronDown className="h-3 w-3" />
+                                Next
+                            </Button>
+                            <button 
+                                onClick={() => setIsSearchOpen(false)}
+                                className="text-xs text-zinc-500 hover:text-zinc-300 ml-auto"
+                            >
+                                ESC to close
+                            </button>
+                        </div>
+                    )}
                 </div>
 
                 {/* Editor Content */}
                 <div className="flex-1 relative">
                     <textarea 
+                        ref={textareaRef}
                         value={historyContent}
                         onChange={(e) => setHistoryContent(e.target.value)}
                         className="absolute inset-0 w-full h-full bg-zinc-950 text-zinc-300 font-mono text-xs p-6 resize-none focus:outline-none focus:ring-1 focus:ring-theme-cyan/10 leading-relaxed"
