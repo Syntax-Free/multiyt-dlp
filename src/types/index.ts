@@ -37,7 +37,7 @@ export interface AppConfig {
 }
 
 export interface DependencyInfo {
-    name: String;
+    name: string;
     available: boolean;
     version: string | null;
     path: string | null;
