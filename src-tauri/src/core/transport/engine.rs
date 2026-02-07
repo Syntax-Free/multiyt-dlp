@@ -1,36 +1,36 @@
-use std::path::{ PathBuf};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
-use reqwest::{Client};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use reqwest::{Client, header};
 use tokio::fs::{self, OpenOptions};
 use tokio::io::{AsyncWriteExt};
 use futures_util::StreamExt;
 use crate::core::transport::retry::{RetryPolicy, TransportError};
 
-// Kill connection if no bytes received for 15 seconds
+// Constants
 const IO_TIMEOUT: Duration = Duration::from_secs(15);
+const CHUNK_THRESHOLD: u64 = 10 * 1024 * 1024; // 10 MB
+const DEFAULT_CONCURRENCY: usize = 4;
+
+#[derive(Debug, Clone)]
+struct Chunk {
+    index: usize,
+    start: u64,
+    end: u64,
+    len: u64,
+}
 
 pub struct TransportEngine {
     client: Client,
-    target_path: PathBuf,
-    part_path: PathBuf,
     url: String,
+    target_path: PathBuf,
+    concurrency: usize,
+    chunk_threshold: u64,
 }
 
 impl TransportEngine {
     pub fn new(url: &str, target_path: PathBuf) -> Self {
-        // Construct paths
-        let mut part_path = target_path.clone();
-        
-        // Defect Fix #4: Unique Part Filenames
-        // We append a timestamp to ensure that if a previous zombie process is holding a lock 
-        // on an old .part file, we don't crash or corrupt data by writing to the same one.
-        if let Some(file_name) = target_path.file_name() {
-            let mut new_name = file_name.to_os_string();
-            let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-            new_name.push(format!(".{}.part", timestamp));
-            part_path.set_file_name(new_name);
-        }
-
         let client = Client::builder()
             .user_agent("Multiyt-dlp/2.1 (Resumable-Engine)")
             .connect_timeout(Duration::from_secs(10))
@@ -39,165 +39,345 @@ impl TransportEngine {
 
         Self {
             client,
-            target_path,
-            part_path,
             url: url.to_string(),
+            target_path,
+            concurrency: DEFAULT_CONCURRENCY,
+            chunk_threshold: CHUNK_THRESHOLD,
         }
     }
 
     /// The Main Execution Loop
-    pub async fn execute<F>(&self, on_progress: F) -> Result<(), TransportError> 
-    where F: Fn(u64, u64, f64) + Send + Sync + 'static 
+    pub async fn execute<F>(&self, on_progress: F) -> Result<(), TransportError>
+    where
+        F: Fn(u64, u64, f64) + Send + Sync + 'static + Clone,
     {
+        // 1. Probe Phase: Check size and ranges support
+        let (content_len, accepts_ranges) = self.probe().await?;
+
+        // 2. Path Decision
+        if let Some(total_size) = content_len {
+            if accepts_ranges && total_size >= self.chunk_threshold {
+                println!("[Transport] Starting Concurrent Download: {} bytes, {} threads", total_size, self.concurrency);
+                return self.download_concurrent(total_size, on_progress).await;
+            }
+        }
+
+        println!("[Transport] Starting Linear Download");
+        self.download_linear(content_len, on_progress).await
+    }
+
+    async fn probe(&self) -> Result<(Option<u64>, bool), TransportError> {
+        let resp = self.client.head(&self.url).send().await?;
+        
+        if !resp.status().is_success() {
+             if resp.status() == reqwest::StatusCode::NOT_FOUND {
+                 return Err(TransportError::HttpStatus(resp.status().as_u16()));
+             }
+             return Ok((None, false));
+        }
+
+        let len = resp.content_length();
+        let accepts_ranges = if let Some(ranges) = resp.headers().get(header::ACCEPT_RANGES) {
+            ranges.to_str().unwrap_or("").contains("bytes")
+        } else {
+            false
+        };
+
+        Ok((len, accepts_ranges))
+    }
+
+    // --- LINEAR DOWNLOAD (Fallback / Small Files) ---
+    
+    async fn download_linear<F>(&self, total_size: Option<u64>, on_progress: F) -> Result<(), TransportError>
+    where
+        F: Fn(u64, u64, f64) + Send + Sync + 'static,
+    {
+        let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let part_path = self.target_path.with_extension(format!("part.linear.{}", timestamp));
+
         let mut retry_policy = RetryPolicy::new(5);
-        let on_progress_ref = &on_progress;
 
         loop {
-            match self.attempt_download(on_progress_ref).await {
+            match self.attempt_linear(&part_path, total_size, &on_progress).await {
                 Ok(_) => {
-                    self.finalize().await?;
+                    self.finalize(&part_path).await?;
                     return Ok(());
                 },
                 Err(e) => {
-                    // Cleanup partial on failure to avoid disk clutter, 
-                    // since we use unique part names and don't support resumption across process restarts for deps.
-                    let _ = fs::remove_file(&self.part_path).await;
+                    let _ = fs::remove_file(&part_path).await;
 
-                    // Fail fast on unrecoverable errors
                     if let TransportError::HttpStatus(404) = e {
                         return Err(e);
                     }
 
-                    println!("[Transport] Download interrupted: {}. Checking retry policy...", e);
-                    
+                    println!("[Transport] Linear download interrupted: {}. Retrying...", e);
                     match retry_policy.next_backoff() {
-                        Some(delay) => {
-                            println!("[Transport] Retrying in {}ms...", delay.as_millis());
-                            tokio::time::sleep(delay).await;
-                            continue;
-                        }
-                        None => {
-                            return Err(TransportError::MaxRetriesExceeded);
-                        }
+                        Some(delay) => tokio::time::sleep(delay).await,
+                        None => return Err(TransportError::MaxRetriesExceeded),
                     }
                 }
             }
         }
     }
 
-    async fn attempt_download<F>(&self, on_progress: &F) -> Result<(), TransportError>
+    async fn attempt_linear<F>(&self, path: &Path, total_size: Option<u64>, on_progress: &F) -> Result<(), TransportError>
     where F: Fn(u64, u64, f64) + Send + Sync
     {
-        // For dependencies, we don't strictly need resume logic if we use unique part files per attempt.
-        // Simplified: Start fresh every attempt to avoid corruption from previous zombie writers.
-        
-        let total_size = self.get_remote_size().await?;
-        
-        let request = self.client.get(&self.url);
-        let response = request.send().await?;
-        let status = response.status();
-
-        if !status.is_success() {
-             return Err(TransportError::HttpStatus(status.as_u16()));
+        let response = self.client.get(&self.url).send().await?;
+        if !response.status().is_success() {
+             return Err(TransportError::HttpStatus(response.status().as_u16()));
         }
 
-        let mut file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&self.part_path)
-            .await?;
-
-        // Streaming Loop with Timeout and Speed Calc
+        let mut file = OpenOptions::new().create(true).write(true).truncate(true).open(path).await?;
         let mut stream = response.bytes_stream();
+        
         let mut downloaded = 0;
         let mut last_update = Instant::now();
         let mut bytes_since_update = 0;
 
-        loop {
-            // "Zombie Stream" Fix: Wrap poll in timeout
-            let chunk_result = tokio::time::timeout(IO_TIMEOUT, stream.next()).await;
-
+        while let Some(chunk_result) = tokio::time::timeout(IO_TIMEOUT, stream.next()).await.ok() {
             match chunk_result {
-                Ok(Some(res)) => {
-                    let chunk = res?;
+                Some(Ok(chunk)) => {
                     let len = chunk.len() as u64;
                     file.write_all(&chunk).await?;
                     downloaded += len;
                     bytes_since_update += len;
 
-                    // Update stats every ~500ms
                     if last_update.elapsed().as_millis() >= 500 {
                          let secs = last_update.elapsed().as_secs_f64();
                          let speed = if secs > 0.0 { (bytes_since_update as f64) / secs } else { 0.0 };
-                         
-                         on_progress(downloaded, total_size, speed);
-                         
+                         on_progress(downloaded, total_size.unwrap_or(0), speed);
                          last_update = Instant::now();
                          bytes_since_update = 0;
                     }
                 },
-                Ok(None) => break, // Stream finished
-                Err(_) => {
-                    return Err(TransportError::FileSystem(
-                        std::io::Error::new(std::io::ErrorKind::TimedOut, "Stream timed out")
-                    ));
-                }
+                Some(Err(e)) => return Err(TransportError::Network(e)),
+                None => break,
             }
         }
-        
+
         file.flush().await?;
 
-        if total_size > 0 && downloaded != total_size {
-            return Err(TransportError::Validation(format!(
-                "Stream ended prematurely. Expected {}, got {}", 
-                total_size, downloaded
-            )));
+        if let Some(total) = total_size {
+            if downloaded != total {
+                return Err(TransportError::Validation(format!("Expected {}, got {}", total, downloaded)));
+            }
         }
 
         Ok(())
     }
 
-    async fn get_remote_size(&self) -> Result<u64, TransportError> {
-        let resp = self.client.head(&self.url).send().await?;
-        if resp.status().is_success() {
-            if let Some(len) = resp.content_length() {
-                return Ok(len);
+    // --- CONCURRENT DOWNLOAD (High Performance) ---
+
+    async fn download_concurrent<F>(&self, total_size: u64, on_progress: F) -> Result<(), TransportError>
+    where
+        F: Fn(u64, u64, f64) + Send + Sync + 'static + Clone,
+    {
+        let chunk_size = total_size / (self.concurrency as u64);
+        let mut chunks = Vec::new();
+
+        for i in 0..self.concurrency {
+            let start = i as u64 * chunk_size;
+            let end = if i == self.concurrency - 1 {
+                total_size - 1
+            } else {
+                (i as u64 + 1) * chunk_size - 1
+            };
+            chunks.push(Chunk { index: i, start, end, len: end - start + 1 });
+        }
+
+        let bytes_downloaded = Arc::new(AtomicU64::new(0));
+        let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let mut tasks = Vec::new();
+
+        let bytes_downloaded_monitor = bytes_downloaded.clone();
+        let on_progress_monitor = on_progress.clone();
+        
+        let monitor_handle = tokio::spawn(async move {
+            let mut last_bytes = 0;
+            let mut last_time = Instant::now();
+            
+            loop {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                let current = bytes_downloaded_monitor.load(Ordering::Relaxed);
+                
+                if current >= total_size { break; }
+                
+                let now = Instant::now();
+                let elapsed = now.duration_since(last_time).as_secs_f64();
+                
+                let speed = if elapsed > 0.0 {
+                    (current.saturating_sub(last_bytes) as f64) / elapsed
+                } else { 0.0 };
+
+                on_progress_monitor(current, total_size, speed);
+                
+                last_bytes = current;
+                last_time = now;
+            }
+        });
+
+        for chunk in chunks {
+            let client = self.client.clone();
+            let url = self.url.clone();
+            let total_bytes_atomic = bytes_downloaded.clone();
+            let part_path = self.target_path.with_extension(format!("part.{}.{}", timestamp, chunk.index));
+            
+            tasks.push(tokio::spawn(async move {
+                let mut retry_policy = RetryPolicy::new(5);
+                loop {
+                    match Self::download_chunk(&client, &url, &part_path, &chunk, &total_bytes_atomic).await {
+                        Ok(_) => return Ok(part_path),
+                        Err(e) => {
+                            match retry_policy.next_backoff() {
+                                Some(delay) => tokio::time::sleep(delay).await,
+                                None => return Err(e),
+                            }
+                        }
+                    }
+                }
+            }));
+        }
+
+        let results = futures_util::future::join_all(tasks).await;
+        monitor_handle.abort();
+
+        let mut part_paths = Vec::new();
+        let mut failed = false;
+
+        for res in results {
+            match res {
+                Ok(Ok(path)) => part_paths.push(path),
+                _ => failed = true,
             }
         }
-        Ok(0)
+
+        if failed {
+            self.cleanup_parts(timestamp).await;
+            return Err(TransportError::Validation("One or more chunks failed".to_string()));
+        }
+
+        println!("[Transport] Merging {} parts...", part_paths.len());
+        match self.merge_parts(&part_paths).await {
+            Ok(_) => {
+                on_progress(total_size, total_size, 0.0);
+                Ok(())
+            },
+            Err(e) => {
+                self.cleanup_parts(timestamp).await;
+                Err(e)
+            }
+        }
     }
 
-    async fn finalize(&self) -> Result<(), TransportError> {
-        // "Windows Access Denied" Fix
+    async fn download_chunk(
+        client: &Client,
+        url: &str,
+        path: &Path,
+        chunk: &Chunk,
+        global_bytes: &AtomicU64
+    ) -> Result<(), TransportError> {
+        let req = client.get(url).header(header::RANGE, format!("bytes={}-{}", chunk.start, chunk.end));
+        let response = req.send().await?;
+        
+        if !response.status().is_success() {
+            return Err(TransportError::HttpStatus(response.status().as_u16()));
+        }
+
+        let mut file = OpenOptions::new().create(true).write(true).truncate(true).open(path).await?;
+        let mut stream = response.bytes_stream();
+        let mut downloaded_in_chunk = 0;
+
+        while let Some(chunk_res) = tokio::time::timeout(IO_TIMEOUT, stream.next()).await.ok() {
+            match chunk_res {
+                Some(Ok(bytes)) => {
+                    file.write_all(&bytes).await?;
+                    let len = bytes.len() as u64;
+                    downloaded_in_chunk += len;
+                    global_bytes.fetch_add(len, Ordering::Relaxed);
+                },
+                Some(Err(e)) => return Err(TransportError::Network(e)),
+                None => break,
+            }
+        }
+
+        file.flush().await?;
+
+        if downloaded_in_chunk != chunk.len {
+             global_bytes.fetch_sub(downloaded_in_chunk, Ordering::Relaxed);
+             return Err(TransportError::Validation(format!("Chunk incomplete. Got {}, expected {}", downloaded_in_chunk, chunk.len)));
+        }
+
+        Ok(())
+    }
+
+    async fn merge_parts(&self, parts: &[PathBuf]) -> Result<(), TransportError> {
+        // Use a temporary merge file to ensure atomicity
+        let merge_path = self.target_path.with_extension("merging");
+        let mut merge_file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&merge_path)
+            .await?;
+        
+        for part_path in parts {
+            let mut part_file = fs::File::open(part_path).await?;
+            tokio::io::copy(&mut part_file, &mut merge_file).await?;
+        }
+        
+        merge_file.flush().await?;
+        
+        // Delete parts
+        for part_path in parts {
+            let _ = fs::remove_file(part_path).await;
+        }
+
+        // Finalize (Atomic Move)
+        self.finalize(&merge_path).await
+    }
+
+    async fn cleanup_parts(&self, timestamp: u128) {
+        let pattern = format!("part.{}.", timestamp);
+        if let Some(parent) = self.target_path.parent() {
+            if let Ok(mut entries) = fs::read_dir(parent).await {
+                while let Ok(Some(entry)) = entries.next_entry().await {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.contains(&pattern) {
+                        let _ = fs::remove_file(entry.path()).await;
+                    }
+                }
+            }
+        }
+    }
+
+    async fn finalize(&self, source_path: &Path) -> Result<(), TransportError> {
         if self.target_path.exists() {
             if let Err(e) = fs::remove_file(&self.target_path).await {
-                // Check if PermissionDenied (OS error 5 on Windows, 13 on Unix)
                 if e.kind() == std::io::ErrorKind::PermissionDenied {
                     println!("[Transport] Target file locked. Attempting rename-swap...");
                     let mut old_path = self.target_path.clone();
-                    // Append .old.{timestamp} to avoid collisions
                     let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
                     let ext = old_path.extension().unwrap_or_default().to_string_lossy();
                     old_path.set_extension(format!("{}.old.{}", ext, timestamp));
                     
                     fs::rename(&self.target_path, &old_path).await?;
-                    // We don't delete old_path immediately as it might still be locked. 
-                    // It becomes garbage for next cleanup or OS restart.
                 } else {
                     return Err(e.into());
                 }
             }
         }
         
-        fs::rename(&self.part_path, &self.target_path).await?;
+        fs::rename(source_path, &self.target_path).await?;
         
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&self.target_path).await?.permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&self.target_path, perms).await?;
+            if let Ok(metadata) = fs::metadata(&self.target_path).await {
+                let mut perms = metadata.permissions();
+                perms.set_mode(0o755);
+                let _ = fs::set_permissions(&self.target_path, perms).await;
+            }
         }
 
         Ok(())
