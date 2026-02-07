@@ -26,13 +26,11 @@ mod config;
 fn main() {
     #[cfg(target_os = "windows")]
     unsafe {
-        // Explicitly set AppUserModelID for consistent taskbar grouping and progress bars
         const APP_ID: &str = "net.syntaxfree.multiyt-dlp";
         let wide_id: Vec<u16> = APP_ID.encode_utf16().chain(std::iter::once(0)).collect();
         let _ = SetCurrentProcessExplicitAppUserModelID(PCWSTR(wide_id.as_ptr()));
     }
 
-    // Initialize global panic hook for logging
     core::logging::register_panic_hook();
 
     let home = dirs::home_dir().expect("Could not find home directory");
@@ -41,25 +39,21 @@ fn main() {
         let _ = fs::create_dir_all(&temp_dir);
     }
 
-    // Rotate logs from previous session
     if let Err(e) = rotate_logs() {
         eprintln!("WARNING: Log rotation failed: {}", e);
     }
 
     let config_manager = Arc::new(ConfigManager::new());
     
-    // Load initial config and initialize logging subsystem
     let initial_config = config_manager.get_config();
     let log_manager = LogManager::init(&initial_config.general.log_level);
     
-    // Initialize Download History database
     let history_manager = HistoryManager::new();
 
     let config_manager_setup = config_manager.clone();
     let config_manager_event = config_manager.clone();
     let config_manager_saver = config_manager.clone();
     
-    // Config Auto-Save Channel (for window state)
     let (tx_save, mut rx_save) = mpsc::unbounded_channel::<()>();
 
     tauri::Builder::default()
@@ -73,7 +67,6 @@ fn main() {
             let main_window = app.get_window("main").unwrap();
             let config = config_manager_setup.get_config();
             
-            // Restore sanitized window position and size
             let _ = main_window.set_size(tauri::Size::Physical(tauri::PhysicalSize {
                 width: config.window.width as u32,
                 height: config.window.height as u32,
@@ -85,10 +78,8 @@ fn main() {
             
             tracing::info!("Application startup complete. Window initialized.");
 
-            // Background Saver Actor: Debounces window move/resize updates to prevent excessive IO
             tauri::async_runtime::spawn(async move {
                 while let Some(_) = rx_save.recv().await {
-                    // Drain the channel buffer to ensure only the latest state is persisted
                     while let Ok(_) = rx_save.try_recv() {}
                     tokio::time::sleep(Duration::from_millis(500)).await;
                     if let Err(e) = config_manager_saver.save() {
@@ -127,9 +118,7 @@ fn main() {
                     }
                 }
                 
-                // CRITICAL: Handle Window Position/Size Persistence
                 WindowEvent::Moved(pos) => {
-                    // Only save state for the main window, and only if it's not minimized (-32000)
                     if window_label == "main" && !window.is_minimized().unwrap_or(false) {
                         if pos.x > -10000 && pos.y > -10000 {
                             let mut current_config = config_manager_event.get_config();
@@ -142,7 +131,6 @@ fn main() {
                     }
                 }
                 WindowEvent::Resized(size) => {
-                    // Only save state for the main window, and only if it has logical dimensions
                     if window_label == "main" && !window.is_minimized().unwrap_or(false) {
                         if size.width > 0 && size.height > 0 {
                             let mut current_config = config_manager_event.get_config();
@@ -167,6 +155,7 @@ fn main() {
             commands::system::show_in_folder, 
             commands::system::open_log_folder,
             commands::system::log_frontend_message, 
+            commands::system::request_attention,
             commands::downloader::start_download,
             commands::downloader::cancel_download,
             commands::downloader::expand_playlist,

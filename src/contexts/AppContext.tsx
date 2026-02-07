@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { TemplateBlock, PreferenceConfig } from '@/types';
+import { TemplateBlock, PreferenceConfig, GeneralConfig } from '@/types';
 import { getAppConfig, saveGeneralConfig, savePreferenceConfig, checkDependencies, getLatestAppVersion } from '@/api/invoke';
 import { getVersion } from '@tauri-apps/api/app';
 
@@ -50,6 +50,9 @@ interface AppContextType {
   currentVersion: string | null;
   checkAppUpdate: () => Promise<void>;
 
+  aria2PromptDismissed: boolean;
+  setAria2PromptDismissed: (dismissed: boolean) => void;
+
   preferences: PreferenceConfig;
   updatePreferences: (updates: Partial<PreferenceConfig>) => void;
 }
@@ -69,7 +72,7 @@ const DEFAULT_PREFS: PreferenceConfig = {
     embed_metadata: false,
     embed_thumbnail: false,
     live_from_start: false,
-    enable_playlist_selection: true // NEW
+    enable_playlist_selection: true
 };
 
 export const AppContext = React.createContext<AppContextType | undefined>(undefined);
@@ -100,6 +103,8 @@ export const AppProvider = ({ children }: { children: React.ReactNode }) => {
   const [isUpdateAvailable, setIsUpdateAvailable] = useState(false);
   const [latestVersion, setLatestVersion] = useState<string | null>(null);
   const [currentVersion, setCurrentVersion] = useState<string | null>(null);
+
+  const [aria2PromptDismissed, _setAria2PromptDismissed] = useState(false);
 
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -156,6 +161,7 @@ export const AppProvider = ({ children }: { children: React.ReactNode }) => {
         _setMaxTotalInstances(config.general.max_total_instances);
         _setLogLevel(config.general.log_level || 'info');
         _setCheckForUpdates(config.general.check_for_updates);
+        _setAria2PromptDismissed(config.general.aria2_prompt_dismissed);
 
         if (config.general.template_blocks_json) {
             try {
@@ -202,7 +208,7 @@ export const AppProvider = ({ children }: { children: React.ReactNode }) => {
       }
 
       saveTimeoutRef.current = setTimeout(() => {
-          saveGeneralConfig({
+          const config: GeneralConfig = {
             download_path: defaultDownloadPath,
             filename_template: getTemplateString(filenameTemplateBlocks),
             template_blocks_json: JSON.stringify(filenameTemplateBlocks),
@@ -211,8 +217,10 @@ export const AppProvider = ({ children }: { children: React.ReactNode }) => {
             log_level: logLevel,
             check_for_updates: checkForUpdates,
             cookies_path: cookiesPath,
-            cookies_from_browser: cookiesBrowser
-          }).catch(e => console.error("Failed to save general config:", e));
+            cookies_from_browser: cookiesBrowser,
+            aria2_prompt_dismissed: aria2PromptDismissed
+          };
+          saveGeneralConfig(config).catch(e => console.error("Failed to save general config:", e));
       }, 500);
   }, [
       defaultDownloadPath, 
@@ -223,6 +231,7 @@ export const AppProvider = ({ children }: { children: React.ReactNode }) => {
       checkForUpdates, 
       cookiesPath, 
       cookiesBrowser,
+      aria2PromptDismissed,
       getTemplateString
   ]);
 
@@ -263,6 +272,10 @@ export const AppProvider = ({ children }: { children: React.ReactNode }) => {
       _setCheckForUpdates(enabled);
   };
 
+  const setAria2PromptDismissed = (dismissed: boolean) => {
+      _setAria2PromptDismissed(dismissed);
+  };
+
   const updatePreferences = (updates: Partial<PreferenceConfig>) => {
       const newPrefs = { ...preferences, ...updates };
       _setPreferences(newPrefs);
@@ -301,6 +314,8 @@ export const AppProvider = ({ children }: { children: React.ReactNode }) => {
     latestVersion,
     currentVersion,
     checkAppUpdate,
+    aria2PromptDismissed,
+    setAria2PromptDismissed,
     preferences,
     updatePreferences
   };

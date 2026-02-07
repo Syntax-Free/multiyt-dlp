@@ -8,6 +8,7 @@ export interface GeneralConfig {
   check_for_updates: boolean;
   cookies_path: string | null;
   cookies_from_browser: string | null;
+  aria2_prompt_dismissed: boolean;
 }
 
 export interface PreferenceConfig {
@@ -79,7 +80,7 @@ export interface StartDownloadResponse {
 export interface DownloadProgressPayload {
   jobId: string;
   percentage: number;
-  sequence_id: number; // NEW
+  sequence_id: number;
   speed: string;
   eta: string;
   filename?: string; 
@@ -114,7 +115,7 @@ export interface Download {
   url: string;
   status: DownloadStatus;
   progress: number;
-  sequence_id: number; // NEW
+  sequence_id: number;
   speed?: string;
   eta?: string;
   outputPath?: string;

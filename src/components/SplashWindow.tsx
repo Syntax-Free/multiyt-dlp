@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
-import { syncDependencies, closeSplash, installDependency, openExternalLink } from '@/api/invoke';
+import { syncDependencies, closeSplash, installDependency, getAppConfig, saveGeneralConfig, requestAttention } from '@/api/invoke';
 import { listen } from '@tauri-apps/api/event';
 import { getVersion } from '@tauri-apps/api/app';
 import icon from '@/assets/icon.webp';
-import { RefreshCw, ShieldCheck, Terminal, Download, XCircle, Loader2, ExternalLink } from 'lucide-react';
+import { ShieldCheck, Terminal, Download, XCircle, Loader2, Zap, ZapOff } from 'lucide-react';
 import { Progress } from './ui/Progress';
 import { Button } from './ui/Button';
 import { AppDependencies } from '@/types';
@@ -14,7 +14,7 @@ interface InstallProgress {
     status: string;
 }
 
-type SplashStatus = 'init' | 'syncing' | 'js-analysis' | 'ready' | 'error';
+type SplashStatus = 'init' | 'syncing' | 'aria-prompt' | 'js-analysis' | 'ready' | 'error';
 
 export function SplashWindow() {
   const [status, setStatus] = useState<SplashStatus>('init');
@@ -23,6 +23,7 @@ export function SplashWindow() {
   const [appVersion, setAppVersion] = useState('');
   const [errorDetails, setErrorDetails] = useState('');
   const [deps, setDeps] = useState<AppDependencies | null>(null);
+  const [dontAskAria, setDontAskAria] = useState(false);
   
   const hasRun = useRef(false);
 
@@ -31,20 +32,28 @@ export function SplashWindow() {
         setStatus('syncing');
         setMessage('Verifying System Integrity...');
         
-        // syncDependencies is now optimized on the backend to avoid redundant network calls
         const finalDeps = await syncDependencies();
         setDeps(finalDeps);
 
-        const js = finalDeps.js_runtime;
-        
-        // Critical block: If JS is missing, we MUST ask the user
-        if (!js.available || !js.is_supported) {
-            setStatus('js-analysis');
-            setMessage('Action Required: Runtime Missing');
+        const config = await getAppConfig();
+
+        // 1. Aria2 check - Prompt if missing and not explicitly dismissed
+        if (!finalDeps.aria2.available && !config.general.aria2_prompt_dismissed) {
+            setStatus('aria-prompt');
+            setMessage('Action Required: Accelerator Missing');
+            requestAttention(); // OS Notification (Taskbar flash)
             return;
         }
 
-        // Non-critical: If JS is legacy but working, we just launch and let them update later
+        // 2. JS Runtime check
+        const js = finalDeps.js_runtime;
+        if (!js.available || !js.is_supported) {
+            setStatus('js-analysis');
+            setMessage('Action Required: Runtime Missing');
+            requestAttention();
+            return;
+        }
+
         finishStartup();
     } catch (e) {
         console.error("Sync Error:", e);
@@ -54,10 +63,39 @@ export function SplashWindow() {
     }
   };
 
+  const handleAriaChoice = async (install: boolean) => {
+    if (install) {
+        setStatus('syncing');
+        setMessage('Installing Aria2 Accelerator...');
+        try {
+            await installDependency('aria2');
+            await performSync();
+        } catch (e) {
+            setStatus('error');
+            setErrorDetails(`${e}`);
+        }
+    } else {
+        if (dontAskAria) {
+            const config = await getAppConfig();
+            await saveGeneralConfig({
+                ...config.general,
+                aria2_prompt_dismissed: true
+            });
+        }
+        // Continue to JS check
+        const js = deps?.js_runtime;
+        if (js && (!js.available || !js.is_supported)) {
+            setStatus('js-analysis');
+            setMessage('Action Required: Runtime Missing');
+        } else {
+            finishStartup();
+        }
+    }
+  };
+
   const finishStartup = async () => {
       setStatus('ready');
       setMessage('System Optimal. Launching...');
-      // Minimal artificial delay for smooth transition
       setTimeout(async () => { 
           try {
               await closeSplash(); 
@@ -81,26 +119,6 @@ export function SplashWindow() {
       }
   };
 
-  const handleUpdateCurrent = async () => {
-      if (!deps?.js_runtime.name) return;
-      const runtimeName = deps.js_runtime.name.toLowerCase();
-
-      if (runtimeName === 'node') {
-          await openExternalLink("https://nodejs.org/en/download");
-          return;
-      }
-
-      setStatus('syncing');
-      setMessage(`Updating ${deps.js_runtime.name}...`);
-      try {
-          await installDependency(deps.js_runtime.name);
-          await performSync();
-      } catch (e) {
-          setStatus('error');
-          setErrorDetails(`${e}`);
-      }
-  };
-
   useEffect(() => {
     getVersion().then(v => setAppVersion(`v${v}`));
     
@@ -111,7 +129,6 @@ export function SplashWindow() {
 
     if (!hasRun.current) {
         hasRun.current = true;
-        // Start sync immediately
         performSync();
     }
 
@@ -133,12 +150,46 @@ export function SplashWindow() {
             }`}>
                 {status === 'init' && 'Initializing'}
                 {status === 'syncing' && 'Syncing'}
+                {status === 'aria-prompt' && 'Accelerator'}
                 {status === 'js-analysis' && 'Requirement Check'}
                 {status === 'ready' && 'Ready'}
                 {status === 'error' && 'Sync Failed'}
             </h1>
             <p className="text-zinc-500 text-xs font-medium min-h-[16px] px-4">{message}</p>
         </div>
+
+        {status === 'aria-prompt' && (
+            <div className="w-full space-y-4 animate-fade-in bg-zinc-900/80 p-5 rounded-lg border border-zinc-800 backdrop-blur-md">
+                <div className="flex items-center gap-3 text-theme-cyan">
+                    <Zap className="h-5 w-5" />
+                    <span className="text-sm font-bold uppercase">Enable Aria2?</span>
+                </div>
+                
+                <p className="text-[11px] text-zinc-400 leading-relaxed">
+                    Aria2 significantly increases download speeds via multi-threaded connections. Would you like to acquire it now?
+                </p>
+
+                <div className="space-y-3">
+                    <Button size="sm" variant="neon" className="w-full h-9 text-xs" onClick={() => handleAriaChoice(true)}>
+                        <Zap className="h-3 w-3 mr-2" /> Yes, Optimize Speed
+                    </Button>
+                    
+                    <Button size="sm" variant="outline" className="w-full h-9 text-xs" onClick={() => handleAriaChoice(false)}>
+                        <ZapOff className="h-3 w-3 mr-2" /> No, Use Native
+                    </Button>
+
+                    <label className="flex items-center gap-2 cursor-pointer group pt-1">
+                        <input 
+                            type="checkbox" 
+                            checked={dontAskAria} 
+                            onChange={(e) => setDontAskAria(e.target.checked)}
+                            className="w-3 h-3 rounded border-zinc-700 bg-zinc-950 text-theme-cyan focus:ring-theme-cyan/20"
+                        />
+                        <span className="text-[10px] text-zinc-500 group-hover:text-zinc-400 transition-colors">Don't ask me again</span>
+                    </label>
+                </div>
+            </div>
+        )}
 
         {status === 'js-analysis' && deps && (
             <div className="w-full space-y-4 animate-fade-in bg-zinc-900/80 p-5 rounded-lg border border-zinc-800 backdrop-blur-md">
@@ -148,9 +199,7 @@ export function SplashWindow() {
                 </div>
                 
                 <p className="text-[11px] text-zinc-400 leading-relaxed">
-                    {!deps.js_runtime.available || !deps.js_runtime.is_supported 
-                        ? "No supported JS runtime was detected. YouTube extraction relies on modern JS engines. We highly recommend installing Deno."
-                        : `Your current runtime (${deps.js_runtime.name}) is supported, but a newer build is recommended for stability.`}
+                    No supported JS runtime was detected. YouTube extraction relies on modern JS engines. We highly recommend installing Deno.
                 </p>
 
                 <div className="space-y-2">
@@ -158,20 +207,6 @@ export function SplashWindow() {
                         <Download className="h-3 w-3 mr-2" /> Install Deno
                     </Button>
                     
-                    {deps.js_runtime.available && (
-                         <Button size="sm" variant="outline" className="w-full h-9 text-xs" onClick={handleUpdateCurrent}>
-                            {deps.js_runtime.name.toLowerCase() === 'node' ? (
-                                <>
-                                    <ExternalLink className="h-3 w-3 mr-2" /> Get Node JS
-                                </>
-                            ) : (
-                                <>
-                                    <RefreshCw className="h-3 w-3 mr-2" /> Update Current
-                                </>
-                            )}
-                         </Button>
-                    )}
-
                     <Button size="sm" variant="ghost" className="w-full h-9 text-xs text-zinc-500" onClick={finishStartup}>
                         <XCircle className="h-3 w-3 mr-2" /> Dismiss & Launch
                     </Button>

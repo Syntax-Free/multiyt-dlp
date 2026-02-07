@@ -224,7 +224,6 @@ pub async fn check_dependencies(app_handle: AppHandle) -> AppDependencies {
 
 #[tauri::command]
 pub async fn install_dependency(app_handle: AppHandle, name: String) -> Result<(), String> {
-    // Check Global Lock
     {
         let mut locks = INSTALL_LOCKS.lock().unwrap();
         if locks.contains(&name) {
@@ -233,10 +232,8 @@ pub async fn install_dependency(app_handle: AppHandle, name: String) -> Result<(
         locks.insert(name.clone());
     }
 
-    // Execute with cleanup guard
     let result = deps::install_dep(name.clone(), app_handle).await;
 
-    // Release Lock
     {
         let mut locks = INSTALL_LOCKS.lock().unwrap();
         locks.remove(&name);
@@ -297,6 +294,13 @@ pub async fn get_latest_app_version() -> Result<String, String> {
     match timeout(Duration::from_secs(3), deps::get_latest_github_tag("zqily/multiyt-dlp")).await {
         Ok(res) => res,
         Err(_) => Err("Request timed out".into())
+    }
+}
+
+#[tauri::command]
+pub fn request_attention(app_handle: AppHandle) {
+    if let Some(window) = app_handle.get_window("splashscreen") {
+        let _ = window.request_user_attention(Some(tauri::UserAttentionType::Informational));
     }
 }
 
