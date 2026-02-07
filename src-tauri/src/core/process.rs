@@ -478,8 +478,8 @@ pub async fn run_download_process(
 
             // Fallback: Recursive search using WalkDir if stdout capture failed
             if final_src_path.is_none() {
-                 if let Some(fname) = detected_filename_only {
-                     let path = unique_temp_dir.join(&fname);
+                 if let Some(ref fname) = detected_filename_only {
+                     let path = unique_temp_dir.join(fname);
                      if path.exists() { final_src_path = Some(path); }
                  }
             }
@@ -511,7 +511,8 @@ pub async fn run_download_process(
                     percentage: 100.0,
                     speed: "Done".to_string(),
                     eta: "Done".to_string(),
-                    filename: None,
+                    // Include the detected name in the terminal status pulse
+                    filename: detected_filename_only.clone(),
                     phase: "Moving to Library".to_string()
                 }).await;
                 

@@ -21,7 +21,15 @@ export function useDownloadManager() {
                 if (update.data.sequence_id !== undefined && existing.sequence_id > update.data.sequence_id) {
                     return;
                 }
-                newMap.set(update.jobId, { ...existing, ...update.data });
+
+                // If the update payload has no filename, but the existing state DOES, preserve it.
+                const mergedFilename = update.data.filename || existing.filename;
+
+                newMap.set(update.jobId, { 
+                    ...existing, 
+                    ...update.data,
+                    filename: mergedFilename 
+                });
             } else {
                 // New job from an event
                 newMap.set(update.jobId, {
@@ -91,8 +99,6 @@ export function useDownloadManager() {
         progress: 100,
         outputPath: event.payload.outputPath,
         phase: 'Done',
-        // Implicitly higher sequence, but backend doesn't send seq_id in this specific payload 
-        // usually. We rely on the fact that 'completed' is terminal.
       });
     });
 
