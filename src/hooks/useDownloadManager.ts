@@ -9,25 +9,27 @@ export function useDownloadManager() {
   const [downloads, setDownloads] = useState<Map<string, Download>>(new Map());
   const hasSynced = useRef(false);
 
-  // Consolidated update function for batching
+  // Consolidated update function for batching with Sequence ID checking
   const updateDownloadsBatch = (updates: { jobId: string, data: Partial<Download> }[]) => {
     setDownloads((prev) => {
         const newMap = new Map(prev);
         updates.forEach(update => {
             const existing = newMap.get(update.jobId);
+            
             if (existing) {
-                // Determine if we should ignore a 'pending' update if we are already 'downloading'
-                if (existing.status === 'downloading' && update.data.status === 'pending') {
-                    return; 
+                // SEQUENCE CHECK: Ignore out-of-order updates
+                if (update.data.sequence_id !== undefined && existing.sequence_id > update.data.sequence_id) {
+                    return;
                 }
                 newMap.set(update.jobId, { ...existing, ...update.data });
             } else {
-                // New job from an event (rare, usually via startDownload)
+                // New job from an event
                 newMap.set(update.jobId, {
                     jobId: update.jobId,
                     url: update.data.filename || 'Resumed Download',
                     status: update.data.status || 'downloading',
                     progress: update.data.progress || 0,
+                    sequence_id: update.data.sequence_id || 0,
                     ...update.data
                 } as Download);
             }
@@ -51,20 +53,14 @@ export function useDownloadManager() {
                     recovered.forEach(remoteJob => {
                         const localJob = newMap.get(remoteJob.jobId);
                         
-                        // If we already have local state for this job, we need to be careful
-                        // The event listener might have already fired with newer data
-                        if (localJob) {
-                            // If local is 'downloading' and remote says 'pending', trust local (events are faster)
-                            if (localJob.status === 'downloading' && remoteJob.status === 'pending') {
-                                return;
-                            }
-                            // If local progress is higher, trust local
-                            if (localJob.progress > remoteJob.progress) {
-                                return;
-                            }
+                        // ZOMBIE FIX: We trust the backend state regarding status.
+                        // However, we still check sequence_id to avoid overwriting a very fresh event 
+                        // that happened while the sync request was in flight.
+                        if (localJob && localJob.sequence_id > remoteJob.sequence_id) {
+                            return;
                         }
                         
-                        // Otherwise, trust the sync
+                        // Trust the sync
                         newMap.set(remoteJob.jobId, remoteJob);
                     });
                     return newMap;
@@ -79,6 +75,7 @@ export function useDownloadManager() {
             data: {
                 status: 'downloading' as const,
                 progress: u.percentage,
+                sequence_id: u.sequence_id,
                 speed: u.speed,
                 eta: u.eta,
                 filename: u.filename,
@@ -94,6 +91,8 @@ export function useDownloadManager() {
         progress: 100,
         outputPath: event.payload.outputPath,
         phase: 'Done',
+        // Implicitly higher sequence, but backend doesn't send seq_id in this specific payload 
+        // usually. We rely on the fact that 'completed' is terminal.
       });
     });
 
@@ -159,12 +158,12 @@ export function useDownloadManager() {
             const existing = newMap.get(jobId);
 
             if (existing) {
-                // The event listener beat us to creating the entry.
-                // We perform a smart merge: Backfill the static metadata (settings) while preserving
-                // the dynamic runtime state (progress, status, speed) from the event.
+                // RACE CONDITION FIX:
+                // If the job already exists (event fired before API returned), we ONLY update
+                // the static configuration metadata. We do NOT touch status, progress, or sequence_id.
                 newMap.set(jobId, {
                     ...existing,
-                    // Metadata Backfill
+                    // Metadata Backfill Only
                     url,
                     preset: formatPreset,
                     videoResolution,
@@ -176,13 +175,14 @@ export function useDownloadManager() {
                     liveFromStart,
                 });
             } else {
-                // Standard initialization path (we beat the event listener)
+                // Initialization path
                 newMap.set(jobId, {
                     jobId,
                     url,
                     status: 'pending',
                     phase: 'Queued',
                     progress: 0,
+                    sequence_id: 0,
                     preset: formatPreset,
                     videoResolution,
                     downloadPath: downloadPath ?? undefined,
@@ -226,6 +226,7 @@ export function useDownloadManager() {
                   error: initialError,
                   stderr: initialStderr,
                   progress: 0,
+                  sequence_id: 0, // Reset seq on resume
                   preset: job.format_preset,
                   videoResolution: job.video_resolution,
                   downloadPath: job.download_path ?? undefined,

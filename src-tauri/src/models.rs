@@ -33,7 +33,8 @@ pub struct Job {
     pub progress: f32,
     pub output_path: Option<String>,
     
-    // Add missing fields for UI Sync
+    // Sync & UI Fields
+    pub sequence_id: u64, // NEW: Monotonic counter for state ordering
     pub speed: Option<String>,
     pub eta: Option<String>,
     pub filename: Option<String>,
@@ -75,6 +76,7 @@ impl Job {
             status: JobStatus::Pending,
             progress: 0.0,
             output_path: None,
+            sequence_id: 0,
             speed: None,
             eta: None,
             filename: None,
@@ -102,6 +104,7 @@ pub struct Download {
     pub url: String,
     pub status: JobStatus,
     pub progress: f32,
+    pub sequence_id: u64, // NEW
     pub speed: Option<String>,
     pub eta: Option<String>,
     pub output_path: Option<String>,
@@ -148,7 +151,6 @@ pub struct QueuedJob {
     pub restrict_filenames: bool,
     pub live_from_start: bool,
     
-    // Persistence fields added for Defect #1
     pub status: Option<String>,
     pub error: Option<String>,
     pub stderr: Option<String>,
@@ -179,6 +181,7 @@ pub struct DownloadProgressPayload {
     #[serde(rename = "jobId")]
     pub job_id: Uuid,
     pub percentage: f32,
+    pub sequence_id: u64, // NEW
     pub speed: String,
     pub eta: String,
     pub filename: Option<String>,

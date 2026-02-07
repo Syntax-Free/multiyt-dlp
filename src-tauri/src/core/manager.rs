@@ -87,7 +87,7 @@ struct JobManagerActor {
     persistence_registry: HashMap<Uuid, QueuedJob>,
     persistence_tx: mpsc::Sender<PersistenceMsg>,
     
-    // Fix: Dirty flag instead of constant message spam
+    // Dirty flag for coalesced persistence updates
     dirty_persistence: bool,
 
     active_network_jobs: u32,
@@ -170,7 +170,6 @@ impl JobManagerActor {
                     
                     if self.dirty_persistence {
                         let jobs: Vec<QueuedJob> = self.persistence_registry.values().cloned().collect();
-                        // Use try_send to avoid blocking, but since we are coalescing, it shouldn't fill up
                         if let Ok(_) = self.persistence_tx.try_send(PersistenceMsg::Save(jobs)) {
                             self.dirty_persistence = false;
                         }
@@ -191,15 +190,13 @@ impl JobManagerActor {
             self.kill_process(pid);
         }
 
-        // Wait for workers to drop (WorkerGuard) with a timeout
+        // Wait for workers to drop with a timeout
         let deadline = time::Instant::now() + Duration::from_secs(3);
         while self.active_process_instances > 0 {
              if time::Instant::now() > deadline {
                  warn!("Shutdown timeout reached with {} active processes", self.active_process_instances);
                  break;
              }
-             
-             // Pump messages to process WorkerFinished
              if let Ok(msg) = self.receiver.try_recv() {
                  if matches!(msg, JobMessage::WorkerFinished) {
                      self.handle_message(msg).await;
@@ -262,6 +259,7 @@ impl JobManagerActor {
                 }
                 if let Some(job) = self.jobs.get_mut(&id) {
                     job.status = JobStatus::Cancelled;
+                    job.sequence_id += 1; // Increment Seq
                 }
                 self.persistence_registry.remove(&id);
                 self.mark_dirty();
@@ -278,6 +276,7 @@ impl JobManagerActor {
                     } else {
                         job.pid = Some(pid);
                         job.status = JobStatus::Downloading;
+                        job.sequence_id += 1; // Increment Seq
                     }
                 }
             },
@@ -290,10 +289,12 @@ impl JobManagerActor {
                     job.eta = Some(eta.clone());
                     if filename.is_some() { job.filename = filename.clone(); }
                     job.phase = Some(phase.clone());
+                    job.sequence_id += 1; // Increment Seq
 
                     self.pending_updates.insert(id, DownloadProgressPayload {
                         job_id: id,
                         percentage,
+                        sequence_id: job.sequence_id, // Pass to payload
                         speed,
                         eta,
                         filename,
@@ -309,6 +310,7 @@ impl JobManagerActor {
                     job.progress = 100.0;
                     job.output_path = Some(output_path.clone());
                     job.phase = Some("Done".to_string());
+                    job.sequence_id += 1;
                 }
                 self.persistence_registry.remove(&id);
                 self.mark_dirty();
@@ -327,6 +329,7 @@ impl JobManagerActor {
                     job.stderr = Some(payload.stderr.clone());
                     job.logs = Some(payload.logs.clone());
                     job.exit_code = payload.exit_code;
+                    job.sequence_id += 1;
                 }
                 
                 if Self::is_fatal_error(&payload.error) || Self::is_fatal_error(&payload.stderr) {
@@ -425,6 +428,7 @@ impl JobManagerActor {
                         url: job.url.clone(),
                         status: job.status.clone(),
                         progress: job.progress,
+                        sequence_id: job.sequence_id, // Pass to sync
                         speed: job.speed.clone(),
                         eta: job.eta.clone(),
                         output_path: job.output_path.clone(),

@@ -19,7 +19,6 @@ export interface PreferenceConfig {
   embed_metadata: boolean;
   embed_thumbnail: boolean;
   live_from_start: boolean;
-  // NEW: Toggle for the selection modal
   enable_playlist_selection: boolean;
 }
 
@@ -80,6 +79,7 @@ export interface StartDownloadResponse {
 export interface DownloadProgressPayload {
   jobId: string;
   percentage: number;
+  sequence_id: number; // NEW
   speed: string;
   eta: string;
   filename?: string; 
@@ -114,6 +114,7 @@ export interface Download {
   url: string;
   status: DownloadStatus;
   progress: number;
+  sequence_id: number; // NEW
   speed?: string;
   eta?: string;
   outputPath?: string;
