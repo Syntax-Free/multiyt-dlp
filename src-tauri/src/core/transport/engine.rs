@@ -55,15 +55,17 @@ impl TransportEngine {
         let (content_len, accepts_ranges) = self.probe().await?;
 
         // 2. Path Decision
-        if let Some(total_size) = content_len {
+        // We filter out Some(0) because a 0-byte dependency is an invalid state 
+        // usually caused by a HEAD request redirecting incorrectly.
+        let validated_len = content_len.filter(|&s| s > 0);
+
+        if let Some(total_size) = validated_len {
             if accepts_ranges && total_size >= self.chunk_threshold {
-                println!("[Transport] Starting Concurrent Download: {} bytes, {} threads", total_size, self.concurrency);
                 return self.download_concurrent(total_size, on_progress).await;
             }
         }
 
-        println!("[Transport] Starting Linear Download");
-        self.download_linear(content_len, on_progress).await
+        self.download_linear(validated_len, on_progress).await
     }
 
     async fn probe(&self) -> Result<(Option<u64>, bool), TransportError> {
@@ -110,7 +112,6 @@ impl TransportEngine {
                         return Err(e);
                     }
 
-                    println!("[Transport] Linear download interrupted: {}. Retrying...", e);
                     match retry_policy.next_backoff() {
                         Some(delay) => tokio::time::sleep(delay).await,
                         None => return Err(TransportError::MaxRetriesExceeded),
@@ -158,8 +159,9 @@ impl TransportEngine {
 
         file.flush().await?;
 
+        // Only validate if total_size is known and greater than 0
         if let Some(total) = total_size {
-            if downloaded != total {
+            if total > 0 && downloaded != total {
                 return Err(TransportError::Validation(format!("Expected {}, got {}", total, downloaded)));
             }
         }
@@ -257,7 +259,6 @@ impl TransportEngine {
             return Err(TransportError::Validation("One or more chunks failed".to_string()));
         }
 
-        println!("[Transport] Merging {} parts...", part_paths.len());
         match self.merge_parts(&part_paths).await {
             Ok(_) => {
                 on_progress(total_size, total_size, 0.0);
@@ -312,7 +313,6 @@ impl TransportEngine {
     }
 
     async fn merge_parts(&self, parts: &[PathBuf]) -> Result<(), TransportError> {
-        // Use a temporary merge file to ensure atomicity
         let merge_path = self.target_path.with_extension("merging");
         let mut merge_file = OpenOptions::new()
             .create(true)
@@ -328,12 +328,10 @@ impl TransportEngine {
         
         merge_file.flush().await?;
         
-        // Delete parts
         for part_path in parts {
             let _ = fs::remove_file(part_path).await;
         }
 
-        // Finalize (Atomic Move)
         self.finalize(&merge_path).await
     }
 
@@ -355,7 +353,6 @@ impl TransportEngine {
         if self.target_path.exists() {
             if let Err(e) = fs::remove_file(&self.target_path).await {
                 if e.kind() == std::io::ErrorKind::PermissionDenied {
-                    println!("[Transport] Target file locked. Attempting rename-swap...");
                     let mut old_path = self.target_path.clone();
                     let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
                     let ext = old_path.extension().unwrap_or_default().to_string_lossy();
