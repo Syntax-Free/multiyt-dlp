@@ -40,6 +40,10 @@ interface AppContextType {
   maxTotalInstances: number;
   setConcurrency: (concurrent: number, total: number) => void;
 
+  useConcurrentFragments: boolean;
+  concurrentFragments: number;
+  setFragmentSettings: (use: boolean, count: number) => void;
+
   logLevel: string;
   setLogLevel: (level: string) => void;
 
@@ -97,6 +101,10 @@ export const AppProvider = ({ children }: { children: React.ReactNode }) => {
   const [maxConcurrentDownloads, _setMaxConcurrentDownloads] = useState(4);
   const [maxTotalInstances, _setMaxTotalInstances] = useState(10);
   
+  // New States for Fragments
+  const [useConcurrentFragments, _setUseConcurrentFragments] = useState(false);
+  const [concurrentFragments, _setConcurrentFragments] = useState(4);
+
   const [logLevel, _setLogLevel] = useState('info');
 
   const [checkForUpdates, _setCheckForUpdates] = useState(true);
@@ -159,6 +167,10 @@ export const AppProvider = ({ children }: { children: React.ReactNode }) => {
 
         _setMaxConcurrentDownloads(config.general.max_concurrent_downloads);
         _setMaxTotalInstances(config.general.max_total_instances);
+        
+        _setUseConcurrentFragments(config.general.use_concurrent_fragments);
+        _setConcurrentFragments(config.general.concurrent_fragments);
+
         _setLogLevel(config.general.log_level || 'info');
         _setCheckForUpdates(config.general.check_for_updates);
         _setAria2PromptDismissed(config.general.aria2_prompt_dismissed);
@@ -177,7 +189,6 @@ export const AppProvider = ({ children }: { children: React.ReactNode }) => {
             setIsJsRuntimeMissing(true);
         }
 
-        // Initialize local version display
         const current = await getVersion();
         setCurrentVersion(current);
 
@@ -190,10 +201,8 @@ export const AppProvider = ({ children }: { children: React.ReactNode }) => {
     load();
   }, []);
 
-  // Effect to trigger App Updates ONLY after the main UI is ready
   useEffect(() => {
       if (isConfigLoaded && checkForUpdates) {
-          // Defer update check for 2 seconds after mount to prevent splash competition
           const timer = setTimeout(() => {
               checkAppUpdate();
           }, 2000);
@@ -227,7 +236,9 @@ export const AppProvider = ({ children }: { children: React.ReactNode }) => {
             check_for_updates: checkForUpdates,
             cookies_path: cookiesPath,
             cookies_from_browser: cookiesBrowser,
-            aria2_prompt_dismissed: aria2PromptDismissed
+            aria2_prompt_dismissed: aria2PromptDismissed,
+            use_concurrent_fragments: useConcurrentFragments,
+            concurrent_fragments: concurrentFragments
           };
           saveGeneralConfig(config).catch(e => console.error("Failed to save general config:", e));
       }, 500);
@@ -241,6 +252,8 @@ export const AppProvider = ({ children }: { children: React.ReactNode }) => {
       cookiesPath, 
       cookiesBrowser,
       aria2PromptDismissed,
+      useConcurrentFragments,
+      concurrentFragments,
       getTemplateString
   ]);
 
@@ -271,6 +284,11 @@ export const AppProvider = ({ children }: { children: React.ReactNode }) => {
   const setConcurrency = (concurrent: number, total: number) => {
     _setMaxConcurrentDownloads(concurrent);
     _setMaxTotalInstances(total);
+  };
+
+  const setFragmentSettings = (use: boolean, count: number) => {
+      _setUseConcurrentFragments(use);
+      _setConcurrentFragments(count);
   };
 
   const setLogLevel = (level: string) => {
@@ -315,6 +333,9 @@ export const AppProvider = ({ children }: { children: React.ReactNode }) => {
     maxConcurrentDownloads,
     maxTotalInstances,
     setConcurrency,
+    useConcurrentFragments,
+    concurrentFragments,
+    setFragmentSettings,
     logLevel,
     setLogLevel,
     checkForUpdates,

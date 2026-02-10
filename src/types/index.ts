@@ -9,6 +9,8 @@ export interface GeneralConfig {
   cookies_path: string | null;
   cookies_from_browser: string | null;
   aria2_prompt_dismissed: boolean;
+  use_concurrent_fragments: boolean;
+  concurrent_fragments: number;
 }
 
 export interface PreferenceConfig {

@@ -230,6 +230,14 @@ pub async fn run_download_process(
             if !browser.trim().is_empty() && browser != "none" { cmd.arg("--cookies-from-browser").arg(browser); }
         }
 
+        // Inject Fragment Arguments for "Blitz Mode"
+        if general_config.use_concurrent_fragments {
+            cmd.arg("-N").arg(general_config.concurrent_fragments.to_string());
+        } else {
+            // Explicitly set to 1 to ensure standard behavior in Fleet Mode
+            cmd.arg("-N").arg("1");
+        }
+
         cmd.arg(&url)
             .arg("-o").arg(&job_data.filename_template) 
             .arg("--no-playlist")

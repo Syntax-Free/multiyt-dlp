@@ -259,7 +259,7 @@ impl JobManagerActor {
                 }
                 if let Some(job) = self.jobs.get_mut(&id) {
                     job.status = JobStatus::Cancelled;
-                    job.sequence_id += 1; // Increment Seq
+                    job.sequence_id += 1;
                 }
                 self.persistence_registry.remove(&id);
                 self.mark_dirty();
@@ -276,7 +276,7 @@ impl JobManagerActor {
                     } else {
                         job.pid = Some(pid);
                         job.status = JobStatus::Downloading;
-                        job.sequence_id += 1; // Increment Seq
+                        job.sequence_id += 1;
                     }
                 }
             },
@@ -289,12 +289,12 @@ impl JobManagerActor {
                     job.eta = Some(eta.clone());
                     if filename.is_some() { job.filename = filename.clone(); }
                     job.phase = Some(phase.clone());
-                    job.sequence_id += 1; // Increment Seq
+                    job.sequence_id += 1;
 
                     self.pending_updates.insert(id, DownloadProgressPayload {
                         job_id: id,
                         percentage,
-                        sequence_id: job.sequence_id, // Pass to payload
+                        sequence_id: job.sequence_id,
                         speed,
                         eta,
                         filename,
@@ -428,7 +428,7 @@ impl JobManagerActor {
                         url: job.url.clone(),
                         status: job.status.clone(),
                         progress: job.progress,
-                        sequence_id: job.sequence_id, // Pass to sync
+                        sequence_id: job.sequence_id,
                         speed: job.speed.clone(),
                         eta: job.eta.clone(),
                         output_path: job.output_path.clone(),
@@ -466,7 +466,17 @@ impl JobManagerActor {
         let config_manager = self.app_handle.state::<Arc<ConfigManager>>();
         let config = config_manager.get_config().general;
 
-        while self.active_network_jobs < config.max_concurrent_downloads 
+        // If "use_concurrent_fragments" (Blitz Mode) is on, force active limit to 1.
+        // Otherwise, use "max_concurrent_downloads" (Fleet Mode).
+        let effective_concurrent_limit = if config.use_concurrent_fragments {
+            1
+        } else {
+            config.max_concurrent_downloads
+        };
+
+        // We check against max_total_instances for process limits, but network jobs specifically
+        // are gated by the effective limit derived above.
+        while self.active_network_jobs < effective_concurrent_limit 
            && self.active_process_instances < config.max_total_instances 
         {
             if let Some(next_job) = self.queue.pop_front() {

@@ -52,6 +52,8 @@ pub struct GeneralConfig {
     pub cookies_path: Option<String>,
     pub cookies_from_browser: Option<String>,
     pub aria2_prompt_dismissed: bool,
+    pub use_concurrent_fragments: bool,
+    pub concurrent_fragments: u32,
 }
 
 impl Default for GeneralConfig {
@@ -67,6 +69,8 @@ impl Default for GeneralConfig {
             cookies_path: None,
             cookies_from_browser: None,
             aria2_prompt_dismissed: false,
+            use_concurrent_fragments: false,
+            concurrent_fragments: 4,
         }
     }
 }
@@ -189,6 +193,8 @@ impl ConfigManager {
                     if let Some(n) = overlay_val.as_f64() {
                         *base_val = Value::from(n);
                     }
+                } else if base_val.is_boolean() && overlay_val.is_boolean() {
+                    *base_val = overlay_val.clone();
                 }
             }
         }
