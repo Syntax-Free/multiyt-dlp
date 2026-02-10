@@ -144,7 +144,7 @@ export const AppProvider = ({ children }: { children: React.ReactNode }) => {
 
         setIsUpdateAvailable(isNewer);
     } catch (e) {
-        console.warn("Update check failed:", e);
+        console.warn("App Update Check: Background verification failed (silently ignoring).", e);
     }
   };
 
@@ -177,11 +177,9 @@ export const AppProvider = ({ children }: { children: React.ReactNode }) => {
             setIsJsRuntimeMissing(true);
         }
 
-        if (config.general.check_for_updates) {
-            checkAppUpdate();
-        } else {
-            getVersion().then(v => setCurrentVersion(v));
-        }
+        // Initialize local version display
+        const current = await getVersion();
+        setCurrentVersion(current);
 
       } catch (error) {
         console.error("Failed to load config:", error);
@@ -191,6 +189,17 @@ export const AppProvider = ({ children }: { children: React.ReactNode }) => {
     };
     load();
   }, []);
+
+  // Effect to trigger App Updates ONLY after the main UI is ready
+  useEffect(() => {
+      if (isConfigLoaded && checkForUpdates) {
+          // Defer update check for 2 seconds after mount to prevent splash competition
+          const timer = setTimeout(() => {
+              checkAppUpdate();
+          }, 2000);
+          return () => clearTimeout(timer);
+      }
+  }, [isConfigLoaded, checkForUpdates]);
 
   const getTemplateString = useCallback((blocks?: TemplateBlock[]) => {
     const target = blocks || filenameTemplateBlocks;

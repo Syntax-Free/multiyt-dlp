@@ -1,12 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
-import { syncDependencies, closeSplash, installDependency, getAppConfig, saveGeneralConfig, requestAttention } from '@/api/invoke';
+import { checkLocalDeps, checkYtdlpUpdate, closeSplash, installDependency, getAppConfig, requestAttention } from '@/api/invoke';
 import { listen } from '@tauri-apps/api/event';
-import { getVersion } from '@tauri-apps/api/app';
 import icon from '@/assets/icon.webp';
-import { ShieldCheck, Terminal, Download, XCircle, Loader2, Zap, ZapOff } from 'lucide-react';
+import { Loader2, Zap, ZapOff, PlayCircle } from 'lucide-react';
 import { Progress } from './ui/Progress';
 import { Button } from './ui/Button';
-import { AppDependencies } from '@/types';
 
 interface InstallProgress {
     name: string;
@@ -14,88 +12,141 @@ interface InstallProgress {
     status: string;
 }
 
-type SplashStatus = 'init' | 'syncing' | 'aria-prompt' | 'js-analysis' | 'ready' | 'error';
+type SplashStatus = 'init' | 'check-updates' | 'aria-prompt' | 'installing' | 'ready' | 'error';
 
 export function SplashWindow() {
   const [status, setStatus] = useState<SplashStatus>('init');
-  const [message, setMessage] = useState('Initializing Core...');
+  const [message, setMessage] = useState('Checking system...');
   const [installState, setInstallState] = useState<InstallProgress>({ name: '', percentage: 0, status: '' });
-  const [appVersion, setAppVersion] = useState('');
   const [errorDetails, setErrorDetails] = useState('');
-  const [deps, setDeps] = useState<AppDependencies | null>(null);
-  const [dontAskAria, setDontAskAria] = useState(false);
+  
+  // State for the "Skip" button timeout logic
+  const [showSkip, setShowSkip] = useState(false);
+  const skipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   
   const hasRun = useRef(false);
+  const pendingInstalls = useRef<string[]>([]);
 
-  const performSync = async () => {
+  // --- Core State Machine ---
+
+  const bootSequence = async () => {
     try {
-        setStatus('syncing');
-        setMessage('Verifying System Integrity...');
+        setStatus('init');
+        setMessage('Verifying Integrity...');
+
+        // 1. Instant Local Scan
+        const scan = await checkLocalDeps();
         
-        const finalDeps = await syncDependencies();
-        setDeps(finalDeps);
+        // Add missing local binaries to pending
+        scan.missing.forEach(dep => {
+            if (!pendingInstalls.current.includes(dep)) {
+                pendingInstalls.current.push(dep);
+            }
+        });
 
+        // 2. Network Check for yt-dlp (Only if it exists locally)
+        if (!scan.missing.includes('yt-dlp')) {
+            setStatus('check-updates');
+            setMessage('Checking for yt-dlp updates...');
+            
+            // Start the "Skip" timer
+            setShowSkip(false);
+            skipTimerRef.current = setTimeout(() => {
+                setShowSkip(true);
+            }, 5000); // 5 Seconds hard limit for UI feedback
+
+            try {
+                const needsUpdate = await checkYtdlpUpdate();
+                if (needsUpdate) {
+                    if (!pendingInstalls.current.includes('yt-dlp')) {
+                        pendingInstalls.current.push('yt-dlp');
+                    }
+                }
+            } catch (err) {
+                console.warn("Update check failed or skipped", err);
+            } finally {
+                if (skipTimerRef.current) clearTimeout(skipTimerRef.current);
+                setShowSkip(false);
+            }
+        }
+
+        // 3. Lazy Aria2 Check
+        // Only trigger if we have heavy lifting to do
         const config = await getAppConfig();
-
-        // 1. Aria2 check - Prompt if missing and not explicitly dismissed
-        if (!finalDeps.aria2.available && !config.general.aria2_prompt_dismissed) {
-            setStatus('aria-prompt');
-            setMessage('Action Required: Accelerator Missing');
-            requestAttention(); // OS Notification (Taskbar flash)
-            return;
+        if (pendingInstalls.current.length > 0) {
+            if (!scan.aria2_available && !config.general.aria2_prompt_dismissed) {
+                setStatus('aria-prompt');
+                setMessage('Optimize Download Speed?');
+                requestAttention();
+                return; // Wait for user interaction
+            }
         }
 
-        // 2. JS Runtime check
-        const js = finalDeps.js_runtime;
-        if (!js.available || !js.is_supported) {
-            setStatus('js-analysis');
-            setMessage('Action Required: Runtime Missing');
-            requestAttention();
-            return;
-        }
+        // 4. Proceed to Installs or Launch
+        processInstalls();
 
-        finishStartup();
     } catch (e) {
-        console.error("Sync Error:", e);
+        console.error("Boot Error:", e);
         setStatus('error');
         setErrorDetails(`${e}`);
-        setMessage('Critical synchronization failure.');
+        setMessage('Initialization Failed.');
     }
+  };
+
+  const processInstalls = async () => {
+      if (pendingInstalls.current.length === 0) {
+          finishStartup();
+          return;
+      }
+
+      setStatus('installing');
+      
+      try {
+          // Process sequentially
+          for (const dep of pendingInstalls.current) {
+              setMessage(`Installing ${dep}...`);
+              // Reset progress bar for visual clarity
+              setInstallState({ name: dep, percentage: 0, status: 'Starting...' });
+              await installDependency(dep);
+          }
+          finishStartup();
+      } catch (e) {
+          setStatus('error');
+          setErrorDetails(`${e}`);
+      }
   };
 
   const handleAriaChoice = async (install: boolean) => {
     if (install) {
-        setStatus('syncing');
-        setMessage('Installing Aria2 Accelerator...');
-        try {
-            await installDependency('aria2');
-            await performSync();
-        } catch (e) {
-            setStatus('error');
-            setErrorDetails(`${e}`);
-        }
-    } else {
-        if (dontAskAria) {
-            const config = await getAppConfig();
-            await saveGeneralConfig({
-                ...config.general,
-                aria2_prompt_dismissed: true
-            });
-        }
-        // Continue to JS check
-        const js = deps?.js_runtime;
-        if (js && (!js.available || !js.is_supported)) {
-            setStatus('js-analysis');
-            setMessage('Action Required: Runtime Missing');
-        } else {
-            finishStartup();
-        }
+        // Prepend Aria2 to the list so it installs first
+        pendingInstalls.current.unshift('aria2');
     }
+    processInstalls();
+  };
+
+  const handleSkipUpdate = () => {
+      // Forcefully move to next step, ignoring the running promise
+      if (skipTimerRef.current) clearTimeout(skipTimerRef.current);
+      setShowSkip(false);
+      
+      // We assume checking failed or was too slow, so we don't add yt-dlp to updates
+      // Proceed to logic step 3
+      checkLocalDeps().then(async (scan) => {
+           const config = await getAppConfig();
+           if (pendingInstalls.current.length > 0) {
+                if (!scan.aria2_available && !config.general.aria2_prompt_dismissed) {
+                    setStatus('aria-prompt');
+                    setMessage('Optimize Download Speed?');
+                    return;
+                }
+           }
+           processInstalls();
+      });
   };
 
   const finishStartup = async () => {
       setStatus('ready');
-      setMessage('System Optimal. Launching...');
+      setMessage('Launching...');
       setTimeout(async () => { 
           try {
               await closeSplash(); 
@@ -104,24 +155,12 @@ export function SplashWindow() {
               setErrorDetails(`${err}`);
               setStatus('error');
           }
-      }, 400); 
+      }, 300); 
   };
 
-  const handleInstallDeno = async () => {
-      setStatus('syncing');
-      setMessage('Installing Deno (Recommended)...');
-      try {
-          await installDependency('deno');
-          await performSync();
-      } catch (e) {
-          setStatus('error');
-          setErrorDetails(`${e}`);
-      }
-  };
+  // --- Effects ---
 
   useEffect(() => {
-    getVersion().then(v => setAppVersion(`v${v}`));
-    
     const unlisten = listen<InstallProgress>('install-progress', (event) => {
         setInstallState(event.payload);
         if (event.payload.status) setMessage(event.payload.status);
@@ -129,7 +168,7 @@ export function SplashWindow() {
 
     if (!hasRun.current) {
         hasRun.current = true;
-        performSync();
+        bootSequence();
     }
 
     return () => { unlisten.then(f => f()); };
@@ -148,78 +187,63 @@ export function SplashWindow() {
             <h1 className={`font-mono font-bold text-lg tracking-wider uppercase transition-colors duration-300 ${
                 status === 'error' ? 'text-theme-red' : 'text-theme-cyan'
             }`}>
-                {status === 'init' && 'Initializing'}
-                {status === 'syncing' && 'Syncing'}
+                {status === 'init' && 'System Check'}
+                {status === 'check-updates' && 'Checking Updates'}
                 {status === 'aria-prompt' && 'Accelerator'}
-                {status === 'js-analysis' && 'Requirement Check'}
+                {status === 'installing' && 'Updating'}
                 {status === 'ready' && 'Ready'}
                 {status === 'error' && 'Sync Failed'}
             </h1>
-            <p className="text-zinc-500 text-xs font-medium min-h-[16px] px-4">{message}</p>
+            <p className="text-zinc-500 text-xs font-medium min-h-[16px] px-4 animate-fade-in">
+                {message}
+            </p>
         </div>
 
+        {/* --- SKIP UPDATE BUTTON --- */}
+        {status === 'check-updates' && showSkip && (
+            <div className="animate-fade-in w-full px-10">
+                 <Button 
+                    size="sm" 
+                    variant="outline" 
+                    className="w-full h-8 text-[10px] border-zinc-800 text-zinc-500 hover:text-zinc-300" 
+                    onClick={handleSkipUpdate}
+                >
+                    <PlayCircle className="h-3 w-3 mr-2" /> Skip Check (Taking too long)
+                </Button>
+            </div>
+        )}
+
+        {/* --- ARIA PROMPT --- */}
         {status === 'aria-prompt' && (
             <div className="w-full space-y-4 animate-fade-in bg-zinc-900/80 p-5 rounded-lg border border-zinc-800 backdrop-blur-md">
                 <div className="flex items-center gap-3 text-theme-cyan">
                     <Zap className="h-5 w-5" />
-                    <span className="text-sm font-bold uppercase">Enable Aria2?</span>
+                    <span className="text-sm font-bold uppercase">Turbocharge?</span>
                 </div>
                 
                 <p className="text-[11px] text-zinc-400 leading-relaxed">
-                    Aria2 significantly increases download speeds via multi-threaded connections. Would you like to acquire it now?
-                </p>
-
-                <div className="space-y-3">
-                    <Button size="sm" variant="neon" className="w-full h-9 text-xs" onClick={() => handleAriaChoice(true)}>
-                        <Zap className="h-3 w-3 mr-2" /> Yes, Optimize Speed
-                    </Button>
-                    
-                    <Button size="sm" variant="outline" className="w-full h-9 text-xs" onClick={() => handleAriaChoice(false)}>
-                        <ZapOff className="h-3 w-3 mr-2" /> No, Use Native
-                    </Button>
-
-                    <label className="flex items-center gap-2 cursor-pointer group pt-1">
-                        <input 
-                            type="checkbox" 
-                            checked={dontAskAria} 
-                            onChange={(e) => setDontAskAria(e.target.checked)}
-                            className="w-3 h-3 rounded border-zinc-700 bg-zinc-950 text-theme-cyan focus:ring-theme-cyan/20"
-                        />
-                        <span className="text-[10px] text-zinc-500 group-hover:text-zinc-400 transition-colors">Don't ask me again</span>
-                    </label>
-                </div>
-            </div>
-        )}
-
-        {status === 'js-analysis' && deps && (
-            <div className="w-full space-y-4 animate-fade-in bg-zinc-900/80 p-5 rounded-lg border border-zinc-800 backdrop-blur-md">
-                <div className="flex items-center gap-3 text-amber-500">
-                    <Terminal className="h-5 w-5" />
-                    <span className="text-sm font-bold uppercase">JS Runtime Notice</span>
-                </div>
-                
-                <p className="text-[11px] text-zinc-400 leading-relaxed">
-                    No supported JS runtime was detected. YouTube extraction relies on modern JS engines. We highly recommend installing Deno.
+                    We detected missing components. Aria2 can speed up the installation significantly using multi-threaded downloads.
                 </p>
 
                 <div className="space-y-2">
-                    <Button size="sm" variant="neon" className="w-full h-9 text-xs" onClick={handleInstallDeno}>
-                        <Download className="h-3 w-3 mr-2" /> Install Deno
+                    <Button size="sm" variant="neon" className="w-full h-8 text-xs" onClick={() => handleAriaChoice(true)}>
+                        <Zap className="h-3 w-3 mr-2" /> Yes, Install Aria2
                     </Button>
                     
-                    <Button size="sm" variant="ghost" className="w-full h-9 text-xs text-zinc-500" onClick={finishStartup}>
-                        <XCircle className="h-3 w-3 mr-2" /> Dismiss & Launch
+                    <Button size="sm" variant="outline" className="w-full h-8 text-xs" onClick={() => handleAriaChoice(false)}>
+                        <ZapOff className="h-3 w-3 mr-2" /> No, Use Native
                     </Button>
                 </div>
             </div>
         )}
 
-        {(status === 'syncing' || status === 'init') && (
+        {/* --- PROGRESS BAR --- */}
+        {status === 'installing' && (
             <div className="w-full space-y-3 animate-fade-in bg-black/50 p-4 rounded-lg border border-zinc-800">
                 <div className="flex items-center justify-between text-xs text-zinc-300">
                     <div className="flex items-center gap-2">
                         <Loader2 className="h-3 w-3 animate-spin text-theme-cyan" />
-                        <span className="font-bold uppercase">{installState.name || 'Resources'}</span>
+                        <span className="font-bold uppercase">{installState.name || 'Processing'}</span>
                     </div>
                     <span className="font-mono text-theme-cyan">{installState.percentage || 0}%</span>
                 </div>
@@ -227,28 +251,22 @@ export function SplashWindow() {
             </div>
         )}
 
-        {status === 'ready' && (
-             <div className="flex items-center gap-2 text-emerald-500 animate-fade-in bg-emerald-500/10 px-4 py-2 rounded-full border border-emerald-500/20">
-                <ShieldCheck className="h-4 w-4" />
-                <span className="text-xs font-bold uppercase tracking-wider">Verified</span>
-             </div>
-        )}
-
+        {/* --- ERROR STATE --- */}
         {status === 'error' && (
             <div className="w-full space-y-3 animate-fade-in bg-black/50 p-4 rounded-lg border border-theme-red/30">
                 <div className="text-[10px] text-zinc-400 font-mono bg-zinc-900 p-2 rounded border border-zinc-800 break-all max-h-24 overflow-y-auto">
                     {errorDetails || "Unknown synchronization error. Please check internet and logs."}
                 </div>
                 <div className="flex gap-2">
-                    <Button size="sm" className="flex-1" variant="secondary" onClick={() => { performSync(); }}>Retry</Button>
+                    <Button size="sm" className="flex-1" variant="secondary" onClick={() => { bootSequence(); }}>Retry</Button>
                     <Button size="sm" className="flex-1" variant="ghost" onClick={finishStartup}>Skip</Button>
                 </div>
             </div>
         )}
       </div>
       
-      <div className="absolute bottom-4 text-[10px] text-zinc-700 font-mono">
-         {appVersion || 'Checking version...'}
+      <div className="absolute bottom-4 flex flex-col items-center gap-1">
+         <div className="w-1 h-1 rounded-full bg-zinc-800 animate-pulse"></div>
       </div>
     </div>
   );

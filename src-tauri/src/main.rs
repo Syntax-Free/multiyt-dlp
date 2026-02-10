@@ -146,6 +146,9 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            // System Commands
+            commands::system::check_local_deps,
+            commands::system::check_ytdlp_update,
             commands::system::check_dependencies,
             commands::system::install_dependency,
             commands::system::sync_dependencies,
@@ -156,6 +159,8 @@ fn main() {
             commands::system::open_log_folder,
             commands::system::log_frontend_message, 
             commands::system::request_attention,
+            
+            // Downloader Commands
             commands::downloader::start_download,
             commands::downloader::cancel_download,
             commands::downloader::expand_playlist,
@@ -163,9 +168,13 @@ fn main() {
             commands::downloader::resume_pending_jobs,
             commands::downloader::clear_pending_jobs,
             commands::downloader::sync_download_state,
+            
+            // Config Commands
             commands::config::get_app_config,
             commands::config::save_general_config,
             commands::config::save_preference_config,
+            
+            // History Commands
             commands::history::get_download_history,
             commands::history::save_download_history,
             commands::history::clear_download_history,

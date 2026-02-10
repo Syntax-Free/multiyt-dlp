@@ -2,7 +2,7 @@ use std::process::Command;
 use tauri::{AppHandle, Manager};
 use serde::{Serialize, Deserialize};
 use regex::Regex;
-use crate::core::deps;
+use crate::core::deps::{self, DependencyProvider}; 
 use std::path::PathBuf;
 use tracing::{info, warn, error, debug};
 use tokio::time::{timeout, Duration};
@@ -30,6 +30,12 @@ pub struct AppDependencies {
     pub ffmpeg: DependencyInfo,
     pub js_runtime: DependencyInfo,
     pub aria2: DependencyInfo,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct LocalScanResult {
+    pub missing: Vec<String>,
+    pub aria2_available: bool,
 }
 
 #[derive(Deserialize)]
@@ -175,6 +181,52 @@ pub async fn analyze_js_runtime(_app_handle: &AppHandle, bin_path: &PathBuf) -> 
     }
 }
 
+/// Optimized Splash Scan: Only checks local existence to be instant.
+/// Constructing LocalScanResult here satisfies construction requirement.
+#[tauri::command]
+pub async fn check_local_deps(app_handle: AppHandle) -> LocalScanResult {
+    let app_dir = app_handle.path_resolver().app_data_dir().unwrap();
+    let bin_dir = app_dir.join("bin");
+    
+    if !bin_dir.exists() {
+        let _ = std::fs::create_dir_all(&bin_dir);
+    }
+
+    let yt_exe = if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" };
+    let ff_exe = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+    let aria_exe = if cfg!(windows) { "aria2c.exe" } else { "aria2c" };
+
+    let mut missing = Vec::new();
+
+    if !bin_dir.join(yt_exe).exists() {
+        missing.push("yt-dlp".to_string());
+    }
+
+    if !bin_dir.join(ff_exe).exists() {
+        missing.push("ffmpeg".to_string());
+    }
+    
+    if get_js_runtime_info(&bin_dir).is_none() {
+        missing.push("deno".to_string());
+    }
+    
+    let aria2_available = bin_dir.join(aria_exe).exists();
+
+    LocalScanResult {
+        missing,
+        aria2_available,
+    }
+}
+
+#[tauri::command]
+pub async fn check_ytdlp_update(app_handle: AppHandle) -> Result<bool, String> {
+    let app_dir = app_handle.path_resolver().app_data_dir().unwrap();
+    let bin_dir = app_dir.join("bin");
+    
+    let provider = deps::YtDlpProvider;
+    provider.check_update_available(&bin_dir).await
+}
+
 #[tauri::command]
 pub async fn check_dependencies(app_handle: AppHandle) -> AppDependencies {
     let app_dir = app_handle.path_resolver().app_data_dir().unwrap();
@@ -244,31 +296,6 @@ pub async fn install_dependency(app_handle: AppHandle, name: String) -> Result<(
 
 #[tauri::command]
 pub async fn sync_dependencies(app_handle: AppHandle) -> Result<AppDependencies, String> {
-    let app_dir = app_handle.path_resolver().app_data_dir().ok_or("Failed to get app dir")?;
-    let bin_dir = app_dir.join("bin");
-
-    if !bin_dir.exists() {
-        std::fs::create_dir_all(&bin_dir).map_err(|e| e.to_string())?;
-    }
-
-    let yt_exists = bin_dir.join(if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" }).exists();
-    let ff_exists = bin_dir.join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" }).exists();
-
-    if !yt_exists || !ff_exists {
-        let _ = timeout(Duration::from_secs(60), async {
-            let _ = tokio::join!(
-                deps::auto_update_yt_dlp(app_handle.clone(), bin_dir.clone()),
-                deps::install_missing_ffmpeg(app_handle.clone(), bin_dir.clone()),
-            );
-        }).await;
-    } else {
-        let app_bg = app_handle.clone();
-        let bin_bg = bin_dir.clone();
-        tauri::async_runtime::spawn(async move {
-            let _ = deps::auto_update_yt_dlp(app_bg, bin_bg).await;
-        });
-    }
-
     Ok(check_dependencies(app_handle).await)
 }
 

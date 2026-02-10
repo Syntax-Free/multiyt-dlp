@@ -2,6 +2,22 @@ import { invoke } from "@tauri-apps/api/tauri";
 import { open } from "@tauri-apps/api/dialog";
 import { DownloadFormatPreset, AppDependencies, AppConfig, GeneralConfig, PreferenceConfig, PlaylistResult, QueuedJob, StartDownloadResponse, Download } from '@/types';
 
+// New Granular Types
+export interface LocalScanResult {
+    missing: string[];
+    aria2_available: boolean;
+}
+
+// --- System & Dependency API ---
+
+export async function checkLocalDeps(): Promise<LocalScanResult> {
+    return await invoke("check_local_deps");
+}
+
+export async function checkYtdlpUpdate(): Promise<boolean> {
+    return await invoke("check_ytdlp_update");
+}
+
 export async function checkDependencies(): Promise<AppDependencies> {
     return await invoke("check_dependencies");
 }
@@ -11,6 +27,7 @@ export async function installDependency(name: string): Promise<void> {
 }
 
 export async function syncDependencies(): Promise<AppDependencies> {
+    // Legacy mapping for compatibility
     return await invoke("sync_dependencies");
 }
 

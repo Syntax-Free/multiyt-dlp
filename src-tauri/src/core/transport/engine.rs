@@ -14,6 +14,7 @@ use crate::core::transport::retry::{RetryPolicy, TransportError};
 const IO_TIMEOUT: Duration = Duration::from_secs(15);
 const CHUNK_THRESHOLD: u64 = 10 * 1024 * 1024; // 10 MB
 const DEFAULT_CONCURRENCY: usize = 4;
+const PROGRESS_INTERVAL_MS: u128 = 100; 
 
 #[derive(Debug, Clone)]
 struct Chunk {
@@ -34,8 +35,10 @@ pub struct TransportEngine {
 impl TransportEngine {
     pub fn new(url: &str, target_path: PathBuf) -> Self {
         let client = Client::builder()
-            .user_agent("Multiyt-dlp/2.1 (Resumable-Engine)")
+            .user_agent("Multiyt-dlp/2.2 (Resumable-Engine)")
             .connect_timeout(Duration::from_secs(10))
+            // Follow redirects to ensure we get the final Content-Length
+            .redirect(reqwest::redirect::Policy::limited(10)) 
             .build()
             .expect("Failed to build HTTP client");
 
@@ -69,20 +72,44 @@ impl TransportEngine {
     }
 
     async fn probe(&self) -> Result<(Option<u64>, bool), TransportError> {
-        let resp = self.client.head(&self.url).send().await?;
-        
-        if !resp.status().is_success() {
+        // Use GET with Range: bytes=0-0 to probe if HEAD fails or returns bad headers
+        // But first try HEAD for efficiency
+        let head_resp = self.client.head(&self.url).send().await;
+
+        let resp = match head_resp {
+            Ok(r) if r.status().is_success() => r,
+            _ => {
+                // Fallback to GET start
+                self.client.get(&self.url)
+                    .header(header::RANGE, "bytes=0-0")
+                    .send()
+                    .await?
+            }
+        };
+
+        if !resp.status().is_success() && resp.status() != reqwest::StatusCode::PARTIAL_CONTENT {
              if resp.status() == reqwest::StatusCode::NOT_FOUND {
                  return Err(TransportError::HttpStatus(resp.status().as_u16()));
              }
+             // Proceed with unknown length if probing fails but URL exists
              return Ok((None, false));
         }
 
-        let len = resp.content_length();
+        // Try extracting Content-Length from headers
+        let len = resp.content_length()
+            .or_else(|| {
+                resp.headers()
+                    .get(header::CONTENT_RANGE)
+                    .and_then(|val| val.to_str().ok())
+                    .and_then(|s| s.split('/').last())
+                    .and_then(|s| s.parse::<u64>().ok())
+            });
+
         let accepts_ranges = if let Some(ranges) = resp.headers().get(header::ACCEPT_RANGES) {
             ranges.to_str().unwrap_or("").contains("bytes")
         } else {
-            false
+            // If we got PARTIAL_CONTENT, ranges are supported
+            resp.status() == reqwest::StatusCode::PARTIAL_CONTENT
         };
 
         Ok((len, accepts_ranges))
@@ -100,7 +127,6 @@ impl TransportEngine {
     where
         F: Fn(u64, u64, f64) + Send + Sync + 'static,
     {
-        // Use hash-based naming to prevent zombies and allow resume attempt in future
         let hash = self.calculate_deterministic_hash();
         let part_path = self.target_path.with_extension(format!("part.linear.{}", hash));
 
@@ -110,17 +136,15 @@ impl TransportEngine {
             match self.attempt_linear(&part_path, total_size, &on_progress).await {
                 Ok(_) => {
                     self.finalize(&part_path).await?;
+                    // Ensure 100% is reported
+                    if let Some(total) = total_size {
+                        on_progress(total, total, 0.0);
+                    }
                     return Ok(());
                 },
                 Err(e) => {
-                    // For linear, we can't easily resume without range support logic here
-                    // so we just truncate on retry (classic behavior for non-ranged)
                     let _ = fs::remove_file(&part_path).await;
-
-                    if let TransportError::HttpStatus(404) = e {
-                        return Err(e);
-                    }
-
+                    if let TransportError::HttpStatus(404) = e { return Err(e); }
                     match retry_policy.next_backoff() {
                         Some(delay) => tokio::time::sleep(delay).await,
                         None => return Err(TransportError::MaxRetriesExceeded),
@@ -144,6 +168,9 @@ impl TransportEngine {
         let mut downloaded = 0;
         let mut last_update = Instant::now();
         let mut bytes_since_update = 0;
+        
+        // Report 0% immediately
+        on_progress(0, total_size.unwrap_or(0), 0.0);
 
         while let Some(chunk_result) = tokio::time::timeout(IO_TIMEOUT, stream.next()).await.ok() {
             match chunk_result {
@@ -153,7 +180,7 @@ impl TransportEngine {
                     downloaded += len;
                     bytes_since_update += len;
 
-                    if last_update.elapsed().as_millis() >= 500 {
+                    if last_update.elapsed().as_millis() >= PROGRESS_INTERVAL_MS {
                          let secs = last_update.elapsed().as_secs_f64();
                          let speed = if secs > 0.0 { (bytes_since_update as f64) / secs } else { 0.0 };
                          on_progress(downloaded, total_size.unwrap_or(0), speed);
@@ -196,7 +223,6 @@ impl TransportEngine {
             chunks.push(Chunk { index: i, start, end, len: end - start + 1 });
         }
 
-        // Initialize progress tracker with existing file sizes
         let bytes_downloaded = Arc::new(AtomicU64::new(0));
         let hash = self.calculate_deterministic_hash();
         
@@ -213,15 +239,20 @@ impl TransportEngine {
         let bytes_downloaded_monitor = bytes_downloaded.clone();
         let on_progress_monitor = on_progress.clone();
         
+        // Initial 0 state
+        on_progress(initial_progress, total_size, 0.0);
+
         // Monitor Thread
         let monitor_handle = tokio::spawn(async move {
-            let mut last_bytes = 0;
+            let mut last_bytes = initial_progress;
             let mut last_time = Instant::now();
             
             loop {
-                tokio::time::sleep(Duration::from_millis(500)).await;
+                // Smoother updates
+                tokio::time::sleep(Duration::from_millis(100)).await;
                 let current = bytes_downloaded_monitor.load(Ordering::Relaxed);
-                if current >= total_size { break; }
+                
+                // Don't break immediately on total_size, wait for join to ensure all writes complete
                 
                 let now = Instant::now();
                 let elapsed = now.duration_since(last_time).as_secs_f64();
@@ -234,10 +265,11 @@ impl TransportEngine {
                 
                 last_bytes = current;
                 last_time = now;
+                
+                if current >= total_size { break; }
             }
         });
 
-        // Worker Threads
         for chunk in chunks {
             let client = self.client.clone();
             let url = self.url.clone();
@@ -245,7 +277,7 @@ impl TransportEngine {
             let part_path = self.target_path.with_extension(format!("part.{}.{}", hash, chunk.index));
             
             tasks.push(tokio::spawn(async move {
-                let mut retry_policy = RetryPolicy::new(10); // More retries for chunks
+                let mut retry_policy = RetryPolicy::new(10);
                 loop {
                     match Self::download_chunk_resumable(&client, &url, &part_path, &chunk, &total_bytes_atomic).await {
                         Ok(_) => return Ok(part_path),
@@ -261,7 +293,9 @@ impl TransportEngine {
         }
 
         let results = futures_util::future::join_all(tasks).await;
-        monitor_handle.abort();
+        
+        // Wait for monitor to finish its last tick logic
+        let _ = monitor_handle.await; 
 
         let mut part_paths = Vec::new();
         let mut failed = false;
@@ -274,14 +308,12 @@ impl TransportEngine {
         }
 
         if failed {
-            // Do NOT cleanup parts on failure, allowing resume next time
             return Err(TransportError::Validation("One or more chunks failed".to_string()));
         }
 
-        // Merge Phase: Append to Part 0 to avoid double disk usage
         match self.merge_parts_optimized(&part_paths).await {
             Ok(_) => {
-                on_progress(total_size, total_size, 0.0);
+                on_progress(total_size, total_size, 0.0); // Force 100%
                 Ok(())
             },
             Err(e) => Err(e)
@@ -295,7 +327,6 @@ impl TransportEngine {
         chunk: &Chunk,
         global_bytes: &AtomicU64
     ) -> Result<(), TransportError> {
-        // Check for existing data
         let mut current_len = 0;
         if path.exists() {
             if let Ok(m) = fs::metadata(path).await {
@@ -304,11 +335,9 @@ impl TransportEngine {
         }
 
         if current_len >= chunk.len {
-            // Already downloaded
             return Ok(());
         }
 
-        // Calculate Range
         let range_start = chunk.start + current_len;
         let range_end = chunk.end;
 
@@ -319,7 +348,6 @@ impl TransportEngine {
             return Err(TransportError::HttpStatus(response.status().as_u16()));
         }
 
-        // Open in Append Mode
         let mut file = OpenOptions::new()
             .create(true)
             .write(true)
@@ -347,7 +375,6 @@ impl TransportEngine {
         
         let final_len = current_len + downloaded_in_this_session;
         if final_len != chunk.len {
-            // Adjust global stats back down if we failed
             global_bytes.fetch_sub(downloaded_in_this_session, Ordering::Relaxed);
             return Err(TransportError::Validation(format!("Chunk incomplete. Got {}, expected {}", final_len, chunk.len)));
         }
@@ -355,18 +382,14 @@ impl TransportEngine {
         Ok(())
     }
 
-    // Optimized Merge: Append everything to the first part
     async fn merge_parts_optimized(&self, parts: &[PathBuf]) -> Result<(), TransportError> {
         if parts.is_empty() { return Ok(()); }
-
         let first_part = &parts[0];
         let mut target_file = OpenOptions::new().write(true).append(true).open(first_part).await?;
 
-        // Append subsequent parts
         for part_path in parts.iter().skip(1) {
             let mut part_file = fs::File::open(part_path).await?;
             tokio::io::copy(&mut part_file, &mut target_file).await?;
-            // Delete immediately after append to save space
             let _ = fs::remove_file(part_path).await;
         }
         
@@ -390,7 +413,6 @@ impl TransportEngine {
                 let _ = fs::set_permissions(&self.target_path, perms).await;
             }
         }
-
         Ok(())
     }
 }
