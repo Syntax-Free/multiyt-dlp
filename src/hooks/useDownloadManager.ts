@@ -78,7 +78,7 @@ export function useDownloadManager() {
         const updates = event.payload.updates.map(u => ({
             jobId: u.jobId,
             data: {
-                status: u.status || 'downloading', // Allow status overrides from backend progress updates
+                status: u.status || 'downloading', 
                 progress: u.percentage,
                 sequence_id: u.sequence_id,
                 speed: u.speed,

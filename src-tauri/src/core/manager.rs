@@ -256,16 +256,17 @@ impl JobManagerActor {
             },
             JobMessage::CancelJob { id } => {
                 info!(target: "core::manager", job_id = ?id, "Cancelling job");
+                
+                // CRITICAL FIX: Clear pending buffer to prevent status race
+                self.pending_updates.remove(&id);
+
                 if let Some(job) = self.jobs.get(&id) {
                     if let Some(pid) = job.pid {
                         self.kill_process(pid);
                     }
-                    // Clean temp files immediately if we cancel
                     if let Some(temp) = &job.temp_path {
                         let path = PathBuf::from(temp);
-                        // Fix: Pass by reference to avoid move
                         if path.exists() { let _ = tokio::fs::remove_file(&path).await; }
-                        // Also try to clean the job directory
                         if let Some(parent) = path.parent() {
                             let _ = tokio::fs::remove_dir(parent).await;
                         }
@@ -289,6 +290,9 @@ impl JobManagerActor {
                         return;
                     }
 
+                    // FIX: Ensure no lingering updates override conflict resolution states
+                    self.pending_updates.remove(&id);
+
                     let temp_path_str = job.temp_path.clone();
                     let output_path_str = job.output_path.clone();
 
@@ -307,7 +311,6 @@ impl JobManagerActor {
                                     job.phase = Some("Done".to_string());
                                     job.sequence_id += 1;
                                     
-                                    // Clean parent dir
                                     if let Some(parent) = t_path.parent() {
                                         let _ = tokio::fs::remove_dir(parent).await;
                                     }
@@ -366,6 +369,12 @@ impl JobManagerActor {
             JobMessage::UpdateProgress { id, percentage, speed, eta, filename, phase } => {
                 if let Some(job) = self.jobs.get_mut(&id) {
                     if job.status == JobStatus::Cancelled { return; }
+                    
+                    // Prevent updates if we are already in a terminal/conflict state 
+                    // (Double safety for async messages arriving late)
+                    if job.status == JobStatus::FileConflict || job.status == JobStatus::Completed || job.status == JobStatus::Error {
+                        return;
+                    }
 
                     job.progress = percentage;
                     job.speed = Some(speed.clone());
@@ -388,6 +397,10 @@ impl JobManagerActor {
             },
             JobMessage::FileConflict { id, temp_path, output_path } => {
                 warn!(target: "core::manager", job_id = ?id, "File conflict detected");
+                
+                // CRITICAL FIX: Clear buffered updates immediately so next flush doesn't overwrite Conflict status
+                self.pending_updates.remove(&id);
+
                 if let Some(job) = self.jobs.get_mut(&id) {
                     job.status = JobStatus::FileConflict;
                     job.temp_path = Some(temp_path.clone());
@@ -395,7 +408,7 @@ impl JobManagerActor {
                     job.phase = Some("File Exists - Action Required".to_string());
                     job.sequence_id += 1;
 
-                    // Force an update immediately so UI reacts
+                    // Emit immediately to bypass the 100ms buffer entirely
                     let _ = self.app_handle.emit_all("download-progress-batch", BatchProgressPayload { 
                         updates: vec![DownloadProgressPayload {
                             job_id: id,
@@ -412,6 +425,10 @@ impl JobManagerActor {
             },
             JobMessage::JobCompleted { id, output_path } => {
                 info!(target: "core::manager", job_id = ?id, path = %output_path, "Job completed");
+                
+                // CRITICAL FIX: Clear buffered updates
+                self.pending_updates.remove(&id);
+
                 if let Some(job) = self.jobs.get_mut(&id) {
                     if job.status == JobStatus::Cancelled { return; }
                     job.status = JobStatus::Completed;
@@ -430,6 +447,10 @@ impl JobManagerActor {
             },
             JobMessage::JobError { id, payload } => {
                 error!(target: "core::manager", job_id = ?id, error = %payload.error, "Job failed");
+                
+                // CRITICAL FIX: Clear buffered updates
+                self.pending_updates.remove(&id);
+
                 if let Some(job) = self.jobs.get_mut(&id) {
                     if job.status == JobStatus::Cancelled { return; }
                     job.status = JobStatus::Error;

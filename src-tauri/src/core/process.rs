@@ -123,11 +123,13 @@ fn construct_error(job_id: uuid::Uuid, msg: String, exit_code: Option<i32>, stde
     }
 }
 
-// Robust move that retries on lock failures
+/// Robustly moves a file, handling potential cross-device errors or locks.
+/// Returns std::io::ErrorKind::AlreadyExists if destination exists.
 async fn robust_move_file(src: &Path, dest: &Path) -> Result<(), std::io::Error> {
     let mut attempts = 0;
     loop {
         // Explicit check for destination existence to avoid implicit overwrites or failures on Windows
+        // This ensures the Conflict Handler in manager.rs gets triggered.
         if dest.exists() {
              return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "Destination file already exists"));
         }
@@ -141,14 +143,16 @@ async fn robust_move_file(src: &Path, dest: &Path) -> Result<(), std::io::Error>
                     return Err(e);
                 }
                 
-                if attempts > 5 {
+                // Retry a few times for transient locks
+                if attempts > 3 {
+                    // Fallback to Copy + Delete for cross-filesystem moves
                     if let Ok(_) = fs::copy(src, dest) {
                         let _ = fs::remove_file(src);
                         return Ok(());
                     }
                     return Err(e);
                 }
-                tokio::time::sleep(Duration::from_millis(100 * 2u64.pow(attempts))).await;
+                tokio::time::sleep(Duration::from_millis(200)).await;
             }
         }
     }
@@ -523,14 +527,18 @@ pub async fn run_download_process(
                 let file_name = src_path.file_name().unwrap();
                 let dest_path = target_dir.join(file_name);
                 
+                // Notify "Moving" phase before attempting move
                 let _ = tx_actor.send(JobMessage::UpdateProgress {
                     id: job_id,
                     percentage: 100.0,
-                    speed: "Done".to_string(),
-                    eta: "Done".to_string(),
+                    speed: "Finalizing".to_string(),
+                    eta: "00:00".to_string(),
                     filename: detected_filename_only.clone(),
                     phase: "Moving to Library".to_string()
                 }).await;
+
+                // Sync wait to ensure the message is processed by actor buffer before conflict logic fires
+                tokio::time::sleep(Duration::from_millis(50)).await;
                 
                 match robust_move_file(&src_path, &dest_path).await {
                     Ok(_) => {
@@ -540,6 +548,7 @@ pub async fn run_download_process(
                     Err(e) => {
                         if e.kind() == std::io::ErrorKind::AlreadyExists {
                             // CONFLICT: Notify manager and preserve temp file
+                            // We use FileConflict message, which Manager now handles by clearing the buffer
                             let _ = tx_actor.send(JobMessage::FileConflict { 
                                 id: job_id, 
                                 temp_path: src_path.to_string_lossy().to_string(),
