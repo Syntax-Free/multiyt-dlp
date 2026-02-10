@@ -1,18 +1,15 @@
 import { Download } from '@/types';
-import { X, CheckCircle2, AlertTriangle, Hourglass, MonitorPlay, Headphones, Tags, FileOutput, Image as ImageIcon, Activity, FolderSearch, Trash2 } from 'lucide-react';
+import { X, CheckCircle2, AlertTriangle, Hourglass, MonitorPlay, Headphones, Tags, FileOutput, Image as ImageIcon, Activity, FolderSearch, Trash2, FileWarning, RefreshCw } from 'lucide-react';
 import { twMerge } from 'tailwind-merge';
 import { showInFolder } from '@/api/invoke';
 import { parseError } from '@/utils/errorRegistry';
+import { useDownloadManager } from '@/hooks/useDownloadManager';
 
 interface DownloadGridItemProps {
   download: Download;
   onCancel: (jobId: string) => void;
 }
 
-/**
- * Truncates string in the middle to preserve unique identifiers at the end
- * (e.g. "Long Title Part 1.mp4" -> "Long Tit...rt 1.mp4")
- */
 function middleTruncate(str: string, maxLength: number) {
     if (str.length <= maxLength) return str;
     const partLen = Math.floor((maxLength - 3) / 2);
@@ -20,6 +17,7 @@ function middleTruncate(str: string, maxLength: number) {
 }
 
 export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) {
+  const { resolveConflict } = useDownloadManager();
   const { jobId, status, progress, error, phase, preset, embedThumbnail, filename, url, outputPath, stderr } = download;
 
   const isAudio = preset?.startsWith('audio');
@@ -32,6 +30,7 @@ export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) 
   const isError = status === 'error';
   const isCompleted = status === 'completed';
   const isCancelled = status === 'cancelled';
+  const isConflict = status === 'file_conflict';
 
   const isProcessingPhase = isActive && (
        phase?.includes('Merging') 
@@ -58,6 +57,7 @@ export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) 
 
   const getContainerStyles = () => {
       if (isError) return "border-red-500/50 bg-red-950/20 shadow-[0_0_15px_-5px_rgba(239,68,68,0.3)]";
+      if (isConflict) return "border-amber-500/60 bg-amber-950/20 shadow-[0_0_15px_-5px_rgba(245,158,11,0.3)] ring-1 ring-amber-500/30";
       if (isCompleted) return "border-emerald-500/50 bg-emerald-950/20 shadow-[0_0_15px_-5px_rgba(16,185,129,0.3)]";
       if (isProcessingPhase || isMetaPhase) return "border-amber-500/50 bg-amber-950/20 shadow-[0_0_15px_-5px_rgba(245,158,11,0.3)]";
       if (isActive) return "border-theme-cyan/50 bg-zinc-900 shadow-[0_0_15px_-5px_rgba(6,182,212,0.3)]";
@@ -67,6 +67,7 @@ export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) 
 
   const IconComponent = () => {
     if (isError) return <AlertTriangle className="h-7 w-7 text-red-500 drop-shadow-lg" />;
+    if (isConflict) return <FileWarning className="h-8 w-8 text-amber-500 drop-shadow-lg animate-pulse" />;
     if (isCompleted) return <CheckCircle2 className="h-7 w-7 text-emerald-500 drop-shadow-lg" />;
     if (isCancelled) return <X className="h-7 w-7 text-zinc-600" />;
     if (isQueued) return <Hourglass className="h-7 w-7 text-zinc-500 animate-pulse" />;
@@ -100,7 +101,7 @@ export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) 
             <div className="absolute inset-0 opacity-10 bg-[repeating-linear-gradient(45deg,transparent,transparent_10px,#ef4444_10px,#ef4444_20px)]" />
         )}
 
-        {/* PROGRESS FILL (Active Only) - Reversed: Fills from bottom for cleaner look */}
+        {/* PROGRESS FILL (Active Only) */}
         {isActive && !isProcessingPhase && !isMetaPhase && (
             <div 
                 className="absolute bottom-0 left-0 right-0 bg-theme-cyan/10 transition-all duration-300 ease-out z-0"
@@ -135,16 +136,22 @@ export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) 
                 </div>
             )}
             
-            {/* Phase Text (When active/processing) */}
-            {(isActive || isQueued) && (
-                <div className="mt-2 text-[8px] font-black uppercase tracking-[0.2em] text-zinc-500">
-                    {phase || (isQueued ? 'Queued' : 'Init')}
+            {/* Phase Text */}
+            {(isActive || isQueued || isConflict) && (
+                <div className={twMerge(
+                    "mt-2 text-[8px] font-black uppercase tracking-[0.2em]",
+                    isConflict ? "text-amber-400" : "text-zinc-500"
+                )}>
+                    {isConflict ? 'CONFLICT' : (phase || (isQueued ? 'Queued' : 'Init'))}
                 </div>
             )}
         </div>
 
         {/* --- HOVER OVERLAY ACTIONS --- */}
-        <div className="absolute inset-0 z-20 bg-zinc-950/95 backdrop-blur-[2px] opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex flex-col p-3">
+        <div className={twMerge(
+            "absolute inset-0 z-20 bg-zinc-950/95 backdrop-blur-[2px] transition-opacity duration-200 flex flex-col p-3",
+            isConflict ? "opacity-100" : "opacity-0 group-hover:opacity-100" // Always show controls on conflict
+        )}>
             <div className="flex gap-1 mb-auto">
                 <span className={twMerge(
                     "text-[9px] font-bold px-1.5 py-0.5 rounded border uppercase",
@@ -160,6 +167,13 @@ export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) 
                 </div>
             )}
 
+            {isConflict && (
+                <div className="mb-auto mt-2 text-[10px] text-amber-200 leading-tight font-bold text-center">
+                    File already exists.
+                    <br/>Overwrite?
+                </div>
+            )}
+
             <div className="mt-auto grid grid-cols-1 gap-2">
                 {isCompleted && outputPath ? (
                     <button
@@ -171,7 +185,24 @@ export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) 
                     </button>
                 ) : null}
 
-                {(isActive || isQueued || isError || isCancelled) && (
+                {isConflict && (
+                     <div className="flex gap-2">
+                        <button
+                             onClick={(e) => { e.stopPropagation(); resolveConflict(jobId, 'overwrite'); }}
+                             className="flex-1 flex items-center justify-center gap-1 py-1.5 rounded bg-amber-500/20 hover:bg-amber-500 text-amber-500 hover:text-black text-[9px] font-black transition-all border border-amber-500/30"
+                        >
+                            <RefreshCw className="h-3 w-3" /> REPLACE
+                        </button>
+                         <button
+                             onClick={(e) => { e.stopPropagation(); resolveConflict(jobId, 'discard'); }}
+                             className="flex-1 flex items-center justify-center gap-1 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-white text-[9px] font-black transition-all border border-zinc-700"
+                        >
+                            <Trash2 className="h-3 w-3" /> NO
+                        </button>
+                     </div>
+                )}
+
+                {(isActive || isQueued || isError || isCancelled) && !isConflict && (
                      <button
                         onClick={(e) => { e.stopPropagation(); onCancel(jobId); }}
                         className={twMerge(

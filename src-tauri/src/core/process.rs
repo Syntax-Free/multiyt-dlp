@@ -127,10 +127,20 @@ fn construct_error(job_id: uuid::Uuid, msg: String, exit_code: Option<i32>, stde
 async fn robust_move_file(src: &Path, dest: &Path) -> Result<(), std::io::Error> {
     let mut attempts = 0;
     loop {
+        // Explicit check for destination existence to avoid implicit overwrites or failures on Windows
+        if dest.exists() {
+             return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "Destination file already exists"));
+        }
+
         match fs::rename(src, dest) {
             Ok(_) => return Ok(()),
             Err(e) => {
                 attempts += 1;
+                // If the error was specifically "AlreadyExists", bail immediately
+                if e.kind() == std::io::ErrorKind::AlreadyExists {
+                    return Err(e);
+                }
+                
                 if attempts > 5 {
                     if let Ok(_) = fs::copy(src, dest) {
                         let _ = fs::remove_file(src);
@@ -153,6 +163,9 @@ pub async fn run_download_process(
 
     let job_id = job_data.id;
     let url = job_data.url.clone();
+    
+    // Flag to skip cleanup if we enter Conflict state
+    let mut preserve_temp_file = false;
 
     let _ = tx_actor.send(JobMessage::UpdateProgress {
         id: job_id,
@@ -230,11 +243,9 @@ pub async fn run_download_process(
             if !browser.trim().is_empty() && browser != "none" { cmd.arg("--cookies-from-browser").arg(browser); }
         }
 
-        // Inject Fragment Arguments for "Blitz Mode"
         if general_config.use_concurrent_fragments {
             cmd.arg("-N").arg(general_config.concurrent_fragments.to_string());
         } else {
-            // Explicitly set to 1 to ensure standard behavior in Fleet Mode
             cmd.arg("-N").arg("1");
         }
 
@@ -385,7 +396,6 @@ pub async fn run_download_process(
             let mut speed_str = "N/A".to_string();
             let mut eta_str = "N/A".to_string();
 
-            // Optimization: Only try parsing JSON if it looks like JSON
             if trimmed.starts_with('{') {
                 if let Ok(progress_json) = serde_json::from_str::<YtDlpJsonProgress>(trimmed) {
                     if let Some(d) = progress_json.downloaded_bytes {
@@ -484,7 +494,6 @@ pub async fn run_download_process(
                 }
             }
 
-            // Fallback: Recursive search using WalkDir if stdout capture failed
             if final_src_path.is_none() {
                  if let Some(ref fname) = detected_filename_only {
                      let path = unique_temp_dir.join(fname);
@@ -519,7 +528,6 @@ pub async fn run_download_process(
                     percentage: 100.0,
                     speed: "Done".to_string(),
                     eta: "Done".to_string(),
-                    // Include the detected name in the terminal status pulse
                     filename: detected_filename_only.clone(),
                     phase: "Moving to Library".to_string()
                 }).await;
@@ -530,8 +538,19 @@ pub async fn run_download_process(
                         break;
                     },
                     Err(e) => {
-                        let _ = tx_actor.send(construct_error(job_id, format!("File move failed: {}", e), status.code(), e.to_string(), captured_logs)).await;
-                        break;
+                        if e.kind() == std::io::ErrorKind::AlreadyExists {
+                            // CONFLICT: Notify manager and preserve temp file
+                            let _ = tx_actor.send(JobMessage::FileConflict { 
+                                id: job_id, 
+                                temp_path: src_path.to_string_lossy().to_string(),
+                                output_path: dest_path.to_string_lossy().to_string()
+                            }).await;
+                            preserve_temp_file = true;
+                            break;
+                        } else {
+                            let _ = tx_actor.send(construct_error(job_id, format!("File move failed: {}", e), status.code(), e.to_string(), captured_logs)).await;
+                            break;
+                        }
                     }
                 }
             } else {
@@ -564,23 +583,24 @@ pub async fn run_download_process(
         }
     }
     
-    // Robust cleanup on exit
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    let base_temp_dir = home.join(".multiyt-dlp").join("temp_downloads");
-    let unique_temp_dir = base_temp_dir.join(job_id.to_string());
-    
-    // Helper used for robust deletion
-    async fn robust_remove_dir_internal(path: &Path) {
-        for i in 0..5 {
-            match fs::remove_dir_all(path) {
-                Ok(_) => return,
-                Err(_) => { tokio::time::sleep(Duration::from_millis(100 * 2u64.pow(i))).await; }
+    // Robust cleanup on exit, UNLESS we are in a conflict state
+    if !preserve_temp_file {
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+        let base_temp_dir = home.join(".multiyt-dlp").join("temp_downloads");
+        let unique_temp_dir = base_temp_dir.join(job_id.to_string());
+        
+        async fn robust_remove_dir_internal(path: &Path) {
+            for i in 0..5 {
+                match fs::remove_dir_all(path) {
+                    Ok(_) => return,
+                    Err(_) => { tokio::time::sleep(Duration::from_millis(100 * 2u64.pow(i))).await; }
+                }
             }
+            let _ = fs::remove_dir_all(path);
         }
-        let _ = fs::remove_dir_all(path);
-    }
 
-    if unique_temp_dir.exists() {
-        robust_remove_dir_internal(&unique_temp_dir).await;
+        if unique_temp_dir.exists() {
+            robust_remove_dir_internal(&unique_temp_dir).await;
+        }
     }
 }

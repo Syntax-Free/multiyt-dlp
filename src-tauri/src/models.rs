@@ -3,12 +3,14 @@ use uuid::Uuid;
 use tokio::sync::oneshot;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
 pub enum JobStatus {
     Pending,
     Downloading,
     Completed,
     Cancelled,
     Error,
+    FileConflict, // NEW
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,9 +34,10 @@ pub struct Job {
     pub status: JobStatus,
     pub progress: f32,
     pub output_path: Option<String>,
+    pub temp_path: Option<String>, // NEW: Track temp file location for resolution
     
     // Sync & UI Fields
-    pub sequence_id: u64, // NEW: Monotonic counter for state ordering
+    pub sequence_id: u64,
     pub speed: Option<String>,
     pub eta: Option<String>,
     pub filename: Option<String>,
@@ -76,6 +79,7 @@ impl Job {
             status: JobStatus::Pending,
             progress: 0.0,
             output_path: None,
+            temp_path: None,
             sequence_id: 0,
             speed: None,
             eta: None,
@@ -104,10 +108,11 @@ pub struct Download {
     pub url: String,
     pub status: JobStatus,
     pub progress: f32,
-    pub sequence_id: u64, // NEW
+    pub sequence_id: u64,
     pub speed: Option<String>,
     pub eta: Option<String>,
     pub output_path: Option<String>,
+    pub temp_path: Option<String>, // NEW
     pub error: Option<String>,
     pub filename: Option<String>,
     pub phase: Option<String>,
@@ -181,11 +186,12 @@ pub struct DownloadProgressPayload {
     #[serde(rename = "jobId")]
     pub job_id: Uuid,
     pub percentage: f32,
-    pub sequence_id: u64, // NEW
+    pub sequence_id: u64,
     pub speed: String,
     pub eta: String,
     pub filename: Option<String>,
     pub phase: Option<String>,
+    pub status: Option<JobStatus>, // NEW: Allow progress to carry status transitions
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -220,6 +226,7 @@ pub struct DownloadErrorPayload {
 pub enum JobMessage {
     AddJob { job: QueuedJob, resp: oneshot::Sender<Result<(), String>> },
     CancelJob { id: Uuid },
+    ResolveConflict { id: Uuid, resolution: String, resp: oneshot::Sender<Result<(), String>> },
     UpdateProgress { 
         id: Uuid, 
         percentage: f32, 
@@ -231,6 +238,7 @@ pub enum JobMessage {
     ProcessStarted { id: Uuid, pid: u32 },
     JobCompleted { id: Uuid, output_path: String },
     JobError { id: Uuid, payload: DownloadErrorPayload },
+    FileConflict { id: Uuid, temp_path: String, output_path: String },
     WorkerFinished,
     GetPendingCount(oneshot::Sender<u32>),
     ResumePending(oneshot::Sender<Vec<QueuedJob>>),

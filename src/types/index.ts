@@ -87,6 +87,7 @@ export interface DownloadProgressPayload {
   eta: string;
   filename?: string; 
   phase?: string;    
+  status?: DownloadStatus;
 }
 
 export interface BatchProgressPayload {
@@ -110,7 +111,7 @@ export interface DownloadErrorPayload {
   logs: string;
 }
 
-export type DownloadStatus = 'pending' | 'downloading' | 'completed' | 'error' | 'cancelled';
+export type DownloadStatus = 'pending' | 'downloading' | 'completed' | 'error' | 'cancelled' | 'file_conflict';
 
 export interface Download {
   jobId: string;
@@ -121,6 +122,7 @@ export interface Download {
   speed?: string;
   eta?: string;
   outputPath?: string;
+  tempPath?: string; // NEW
   error?: string;
   filename?: string;
   phase?: string;

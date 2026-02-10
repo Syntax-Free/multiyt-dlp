@@ -107,6 +107,10 @@ export async function cancelDownload(jobId: string): Promise<void> {
   return await invoke("cancel_download", { jobId });
 }
 
+export async function resolveFileConflict(jobId: string, resolution: 'overwrite' | 'discard'): Promise<void> {
+    return await invoke("resolve_file_conflict", { jobId, resolution });
+}
+
 export async function syncDownloadState(): Promise<Download[]> {
     return await invoke("sync_download_state");
 }

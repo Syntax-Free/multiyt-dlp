@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { Download, DownloadCompletePayload, DownloadErrorPayload, BatchProgressPayload, DownloadFormatPreset, QueuedJob, DownloadCancelledPayload, StartDownloadResponse } from '@/types';
-import { startDownload as apiStartDownload, cancelDownload as apiCancelDownload, syncDownloadState } from '@/api/invoke';
+import { startDownload as apiStartDownload, cancelDownload as apiCancelDownload, resolveFileConflict as apiResolveConflict, syncDownloadState } from '@/api/invoke';
 import { useAppContext } from '@/contexts/AppContext';
 
 export function useDownloadManager() {
@@ -78,7 +78,7 @@ export function useDownloadManager() {
         const updates = event.payload.updates.map(u => ({
             jobId: u.jobId,
             data: {
-                status: 'downloading' as const,
+                status: u.status || 'downloading', // Allow status overrides from backend progress updates
                 progress: u.percentage,
                 sequence_id: u.sequence_id,
                 speed: u.speed,
@@ -250,7 +250,7 @@ export function useDownloadManager() {
     const job = downloads.get(jobId);
     if (!job) return;
 
-    if (job.status === 'downloading' || job.status === 'pending') {
+    if (job.status === 'downloading' || job.status === 'pending' || job.status === 'file_conflict') {
         try {
             await apiCancelDownload(jobId);
             updateDownload(jobId, { status: 'cancelled', phase: 'Cancelling...' });
@@ -263,9 +263,6 @@ export function useDownloadManager() {
     }
   }, [downloads, removeDownload]);
 
-  /**
-   * Bulk action to cancel all active or queued downloads.
-   */
   const cancelAllDownloads = useCallback(async () => {
       const targets = Array.from(downloads.values()).filter(d => 
           d.status === 'downloading' || d.status === 'pending'
@@ -281,5 +278,16 @@ export function useDownloadManager() {
       }
   }, [downloads]);
 
-  return { downloads, startDownload, cancelDownload, removeDownload, importResumedJobs, cancelAllDownloads };
+  const resolveConflict = useCallback(async (jobId: string, resolution: 'overwrite' | 'discard') => {
+      try {
+          // Optimistically update UI
+          updateDownload(jobId, { phase: resolution === 'overwrite' ? 'Overwriting...' : 'Discarding...' });
+          await apiResolveConflict(jobId, resolution);
+      } catch (err) {
+          console.error("Failed to resolve conflict", err);
+          updateDownload(jobId, { status: 'error', error: 'Failed to resolve conflict' });
+      }
+  }, []);
+
+  return { downloads, startDownload, cancelDownload, removeDownload, importResumedJobs, cancelAllDownloads, resolveConflict };
 }

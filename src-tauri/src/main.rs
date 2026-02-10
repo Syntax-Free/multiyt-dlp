@@ -163,6 +163,7 @@ fn main() {
             // Downloader Commands
             commands::downloader::start_download,
             commands::downloader::cancel_download,
+            commands::downloader::resolve_file_conflict,
             commands::downloader::expand_playlist,
             commands::downloader::get_pending_jobs,
             commands::downloader::resume_pending_jobs,

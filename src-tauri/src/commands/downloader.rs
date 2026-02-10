@@ -13,7 +13,6 @@ use crate::core::{
 };
 use crate::models::{DownloadFormatPreset, QueuedJob, PlaylistResult, PlaylistEntry, StartDownloadResponse};
 
-// Limits concurrent probing tasks to avoid system freezing on large playlists
 static PROBE_SEMAPHORE: std::sync::OnceLock<Arc<Semaphore>> = std::sync::OnceLock::new();
 
 fn get_probe_semaphore() -> Arc<Semaphore> {
@@ -148,14 +147,10 @@ pub async fn start_download(
     let url_clone = url.clone();
     let is_forced = force_download.unwrap_or(false);
 
-    // 1. Probe for entries
     let entries = probe_url(&url_clone, &app_handle, &config_manager).await?;
     
     let whitelist_set: Option<HashSet<String>> = url_whitelist.map(|list| list.into_iter().collect());
     
-    // FIX: total_found should reflect the items the user actually REQUESTED.
-    // If we have a whitelist (manual selection), the total is the whitelist size.
-    // Otherwise, it's the entire probed result (e.g. single URL or auto-playlist).
     let total_found = if let Some(ref wl) = whitelist_set {
         wl.len() as u32
     } else {
@@ -166,16 +161,13 @@ pub async fn start_download(
     let mut skipped_urls = Vec::new();
     let mut urls_to_add = Vec::new();
 
-    // 2. Process entries
     for entry in entries {
-        // If whitelist is provided (manual selection), skip anything not explicitly chosen by user
         if let Some(ref wl) = whitelist_set {
             if !wl.contains(&entry.url) {
                 continue;
             }
         }
 
-        // Check history if not forced
         if !is_forced && history.exists(&entry.url) {
             skipped_urls.push(entry.url.clone());
             continue;
@@ -210,7 +202,6 @@ pub async fn start_download(
         }
     }
 
-    // 3. Update History for the new URLs
     if !urls_to_add.is_empty() {
         let history_handle = history.inner().clone();
         tauri::async_runtime::spawn(async move {
@@ -234,6 +225,19 @@ pub async fn cancel_download(
     manager: State<'_, JobManagerHandle>,
 ) -> Result<(), AppError> {
     manager.cancel_job(job_id).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn resolve_file_conflict(
+    job_id: Uuid,
+    resolution: String,
+    manager: State<'_, JobManagerHandle>,
+) -> Result<(), AppError> {
+    if resolution != "overwrite" && resolution != "discard" {
+        return Err(AppError::ValidationFailed("Invalid resolution".into()));
+    }
+    manager.resolve_conflict(job_id, resolution).await.map_err(|e| AppError::ValidationFailed(e))?;
     Ok(())
 }
 

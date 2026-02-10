@@ -1,11 +1,12 @@
 import { Download } from '@/types';
 import { Progress } from './ui/Progress';
 import { Button } from './ui/Button';
-import { X, MonitorPlay, Clock, CheckCircle2, AlertTriangle, Headphones, Activity, FileOutput, Tags, FileText, Image as ImageIcon, Hourglass, FolderSearch, Copy, Trash2, ChevronDown, ChevronUp } from 'lucide-react';
+import { X, MonitorPlay, Clock, CheckCircle2, AlertTriangle, Headphones, Activity, FileOutput, Tags, FileText, Image as ImageIcon, Hourglass, FolderSearch, Copy, Trash2, ChevronDown, ChevronUp, FileWarning, RefreshCw } from 'lucide-react';
 import { twMerge } from 'tailwind-merge';
 import { showInFolder, openLogFolder } from '@/api/invoke';
 import { useState } from 'react';
 import { SmartError } from './ui/SmartError';
+import { useDownloadManager } from '@/hooks/useDownloadManager';
 
 interface DownloadItemProps {
   download: Download;
@@ -13,6 +14,7 @@ interface DownloadItemProps {
 }
 
 export function DownloadItem({ download, onCancel }: DownloadItemProps) {
+  const { resolveConflict } = useDownloadManager();
   const { 
     jobId, url, status, progress, speed, eta, 
     error, filename, phase, preset, embedMetadata, 
@@ -28,6 +30,7 @@ export function DownloadItem({ download, onCancel }: DownloadItemProps) {
   const isError = status === 'error';
   const isCompleted = status === 'completed';
   const isCancelled = status === 'cancelled';
+  const isConflict = status === 'file_conflict';
 
   const formatStat = (text?: string) => {
       if (!text || text === 'Unknown' || text === 'N/A') return <span className="animate-pulse text-zinc-600">--</span>;
@@ -50,6 +53,7 @@ export function DownloadItem({ download, onCancel }: DownloadItemProps) {
 
   const getStatusColor = () => {
       if (isError) return "text-red-500 bg-red-500/10 border-red-500/20";
+      if (isConflict) return "text-amber-500 bg-amber-500/10 border-amber-500/20";
       if (isCompleted) return "text-emerald-500 bg-emerald-500/10 border-emerald-500/20";
       if (isCancelled) return "text-zinc-500 bg-zinc-800/50 border-zinc-700/50";
       if (isProcessingPhase || isMetaPhase) return "text-amber-500 bg-amber-500/10 border-amber-500/20";
@@ -59,6 +63,7 @@ export function DownloadItem({ download, onCancel }: DownloadItemProps) {
 
   const getIcon = () => {
       if (isError) return <AlertTriangle className="h-5 w-5 text-red-500" />;
+      if (isConflict) return <FileWarning className="h-5 w-5 text-amber-500 animate-pulse" />;
       if (isCompleted) return <CheckCircle2 className="h-5 w-5 text-emerald-500" />;
       if (isCancelled) return <X className="h-5 w-5 text-zinc-500" />;
       if (isQueued) return <Hourglass className="h-5 w-5 text-zinc-500 animate-pulse" />;
@@ -86,6 +91,7 @@ export function DownloadItem({ download, onCancel }: DownloadItemProps) {
     <div className={twMerge(
         "group animate-fade-in relative bg-zinc-900/40 border rounded-lg p-4 transition-all duration-300 hover:bg-zinc-900/60",
         isError ? "border-red-900/30 hover:border-red-900/50" : 
+        isConflict ? "border-amber-500/40 bg-amber-950/10 hover:border-amber-500/60" :
         isCompleted ? "border-emerald-900/30 hover:border-emerald-900/50" : 
         isActive ? "border-theme-cyan/20 shadow-[0_0_15px_-10px_rgba(6,182,212,0.1)] hover:border-theme-cyan/40" : 
         "border-zinc-800 hover:border-zinc-700"
@@ -98,6 +104,7 @@ export function DownloadItem({ download, onCancel }: DownloadItemProps) {
             isActive && !isProcessingPhase ? "bg-theme-cyan/5 border-theme-cyan/20" : "bg-zinc-950 border-zinc-800",
             (isProcessingPhase || isMetaPhase) && "bg-amber-500/5 border-amber-500/20",
             isError && "bg-red-500/5 border-red-500/20",
+            isConflict && "bg-amber-500/10 border-amber-500/30",
             isCompleted && "bg-emerald-500/5 border-emerald-500/20"
         )}>
           {getIcon()}
@@ -132,7 +139,7 @@ export function DownloadItem({ download, onCancel }: DownloadItemProps) {
                             getStatusColor()
                         )}>
                             {isActive && <Activity className={twMerge("h-3 w-3", (isProcessingPhase || isMetaPhase) && "animate-spin")} />}
-                            {phase || (isQueued ? "Waiting" : status)}
+                            {isConflict ? "File Exists" : (phase || (isQueued ? "Waiting" : status))}
                         </span>
 
                         {/* Extra Flags */}
@@ -179,6 +186,12 @@ export function DownloadItem({ download, onCancel }: DownloadItemProps) {
                         )}
                      </div>
                 )}
+
+                {isConflict && (
+                     <div className="w-full h-1.5 bg-zinc-900 rounded-full overflow-hidden border border-amber-500/30 relative">
+                        <div className="absolute inset-0 bg-amber-500 w-full" />
+                     </div>
+                )}
                 
                 {isQueued && (
                     <div className="w-full h-1.5 bg-zinc-900 rounded-full overflow-hidden relative border border-zinc-800/50">
@@ -196,6 +209,34 @@ export function DownloadItem({ download, onCancel }: DownloadItemProps) {
                     </div>
                 )}
             </div>
+
+            {/* CONFLICT RESOLUTION UI */}
+            {isConflict && (
+                <div className="mt-3 p-3 bg-amber-950/30 border border-amber-500/20 rounded-lg animate-fade-in flex items-center justify-between gap-4">
+                    <div className="text-xs text-amber-200">
+                        <span className="font-bold block mb-0.5">File Already Exists</span>
+                        The destination file shares the same name.
+                    </div>
+                    <div className="flex items-center gap-2">
+                         <Button 
+                            size="sm" 
+                            variant="neon" 
+                            className="h-7 text-[10px] bg-amber-500/10 text-amber-500 border-amber-500/50 hover:bg-amber-500 hover:text-black"
+                            onClick={() => resolveConflict(jobId, 'overwrite')}
+                        >
+                            <RefreshCw className="h-3 w-3 mr-1.5" /> Replace
+                        </Button>
+                        <Button 
+                            size="sm" 
+                            variant="secondary" 
+                            className="h-7 text-[10px]"
+                            onClick={() => resolveConflict(jobId, 'discard')}
+                        >
+                            <Trash2 className="h-3 w-3 mr-1.5" /> Discard
+                        </Button>
+                    </div>
+                </div>
+            )}
             
             {/* Error Details Section */}
             {isError && (
@@ -237,7 +278,7 @@ export function DownloadItem({ download, onCancel }: DownloadItemProps) {
 
         {/* ACTIONS COLUMN */}
         <div className="flex flex-col justify-start gap-2 pt-1 pl-2 border-l border-zinc-800/50">
-          {(isActive || isQueued || isError || isCancelled) && (
+          {(isActive || isQueued || isError || isCancelled || isConflict) && (
              <Button 
                 variant="ghost" 
                 size="icon" 

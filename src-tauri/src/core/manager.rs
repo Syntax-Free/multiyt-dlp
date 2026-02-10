@@ -43,6 +43,12 @@ impl JobManagerHandle {
         let _ = self.sender.send(JobMessage::CancelJob { id }).await;
     }
 
+    pub async fn resolve_conflict(&self, id: Uuid, resolution: String) -> Result<(), String> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.sender.send(JobMessage::ResolveConflict { id, resolution, resp: tx }).await;
+        rx.await.map_err(|_| "Actor closed".to_string())?
+    }
+
     pub async fn get_pending_count(&self) -> u32 {
         let (tx, rx) = oneshot::channel();
         let _ = self.sender.send(JobMessage::GetPendingCount(tx)).await;
@@ -87,7 +93,6 @@ struct JobManagerActor {
     persistence_registry: HashMap<Uuid, QueuedJob>,
     persistence_tx: mpsc::Sender<PersistenceMsg>,
     
-    // Dirty flag for coalesced persistence updates
     dirty_persistence: bool,
 
     active_network_jobs: u32,
@@ -190,7 +195,6 @@ impl JobManagerActor {
             self.kill_process(pid);
         }
 
-        // Wait for workers to drop with a timeout
         let deadline = time::Instant::now() + Duration::from_secs(3);
         while self.active_process_instances > 0 {
              if time::Instant::now() > deadline {
@@ -256,6 +260,16 @@ impl JobManagerActor {
                     if let Some(pid) = job.pid {
                         self.kill_process(pid);
                     }
+                    // Clean temp files immediately if we cancel
+                    if let Some(temp) = &job.temp_path {
+                        let path = PathBuf::from(temp);
+                        // Fix: Pass by reference to avoid move
+                        if path.exists() { let _ = tokio::fs::remove_file(&path).await; }
+                        // Also try to clean the job directory
+                        if let Some(parent) = path.parent() {
+                            let _ = tokio::fs::remove_dir(parent).await;
+                        }
+                    }
                 }
                 if let Some(job) = self.jobs.get_mut(&id) {
                     job.status = JobStatus::Cancelled;
@@ -267,6 +281,75 @@ impl JobManagerActor {
                 let _ = self.app_handle.emit_all("download-cancelled", DownloadCancelledPayload {
                     job_id: id
                 });
+            },
+            JobMessage::ResolveConflict { id, resolution, resp } => {
+                if let Some(job) = self.jobs.get_mut(&id) {
+                    if job.status != JobStatus::FileConflict {
+                        let _ = resp.send(Err("Job is not in conflict state".into()));
+                        return;
+                    }
+
+                    let temp_path_str = job.temp_path.clone();
+                    let output_path_str = job.output_path.clone();
+
+                    if let (Some(temp), Some(output)) = (temp_path_str, output_path_str) {
+                        let t_path = PathBuf::from(&temp);
+                        let o_path = PathBuf::from(&output);
+
+                        if resolution == "overwrite" {
+                            info!(target: "core::manager", "Resolving conflict: Overwrite");
+                            if o_path.exists() { let _ = tokio::fs::remove_file(&o_path).await; }
+                            
+                            match tokio::fs::rename(&t_path, &o_path).await {
+                                Ok(_) => {
+                                    job.status = JobStatus::Completed;
+                                    job.progress = 100.0;
+                                    job.phase = Some("Done".to_string());
+                                    job.sequence_id += 1;
+                                    
+                                    // Clean parent dir
+                                    if let Some(parent) = t_path.parent() {
+                                        let _ = tokio::fs::remove_dir(parent).await;
+                                    }
+
+                                    self.persistence_registry.remove(&id);
+                                    self.mark_dirty();
+                                    
+                                    let _ = self.app_handle.emit_all("download-complete", DownloadCompletePayload {
+                                        job_id: id,
+                                        output_path: output,
+                                    });
+                                    let _ = resp.send(Ok(()));
+                                },
+                                Err(e) => {
+                                    let _ = resp.send(Err(format!("Failed to move file: {}", e)));
+                                }
+                            }
+                        } else {
+                            info!(target: "core::manager", "Resolving conflict: Discard");
+                            if t_path.exists() { let _ = tokio::fs::remove_file(&t_path).await; }
+                            if let Some(parent) = t_path.parent() {
+                                let _ = tokio::fs::remove_dir(parent).await;
+                            }
+                            
+                            job.status = JobStatus::Cancelled;
+                            job.phase = Some("Discarded".to_string());
+                            job.sequence_id += 1;
+                            
+                            self.persistence_registry.remove(&id);
+                            self.mark_dirty();
+                            
+                            let _ = self.app_handle.emit_all("download-cancelled", DownloadCancelledPayload {
+                                job_id: id
+                            });
+                            let _ = resp.send(Ok(()));
+                        }
+                    } else {
+                         let _ = resp.send(Err("Missing file paths".into()));
+                    }
+                } else {
+                    let _ = resp.send(Err("Job not found".into()));
+                }
             },
             JobMessage::ProcessStarted { id, pid } => {
                 debug!(target: "core::manager", job_id = ?id, pid = pid, "Process started");
@@ -298,7 +381,32 @@ impl JobManagerActor {
                         speed,
                         eta,
                         filename,
-                        phase: Some(phase)
+                        phase: Some(phase),
+                        status: Some(job.status.clone())
+                    });
+                }
+            },
+            JobMessage::FileConflict { id, temp_path, output_path } => {
+                warn!(target: "core::manager", job_id = ?id, "File conflict detected");
+                if let Some(job) = self.jobs.get_mut(&id) {
+                    job.status = JobStatus::FileConflict;
+                    job.temp_path = Some(temp_path.clone());
+                    job.output_path = Some(output_path.clone());
+                    job.phase = Some("File Exists - Action Required".to_string());
+                    job.sequence_id += 1;
+
+                    // Force an update immediately so UI reacts
+                    let _ = self.app_handle.emit_all("download-progress-batch", BatchProgressPayload { 
+                        updates: vec![DownloadProgressPayload {
+                            job_id: id,
+                            percentage: job.progress,
+                            sequence_id: job.sequence_id,
+                            speed: job.speed.clone().unwrap_or_default(),
+                            eta: job.eta.clone().unwrap_or_default(),
+                            filename: job.filename.clone(),
+                            phase: job.phase.clone(),
+                            status: Some(JobStatus::FileConflict),
+                        }]
                     });
                 }
             },
@@ -432,6 +540,7 @@ impl JobManagerActor {
                         speed: job.speed.clone(),
                         eta: job.eta.clone(),
                         output_path: job.output_path.clone(),
+                        temp_path: job.temp_path.clone(),
                         error: job.error.clone(),
                         filename: job.filename.clone(),
                         phase: job.phase.clone(),
@@ -466,16 +575,12 @@ impl JobManagerActor {
         let config_manager = self.app_handle.state::<Arc<ConfigManager>>();
         let config = config_manager.get_config().general;
 
-        // If "use_concurrent_fragments" (Blitz Mode) is on, force active limit to 1.
-        // Otherwise, use "max_concurrent_downloads" (Fleet Mode).
         let effective_concurrent_limit = if config.use_concurrent_fragments {
             1
         } else {
             config.max_concurrent_downloads
         };
 
-        // We check against max_total_instances for process limits, but network jobs specifically
-        // are gated by the effective limit derived above.
         while self.active_network_jobs < effective_concurrent_limit 
            && self.active_process_instances < config.max_total_instances 
         {
@@ -515,7 +620,7 @@ impl JobManagerActor {
 
         let total_progress: f32 = active_jobs.iter().map(|j| j.progress).sum();
         let aggregated = total_progress / (active_count as f32);
-        let has_error = self.jobs.values().any(|j| j.status == JobStatus::Error);
+        let has_error = self.jobs.values().any(|j| j.status == JobStatus::Error || j.status == JobStatus::FileConflict);
 
         let app_handle_for_closure = self.app_handle.clone();
         
@@ -558,14 +663,17 @@ impl JobManagerActor {
     }
 
     async fn clean_temp_directory(&self) {
+        // Only clean if we have no active jobs and no conflicts waiting for resolution
         if !self.queue.is_empty() || !self.persistence_registry.is_empty() { return; }
+        
+        // Also check if any job is in FileConflict state to be safe
+        if self.jobs.values().any(|j| j.status == JobStatus::FileConflict) { return; }
 
         debug!(target: "core::manager", "Cleaning temp directory");
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         let temp_dir = home.join(".multiyt-dlp").join("temp_downloads");
         
         if temp_dir.exists() {
-            // Helper for robust recursive deletion
             async fn robust_remove_dir(path: &Path) -> std::io::Result<()> {
                 for i in 0..5 {
                     match fs::remove_dir_all(path) {
