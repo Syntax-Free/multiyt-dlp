@@ -42,10 +42,9 @@ impl AriaEngine {
            .arg("-j").arg("1") // 1 download at a time
            .arg("--min-split-size=1M")
            .arg("--allow-overwrite=true")
-           .arg("--summary-interval=0") // Cleaner output
-           .arg("--console-log-level=warn")
+           .arg("--summary-interval=1") // Force periodic status lines (every 1s) to allow parsing
            .stdout(Stdio::piped())
-           .stderr(Stdio::piped()); // Aria2 prints progress to stdout
+           .stderr(Stdio::piped());
 
         let mut child = cmd.spawn().map_err(TransportError::FileSystem)?;
         

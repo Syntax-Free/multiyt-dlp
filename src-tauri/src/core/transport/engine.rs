@@ -30,6 +30,7 @@ pub struct TransportEngine {
     target_path: PathBuf,
     concurrency: usize,
     chunk_threshold: u64,
+    fallback_size: Option<u64>,
 }
 
 impl TransportEngine {
@@ -48,7 +49,13 @@ impl TransportEngine {
             target_path,
             concurrency: DEFAULT_CONCURRENCY,
             chunk_threshold: CHUNK_THRESHOLD,
+            fallback_size: None,
         }
+    }
+
+    pub fn with_fallback_size(mut self, size: u64) -> Self {
+        self.fallback_size = Some(size);
+        self
     }
 
     /// The Main Execution Loop
@@ -59,9 +66,11 @@ impl TransportEngine {
         // 1. Probe Phase: Check size and ranges support
         let (content_len, accepts_ranges) = self.probe().await?;
 
-        // 2. Path Decision
-        let validated_len = content_len.filter(|&s| s > 0);
+        // Use fallback if probe failed
+        let effective_len = content_len.or(self.fallback_size);
+        let validated_len = effective_len.filter(|&s| s > 0);
 
+        // 2. Path Decision
         if let Some(total_size) = validated_len {
             if accepts_ranges && total_size >= self.chunk_threshold {
                 return self.download_concurrent(total_size, on_progress).await;

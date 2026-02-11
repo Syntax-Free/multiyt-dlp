@@ -316,7 +316,12 @@ export function AboutSettings() {
                     {deps.js_runtime && (
                         <DependencyRow 
                             info={deps.js_runtime} 
-                            onInstall={() => handleInstall(deps.js_runtime?.name?.toLowerCase() || 'deno')} 
+                            onInstall={() => {
+                                 const name = deps.js_runtime?.name?.toLowerCase() || '';
+                                 // Force Deno if Node is detected for localization, as we don't provider Node installers
+                                 if (name.includes('node') || !name) handleInstall('deno');
+                                 else handleInstall(name);
+                            }}
                             installingState={activeInstall}
                             label={`JS Runtime (${deps.js_runtime.name})`}
                             isQueueBusy={isQueueBusy}

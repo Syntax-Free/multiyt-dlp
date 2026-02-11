@@ -328,6 +328,15 @@ export function GeneralSettings() {
                                         onChange={(e) => handleChangeConcurrency('max_total_instances', parseInt(e.target.value))}
                                         className={`w-full h-2 bg-zinc-800 rounded-lg appearance-none cursor-pointer transition-all ${maxTotalInstances > 10 ? 'accent-theme-red hover:accent-theme-red/80' : 'accent-theme-cyan hover:accent-theme-cyan/80'}`}
                                     />
+                                    
+                                    {/* Warning for high concurrency */}
+                                    {maxTotalInstances > 10 && (
+                                        <div className="flex items-center gap-3 text-xs text-amber-500 bg-amber-950/20 border border-amber-900/50 p-3 rounded-md animate-fade-in">
+                                            <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+                                            <span>High resource usage warning: Running more than 10 concurrent instances may cause system instability.</span>
+                                        </div>
+                                    )}
+
                                     <p className="text-xs text-zinc-500">
                                         Includes active downloads AND videos that are currently merging/processing.
                                     </p>

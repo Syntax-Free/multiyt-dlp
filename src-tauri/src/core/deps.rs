@@ -43,6 +43,13 @@ const ARIA2_URL: &str = "https://github.com/aria2/aria2/releases/download/releas
 #[cfg(target_os = "linux")]
 const ARIA2_URL: &str = "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-linux-gnu-64bit-build1.tar.bz2";
 
+// Static Fallback Sizes (in bytes)
+const YT_DLP_SIZE: u64 = 17_500_000;
+const FFMPEG_SIZE: u64 = 94_600_000;
+const DENO_SIZE: u64 = 116_000_000;
+const BUN_SIZE: u64 = 97_700_000;
+const ARIA2_SIZE: u64 = 5_380_000;
+
 #[derive(Clone, Serialize)]
 pub struct InstallProgressPayload {
     pub name: String,
@@ -176,7 +183,7 @@ impl DependencyProvider for YtDlpProvider {
     fn get_binaries(&self) -> Vec<&str> { if cfg!(windows) { vec!["yt-dlp.exe"] } else { vec!["yt-dlp"] } }
     async fn install(&self, app_handle: AppHandle, target_dir: PathBuf) -> Result<(), String> {
         let target_path = target_dir.join(self.get_binaries()[0]);
-        download_file_robust(YT_DLP_URL, target_path, &self.get_name(), &app_handle).await.map_err(|e| e.to_string())
+        download_file_robust(YT_DLP_URL, target_path, &self.get_name(), &app_handle, Some(YT_DLP_SIZE)).await.map_err(|e| e.to_string())
     }
     async fn check_update_available(&self, bin_dir: &PathBuf) -> Result<bool, String> {
         let local_path = bin_dir.join(self.get_binaries()[0]);
@@ -193,7 +200,7 @@ impl DependencyProvider for FfmpegProvider {
     fn get_binaries(&self) -> Vec<&str> { if cfg!(windows) { vec!["ffmpeg.exe"] } else { vec!["ffmpeg"] } }
     async fn install(&self, app_handle: AppHandle, target_dir: PathBuf) -> Result<(), String> {
         let archive_path = std::env::temp_dir().join("ffmpeg_tmp");
-        download_file_robust(FFMPEG_URL, archive_path.clone(), &self.get_name(), &app_handle).await.map_err(|e| e.to_string())?;
+        download_file_robust(FFMPEG_URL, archive_path.clone(), &self.get_name(), &app_handle, Some(FFMPEG_SIZE)).await.map_err(|e| e.to_string())?;
         let _ = app_handle.emit_all("install-progress", InstallProgressPayload {
             name: self.get_name(),
             percentage: 100,
@@ -213,7 +220,7 @@ impl DependencyProvider for DenoProvider {
     fn get_binaries(&self) -> Vec<&str> { if cfg!(windows) { vec!["deno.exe"] } else { vec!["deno"] } }
     async fn install(&self, app_handle: AppHandle, target_dir: PathBuf) -> Result<(), String> {
         let archive_path = std::env::temp_dir().join("deno.zip");
-        download_file_robust(DENO_URL, archive_path.clone(), &self.get_name(), &app_handle).await.map_err(|e| e.to_string())?;
+        download_file_robust(DENO_URL, archive_path.clone(), &self.get_name(), &app_handle, Some(DENO_SIZE)).await.map_err(|e| e.to_string())?;
         extract_zip_finding_binary(&archive_path, &target_dir, &self.get_binaries())?;
         let _ = fs::remove_file(archive_path);
         Ok(())
@@ -234,7 +241,7 @@ impl DependencyProvider for BunProvider {
     fn get_binaries(&self) -> Vec<&str> { if cfg!(windows) { vec!["bun.exe"] } else { vec!["bun"] } }
     async fn install(&self, app_handle: AppHandle, target_dir: PathBuf) -> Result<(), String> {
         let archive_path = std::env::temp_dir().join("bun.zip");
-        download_file_robust(BUN_URL, archive_path.clone(), &self.get_name(), &app_handle).await.map_err(|e| e.to_string())?;
+        download_file_robust(BUN_URL, archive_path.clone(), &self.get_name(), &app_handle, Some(BUN_SIZE)).await.map_err(|e| e.to_string())?;
         extract_zip_finding_binary(&archive_path, &target_dir, &self.get_binaries())?;
         let _ = fs::remove_file(archive_path);
         Ok(())
@@ -255,7 +262,7 @@ impl DependencyProvider for Aria2Provider {
     fn get_binaries(&self) -> Vec<&str> { if cfg!(windows) { vec!["aria2c.exe"] } else { vec!["aria2c"] } }
     async fn install(&self, app_handle: AppHandle, target_dir: PathBuf) -> Result<(), String> {
         let archive_path = std::env::temp_dir().join("aria2_tmp.zip");
-        download_file_robust(ARIA2_URL, archive_path.clone(), &self.get_name(), &app_handle).await.map_err(|e| e.to_string())?;
+        download_file_robust(ARIA2_URL, archive_path.clone(), &self.get_name(), &app_handle, Some(ARIA2_SIZE)).await.map_err(|e| e.to_string())?;
         extract_zip_finding_binary(&archive_path, &target_dir, &self.get_binaries())?;
         let _ = fs::remove_file(archive_path);
         Ok(())

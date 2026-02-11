@@ -24,7 +24,8 @@ pub async fn download_file_robust(
     url: &str,
     destination: PathBuf,
     name: &str,
-    app_handle: &AppHandle
+    app_handle: &AppHandle,
+    fallback_size: Option<u64>
 ) -> Result<(), TransportError> {
     
     // 1. Check if Aria2 is available and if this isn't a download for Aria2 itself
@@ -41,17 +42,24 @@ pub async fn download_file_robust(
     let app_handle_clone = app_handle.clone();
     
     let callback = move |downloaded: u64, total: u64, speed: f64| {
-        let percentage = if total > 0 { (downloaded * 100) / total } else { 0 };
+        // Fallback Logic: If engine reports 0 total, use fallback if available
+        let effective_total = if total == 0 {
+             fallback_size.unwrap_or(0)
+        } else {
+             total
+        };
+
+        let percentage = if effective_total > 0 { (downloaded * 100) / effective_total } else { 0 };
         let previous = last_percentage.load(Ordering::Relaxed);
         
         // Update UI if percentage changed, is complete, or periodically for indeterminate progress
-        if percentage > previous || percentage == 100 || (total == 0 && downloaded % (1024*1024) == 0) {
+        if percentage > previous || percentage == 100 || (effective_total == 0 && downloaded % (1024*1024) == 0) {
             last_percentage.store(percentage, Ordering::Relaxed);
             
             let speed_mb = speed / 1_048_576.0;
             let status_msg = if percentage == 100 { 
                 "Verifying...".to_string() 
-            } else if total == 0 {
+            } else if effective_total == 0 {
                 format!("{:.1} MB", downloaded as f64 / 1_048_576.0)
             } else { 
                 format!("{:.1} MB/s", speed_mb) 
@@ -80,6 +88,9 @@ pub async fn download_file_robust(
     }
 
     // Native Rust fallback/default
-    let engine = TransportEngine::new(url, destination);
+    let mut engine = TransportEngine::new(url, destination);
+    if let Some(s) = fallback_size {
+        engine = engine.with_fallback_size(s);
+    }
     engine.execute(callback).await
 }
