@@ -1,5 +1,5 @@
 import { Download } from '@/types';
-import { X, CheckCircle2, AlertTriangle, Hourglass, MonitorPlay, Headphones, Tags, FileOutput, Image as ImageIcon, Activity, FolderSearch, Trash2, FileWarning, RefreshCw } from 'lucide-react';
+import { X, CheckCircle2, AlertTriangle, Hourglass, MonitorPlay, Headphones, Tags, FileOutput, Image as ImageIcon, Activity, FolderOpen, Trash2, FileWarning, RefreshCw } from 'lucide-react';
 import { twMerge } from 'tailwind-merge';
 import { showInFolder } from '@/api/invoke';
 import { parseError } from '@/utils/errorRegistry';
@@ -89,11 +89,20 @@ export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) 
       }
   }
 
+  const handleCardClick = (e: React.MouseEvent) => {
+      if (isCompleted && outputPath) {
+          e.stopPropagation();
+          showInFolder(outputPath);
+      }
+  };
+
   return (
     <div 
+        onClick={handleCardClick}
         className={twMerge(
             "group relative aspect-square w-full min-h-[160px] rounded-xl border-2 overflow-hidden transition-all duration-300 select-none flex flex-col",
-            getContainerStyles()
+            getContainerStyles(),
+            isCompleted && outputPath ? "cursor-pointer hover:border-emerald-500/80 hover:shadow-emerald-500/20" : ""
         )}
     >
         {/* ERROR STATE: Striped Background Pattern */}
@@ -149,81 +158,91 @@ export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) 
 
         {/* --- HOVER OVERLAY ACTIONS --- */}
         <div className={twMerge(
-            "absolute inset-0 z-20 bg-zinc-950/95 backdrop-blur-[2px] transition-opacity duration-200 flex flex-col p-3",
-            isConflict ? "opacity-100" : "opacity-0 group-hover:opacity-100" // Always show controls on conflict
+            "absolute inset-0 z-20 transition-all duration-300 flex flex-col p-3",
+            // Special styling for Completed State: Full overlay acts as button
+            isCompleted ? "bg-black/60 backdrop-blur-sm opacity-0 group-hover:opacity-100 items-center justify-center" : "bg-zinc-950/95 backdrop-blur-[2px] opacity-0 group-hover:opacity-100",
+            isConflict ? "opacity-100" : "" 
         )}>
-            <div className="flex gap-1 mb-auto">
-                <span className={twMerge(
-                    "text-[9px] font-bold px-1.5 py-0.5 rounded border uppercase",
-                    isAudio ? "bg-red-500/10 text-red-400 border-red-500/20" : "bg-cyan-500/10 text-cyan-400 border-cyan-500/20"
-                )}>
-                    {badgeText}
-                </span>
-            </div>
+            {/* COMPLETED STATE: Big Folder Icon */}
+            {isCompleted && outputPath ? (
+                <>
+                    <div className="absolute top-3 left-3 flex gap-1">
+                        <span className={twMerge(
+                            "text-[9px] font-bold px-1.5 py-0.5 rounded border uppercase shadow-lg",
+                            isAudio ? "bg-red-500/20 text-red-300 border-red-500/30" : "bg-cyan-500/20 text-cyan-300 border-cyan-500/30"
+                        )}>
+                            {badgeText}
+                        </span>
+                    </div>
+                    <FolderOpen className="h-16 w-16 text-emerald-400 drop-shadow-[0_0_15px_rgba(52,211,153,0.5)] transform group-hover:scale-110 transition-transform duration-300" strokeWidth={1.5} />
+                </>
+            ) : (
+                // STANDARD OVERLAY FOR OTHER STATES
+                <>
+                    <div className="flex gap-1 mb-auto">
+                        <span className={twMerge(
+                            "text-[9px] font-bold px-1.5 py-0.5 rounded border uppercase",
+                            isAudio ? "bg-red-500/10 text-red-400 border-red-500/20" : "bg-cyan-500/10 text-cyan-400 border-cyan-500/20"
+                        )}>
+                            {badgeText}
+                        </span>
+                    </div>
 
-            {isError && (
-                <div className="mb-auto mt-2 text-[10px] text-red-300 leading-tight font-mono break-words line-clamp-4 bg-red-950/30 p-2 rounded border border-red-900/50">
-                    {friendlyError}
-                </div>
-            )}
+                    {isError && (
+                        <div className="mb-auto mt-2 text-[10px] text-red-300 leading-tight font-mono break-words line-clamp-4 bg-red-950/30 p-2 rounded border border-red-900/50">
+                            {friendlyError}
+                        </div>
+                    )}
 
-            {isConflict && (
-                <div className="mb-auto mt-2 text-[10px] text-amber-200 leading-tight font-bold text-center">
-                    File already exists.
-                    <br/>Overwrite?
-                </div>
-            )}
+                    {isConflict && (
+                        <div className="mb-auto mt-2 text-[10px] text-amber-200 leading-tight font-bold text-center">
+                            File already exists.
+                            <br/>Overwrite?
+                        </div>
+                    )}
 
-            <div className="mt-auto grid grid-cols-1 gap-2">
-                {isCompleted && outputPath ? (
-                    <button
-                        onClick={(e) => { e.stopPropagation(); showInFolder(outputPath); }}
-                        className="flex items-center justify-center gap-2 w-full py-1.5 rounded bg-theme-cyan/10 hover:bg-theme-cyan text-theme-cyan hover:text-black text-[10px] font-black transition-all border border-theme-cyan/20"
-                    >
-                        <FolderSearch className="h-3.5 w-3.5" />
-                        OPEN FOLDER
-                    </button>
-                ) : null}
-
-                {isConflict && (
-                     <div className="flex gap-2">
-                        <button
-                             onClick={(e) => { e.stopPropagation(); resolveConflict(jobId, 'overwrite'); }}
-                             className="flex-1 flex items-center justify-center gap-1 py-1.5 rounded bg-amber-500/20 hover:bg-amber-500 text-amber-500 hover:text-black text-[9px] font-black transition-all border border-amber-500/30"
-                        >
-                            <RefreshCw className="h-3 w-3" /> REPLACE
-                        </button>
-                         <button
-                             onClick={(e) => { e.stopPropagation(); resolveConflict(jobId, 'discard'); }}
-                             className="flex-1 flex items-center justify-center gap-1 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-white text-[9px] font-black transition-all border border-zinc-700"
-                        >
-                            <Trash2 className="h-3 w-3" /> NO
-                        </button>
-                     </div>
-                )}
-
-                {(isActive || isQueued || isError || isCancelled) && !isConflict && (
-                     <button
-                        onClick={(e) => { e.stopPropagation(); onCancel(jobId); }}
-                        className={twMerge(
-                            "flex items-center justify-center gap-2 w-full py-1.5 rounded text-[10px] font-black transition-all border",
-                            isError 
-                                ? "bg-red-600/10 hover:bg-red-600 text-red-500 hover:text-white border-red-500/20"
-                                : "bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-zinc-200 border-zinc-700"
+                    <div className="mt-auto grid grid-cols-1 gap-2">
+                        {isConflict && (
+                             <div className="flex gap-2">
+                                <button
+                                     onClick={(e) => { e.stopPropagation(); resolveConflict(jobId, 'overwrite'); }}
+                                     className="flex-1 flex items-center justify-center gap-1 py-1.5 rounded bg-amber-500/20 hover:bg-amber-500 text-amber-500 hover:text-black text-[9px] font-black transition-all border border-amber-500/30"
+                                >
+                                    <RefreshCw className="h-3 w-3" /> REPLACE
+                                </button>
+                                 <button
+                                     onClick={(e) => { e.stopPropagation(); resolveConflict(jobId, 'discard'); }}
+                                     className="flex-1 flex items-center justify-center gap-1 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-white text-[9px] font-black transition-all border border-zinc-700"
+                                >
+                                    <Trash2 className="h-3 w-3" /> NO
+                                </button>
+                             </div>
                         )}
-                    >
-                        {isError ? (
-                            <>
-                                <Trash2 className="h-3.5 w-3.5" /> DISMISS
-                            </>
-                        ) : (
-                            <>
-                                <X className="h-3.5 w-3.5" /> CANCEL
-                            </>
+
+                        {(isActive || isQueued || isError || isCancelled) && !isConflict && (
+                             <button
+                                onClick={(e) => { e.stopPropagation(); onCancel(jobId); }}
+                                className={twMerge(
+                                    "flex items-center justify-center gap-2 w-full py-1.5 rounded text-[10px] font-black transition-all border",
+                                    isError 
+                                        ? "bg-red-600/10 hover:bg-red-600 text-red-500 hover:text-white border-red-500/20"
+                                        : "bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-zinc-200 border-zinc-700"
+                                )}
+                            >
+                                {isError ? (
+                                    <>
+                                        <Trash2 className="h-3.5 w-3.5" /> DISMISS
+                                    </>
+                                ) : (
+                                    <>
+                                        <X className="h-3.5 w-3.5" /> CANCEL
+                                    </>
+                                )}
+                            </button>
                         )}
-                    </button>
-                )}
-            </div>
+                    </div>
+                </>
+            )}
         </div>
     </div>
   );
