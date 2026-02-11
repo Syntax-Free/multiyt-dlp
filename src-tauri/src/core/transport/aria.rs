@@ -8,15 +8,40 @@ pub struct AriaEngine {
     url: String,
     target_path: std::path::PathBuf,
     aria_bin: std::path::PathBuf,
+    fallback_size: Option<u64>,
 }
 
 impl AriaEngine {
-    pub fn new(url: &str, target_path: std::path::PathBuf, aria_bin: std::path::PathBuf) -> Self {
+    pub fn new(url: &str, target_path: std::path::PathBuf, aria_bin: std::path::PathBuf, fallback_size: Option<u64>) -> Self {
         Self {
             url: url.to_string(),
             target_path,
             aria_bin,
+            fallback_size,
         }
+    }
+
+    /// Parses Aria2 size strings (e.g., "53MiB", "5.9KiB", "100B") into bytes
+    fn parse_aria_size(input: &str) -> Option<f64> {
+        let clean = input.trim();
+        let units = [
+            ("GiB", 1024.0 * 1024.0 * 1024.0), 
+            ("MiB", 1024.0 * 1024.0), 
+            ("KiB", 1024.0),
+            ("B", 1.0)
+        ];
+
+        for (unit, multiplier) in units {
+            if clean.ends_with(unit) {
+                let num_part = clean.trim_end_matches(unit);
+                if let Ok(val) = num_part.parse::<f64>() {
+                    return Some(val * multiplier);
+                }
+            }
+        }
+        
+        // Fallback: try parsing as raw number
+        clean.parse::<f64>().ok()
     }
 
     pub async fn execute<F>(&self, on_progress: F) -> Result<(), TransportError>
@@ -51,17 +76,39 @@ impl AriaEngine {
         let stdout = child.stdout.take().expect("Failed to capture stdout");
         let mut reader = BufReader::new(stdout).lines();
 
-        // Regex for Aria2 console output: [#2089b0 400.0KiB/30.0MiB(1%) CN:1 ...]
-        // We really just need the percentage or bytes to calculate progress
-        let re = Regex::new(r"\((?P<percent>[\d.]+)%\)").unwrap();
+        // Regex for Aria2 console output: 
+        // Example: [#42b0a0 53MiB/691MiB(7%) CN:16 DL:5.9MiB ETA:1m47s]
+        // Captures: Current Size, Total Size, Speed
+        let re = Regex::new(r"(?P<current>[\d.]+[A-Za-z]+)/(?P<total>[\d.]+[A-Za-z]+)\((?P<percent>[\d.]+)%\).*?DL:(?P<speed>[\d.]+[A-Za-z]+)").unwrap();
+
+        // Fallback Regex (Percentage only, if total size is unknown to aria2 initially)
+        let re_fallback = Regex::new(r"\((?P<percent>[\d.]+)%\)").unwrap();
 
         while let Ok(Some(line)) = reader.next_line().await {
+            // Try full parsing first
             if let Some(caps) = re.captures(&line) {
+                let current_str = caps.name("current").map_or("", |m| m.as_str());
+                let total_str = caps.name("total").map_or("", |m| m.as_str());
+                let speed_str = caps.name("speed").map_or("", |m| m.as_str());
+
+                let current_bytes = Self::parse_aria_size(current_str).unwrap_or(0.0) as u64;
+                let total_bytes = Self::parse_aria_size(total_str).unwrap_or(0.0) as u64;
+                let speed_bytes_sec = Self::parse_aria_size(speed_str).unwrap_or(0.0);
+
+                // If aria2 reports 0 total (start up), use fallback
+                let effective_total = if total_bytes > 0 { total_bytes } else { self.fallback_size.unwrap_or(0) };
+
+                on_progress(current_bytes, effective_total, speed_bytes_sec);
+            } 
+            // Fallback parsing if formatting is different (e.g. unknown size)
+            else if let Some(caps) = re_fallback.captures(&line) {
                 if let Some(p_match) = caps.name("percent") {
                     if let Ok(p_val) = p_match.as_str().parse::<f64>() {
-                        // Aria2 gives percentage. We mock total bytes for the callback contract
-                        // logic in mod.rs converts this back to percentage anyway.
-                        on_progress(p_val as u64, 100, 0.0);
+                        // We have percentage, but maybe not exact bytes.
+                        // We can estimate bytes if we have a fallback size.
+                        let total = self.fallback_size.unwrap_or(0);
+                        let current = ((p_val / 100.0) * (total as f64)) as u64;
+                        on_progress(current, total, 0.0);
                     }
                 }
             }
@@ -70,7 +117,9 @@ impl AriaEngine {
         let status = child.wait().await.map_err(TransportError::FileSystem)?;
         
         if status.success() {
-            on_progress(100, 100, 0.0);
+            // Ensure 100% is reported on success
+            let total = self.fallback_size.unwrap_or(0);
+            on_progress(total, total, 0.0);
             Ok(())
         } else {
             Err(TransportError::Validation(format!("Aria2 exited with code {:?}", status.code())))

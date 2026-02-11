@@ -3,7 +3,7 @@ import { getName } from '@tauri-apps/api/app';
 import { listen } from '@tauri-apps/api/event';
 import { checkDependencies, installDependency, openExternalLink } from '@/api/invoke';
 import { DependencyInfo } from '@/types';
-import { Copy, Check, Terminal, AlertCircle, Cpu, Download, Loader2, ArrowUpCircle, RefreshCw, Zap, Box, Lock } from 'lucide-react';
+import { Copy, Check, Terminal, AlertCircle, Cpu, Download, Loader2, ArrowUpCircle, RefreshCw, Zap, Box, Lock, AlertTriangle } from 'lucide-react';
 import icon from '@/assets/icon.webp';
 import { Button } from '../ui/Button';
 import { Progress } from '../ui/Progress';
@@ -27,6 +27,7 @@ interface DependencyRowProps {
 
 const DependencyRow = ({ info, onInstall, installingState, label, description, isQueueBusy }: DependencyRowProps) => {
     const [copied, setCopied] = useState(false);
+    const [showDelayedText, setShowDelayedText] = useState(false);
     
     // Detection logic for isolated (managed) vs system-wide binaries
     const isManaged = info.path && (
@@ -41,6 +42,21 @@ const DependencyRow = ({ info, onInstall, installingState, label, description, i
         installingState.name.toLowerCase().includes(info.name.toLowerCase()) || 
         (label && installingState.name.toLowerCase().includes(label.toLowerCase()))
     );
+
+    // Indeterminate State Logic: If "Native" download detected (0%), show spinner
+    const isNativeIndeterminate = isUpdatingThis && installingState.percentage === 0 && installingState.status.includes('Native');
+
+    useEffect(() => {
+        let timer: ReturnType<typeof setTimeout>;
+        if (isNativeIndeterminate) {
+            timer = setTimeout(() => {
+                setShowDelayedText(true);
+            }, 3000);
+        } else {
+            setShowDelayedText(false);
+        }
+        return () => clearTimeout(timer);
+    }, [isNativeIndeterminate]);
 
     const handleCopy = () => {
         if (info.path) {
@@ -123,14 +139,35 @@ const DependencyRow = ({ info, onInstall, installingState, label, description, i
                 </div>
             )}
 
-            {/* Installation Progress Bar */}
+            {/* Installation Progress Bar / Spinner */}
             {isUpdatingThis && (
                 <div className="space-y-1.5 animate-fade-in">
                     <div className="flex justify-between text-[10px] font-mono">
                         <span className="text-theme-cyan uppercase">{installingState.status}</span>
-                        <span className="text-zinc-400">{installingState.percentage}%</span>
+                        {!isNativeIndeterminate && <span className="text-zinc-400">{installingState.percentage}%</span>}
                     </div>
-                    <Progress value={installingState.percentage} className="h-1" />
+                    
+                    {isNativeIndeterminate ? (
+                        <div className="flex flex-col gap-2 pt-1">
+                            <div className="w-full h-1 bg-zinc-800 rounded-full overflow-hidden relative">
+                                <div className="absolute inset-0 bg-theme-cyan/50 w-1/3 animate-[translateX_1.5s_ease-in-out_infinite] rounded-full" style={{ animationName: 'slide' }} />
+                                <style>{`
+                                    @keyframes slide {
+                                        0% { transform: translateX(-100%); width: 20%; }
+                                        50% { width: 40%; }
+                                        100% { transform: translateX(400%); width: 20%; }
+                                    }
+                                `}</style>
+                            </div>
+                            {showDelayedText && (
+                                <div className="text-[10px] text-zinc-500 animate-fade-in italic text-center">
+                                    Using native downloader. This might take a minute...
+                                </div>
+                            )}
+                        </div>
+                    ) : (
+                        <Progress value={installingState.percentage} className="h-1" />
+                    )}
                 </div>
             )}
 
@@ -197,6 +234,9 @@ export function AboutSettings() {
     const handleInstall = async (name: string) => {
         if (activeInstall || isQueueBusy) return;
 
+        // Optimistic UI Update
+        setActiveInstall({ name, percentage: 0, status: 'Initializing...' });
+
         try {
             await installDependency(name);
             await fetchData();
@@ -216,6 +256,8 @@ export function AboutSettings() {
     if (loading) {
         return <div className="p-10 text-center text-zinc-500 text-sm animate-pulse">Scanning System...</div>;
     }
+
+    const isAriaMissing = deps.aria2 && !deps.aria2.available;
 
     return (
         <div className="space-y-6 animate-fade-in pb-10">
@@ -277,6 +319,17 @@ export function AboutSettings() {
                         </div>
                     )}
                 </div>
+
+                {/* Persistent Aria2 Warning */}
+                {isAriaMissing && !activeInstall && (
+                    <div className="p-3 bg-amber-950/20 border border-amber-500/20 rounded-lg flex gap-3 text-amber-500">
+                        <AlertTriangle className="h-5 w-5 flex-shrink-0" />
+                        <div className="text-xs leading-relaxed">
+                            <span className="font-bold block mb-1">Performance Warning</span>
+                            Aria2 is not installed. Dependency downloads will use the native fallback engine, which is significantly slower and may appear unresponsive. Installing Aria2 is highly recommended.
+                        </div>
+                    </div>
+                )}
 
                 {isQueueBusy && (
                     <div className="p-3 bg-zinc-900/80 border border-zinc-800 rounded-lg text-xs text-zinc-400 leading-relaxed mb-2">

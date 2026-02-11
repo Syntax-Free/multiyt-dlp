@@ -28,6 +28,16 @@ pub async fn download_file_robust(
     fallback_size: Option<u64>
 ) -> Result<(), TransportError> {
     
+    let name_arc = Arc::new(name.to_string());
+    let app_handle_clone = app_handle.clone();
+    
+    // OPTIMISTIC UPDATE: Emit initializing immediately
+    let _ = app_handle_clone.emit_all("install-progress", InstallProgressPayload {
+        name: name_arc.to_string(),
+        percentage: 0,
+        status: "Initializing...".to_string()
+    });
+
     // 1. Check if Aria2 is available and if this isn't a download for Aria2 itself
     let app_dir = app_handle.path_resolver().app_data_dir().unwrap();
     let bin_dir = app_dir.join("bin");
@@ -38,8 +48,6 @@ pub async fn download_file_robust(
 
     // Shared state for the progress closure
     let last_percentage = Arc::new(AtomicU64::new(0));
-    let name_arc = Arc::new(name.to_string());
-    let app_handle_clone = app_handle.clone();
     
     let callback = move |downloaded: u64, total: u64, speed: f64| {
         // Fallback Logic: If engine reports 0 total, use fallback if available
@@ -75,7 +83,9 @@ pub async fn download_file_robust(
 
     if use_aria {
         info!("Using Aria2 for download: {}", name);
-        let engine = AriaEngine::new(url, destination.clone(), aria_path);
+        // Pass fallback_size to AriaEngine
+        let engine = AriaEngine::new(url, destination.clone(), aria_path, fallback_size);
+        
         // Fallback to standard engine if Aria2 fails
         match engine.execute(callback.clone()).await {
             Ok(_) => return Ok(()),
@@ -85,12 +95,28 @@ pub async fn download_file_robust(
                 let _ = std::fs::remove_file(&destination);
             }
         }
+    } else {
+        // NATIVE ENGINE STRATEGY: Indeterminate Loading State
+        // We explicitly tell frontend we are in native mode by keeping percentage at 0 
+        // and setting a specific status text that the frontend looks for to trigger spinner mode.
+        let _ = app_handle.emit_all("install-progress", InstallProgressPayload {
+            name: name.to_string(),
+            percentage: 0,
+            status: "Downloading (Native)...".to_string()
+        });
+
+        // Use a dummy callback that basically ignores updates to prevent "broken" progress bars
+        // The transport engine will still do its job, but we won't stream granular updates.
+        let dummy_callback = |_: u64, _: u64, _: f64| {};
+        
+        let mut engine = TransportEngine::new(url, destination);
+        if let Some(s) = fallback_size {
+            engine = engine.with_fallback_size(s);
+        }
+        
+        // Execute with the dummy callback
+        return engine.execute(dummy_callback).await;
     }
 
-    // Native Rust fallback/default
-    let mut engine = TransportEngine::new(url, destination);
-    if let Some(s) = fallback_size {
-        engine = engine.with_fallback_size(s);
-    }
-    engine.execute(callback).await
+    Ok(())
 }

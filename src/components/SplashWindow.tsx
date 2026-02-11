@@ -24,6 +24,9 @@ export function SplashWindow() {
   const [showSkip, setShowSkip] = useState(false);
   const skipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   
+  // Indeterminate loading logic
+  const [showDelayedText, setShowDelayedText] = useState(false);
+  
   const hasRun = useRef(false);
   const pendingInstalls = useRef<string[]>([]);
 
@@ -107,6 +110,7 @@ export function SplashWindow() {
               setMessage(`Installing ${dep}...`);
               // Reset progress bar for visual clarity
               setInstallState({ name: dep, percentage: 0, status: 'Starting...' });
+              setShowDelayedText(false);
               await installDependency(dep);
           }
           finishStartup();
@@ -159,6 +163,21 @@ export function SplashWindow() {
   };
 
   // --- Effects ---
+  
+  // Logic for Native Download detection
+  const isNativeIndeterminate = status === 'installing' && installState.percentage === 0 && installState.status.includes('Native');
+
+  useEffect(() => {
+       let timer: ReturnType<typeof setTimeout>;
+       if (isNativeIndeterminate) {
+           timer = setTimeout(() => {
+               setShowDelayedText(true);
+           }, 3000);
+       } else {
+           setShowDelayedText(false);
+       }
+       return () => clearTimeout(timer);
+   }, [isNativeIndeterminate]);
 
   useEffect(() => {
     const unlisten = listen<InstallProgress>('install-progress', (event) => {
@@ -237,7 +256,7 @@ export function SplashWindow() {
             </div>
         )}
 
-        {/* --- PROGRESS BAR --- */}
+        {/* --- PROGRESS BAR OR SPINNER --- */}
         {status === 'installing' && (
             <div className="w-full space-y-3 animate-fade-in bg-black/50 p-4 rounded-lg border border-zinc-800">
                 <div className="flex items-center justify-between text-xs text-zinc-300">
@@ -245,9 +264,30 @@ export function SplashWindow() {
                         <Loader2 className="h-3 w-3 animate-spin text-theme-cyan" />
                         <span className="font-bold uppercase">{installState.name || 'Processing'}</span>
                     </div>
-                    <span className="font-mono text-theme-cyan">{installState.percentage || 0}%</span>
+                    {!isNativeIndeterminate && <span className="font-mono text-theme-cyan">{installState.percentage || 0}%</span>}
                 </div>
-                <Progress value={installState.percentage || 0} className="h-1" />
+                
+                {isNativeIndeterminate ? (
+                     <div className="flex flex-col gap-2 pt-1">
+                        <div className="w-full h-1 bg-zinc-800 rounded-full overflow-hidden relative">
+                            <div className="absolute inset-0 bg-theme-cyan/50 w-1/3 animate-[translateX_1.5s_ease-in-out_infinite] rounded-full" style={{ animationName: 'slide' }} />
+                            <style>{`
+                                @keyframes slide {
+                                    0% { transform: translateX(-100%); width: 20%; }
+                                    50% { width: 40%; }
+                                    100% { transform: translateX(400%); width: 20%; }
+                                }
+                            `}</style>
+                        </div>
+                        {showDelayedText && (
+                            <div className="text-[10px] text-zinc-500 animate-fade-in italic text-center">
+                                Using native downloader. This might take a minute...
+                            </div>
+                        )}
+                    </div>
+                ) : (
+                    <Progress value={installState.percentage || 0} className="h-1" />
+                )}
             </div>
         )}
 

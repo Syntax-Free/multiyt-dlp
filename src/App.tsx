@@ -5,7 +5,7 @@ import { DownloadQueue } from './components/DownloadQueue';
 import { useDownloadManager } from './hooks/useDownloadManager';
 import { Layout } from './components/Layout';
 import { SplashWindow } from './components/SplashWindow';
-import { Activity, CheckCircle2, AlertCircle, List, Database, Hourglass, LayoutGrid, Trash2, RefreshCw, Filter, X, Ban } from 'lucide-react';
+import { Activity, CheckCircle2, AlertCircle, List, Database, Hourglass, LayoutGrid, Ban, Trash2, RefreshCw, Filter, X } from 'lucide-react';
 import { twMerge } from 'tailwind-merge';
 import { useAppContext } from './contexts/AppContext';
 import { Button } from './components/ui/Button';
@@ -171,7 +171,7 @@ function App() {
                     </div>
                 </div>
 
-                <div className="flex items-center gap-6 overflow-x-auto no-scrollbar pl-4">
+                <div className="flex items-center gap-6 overflow-x-auto overflow-y-hidden no-scrollbar pl-4">
                     <div className="flex items-center gap-6 text-sm">
                         
                         <div className="flex flex-col items-end flex-shrink-0">
