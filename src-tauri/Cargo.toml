@@ -1,6 +1,6 @@
 [package]
 name = "multiyt-dlp"
-version = "2.2.1"
+version = "2.2.2"
 description = "A Tauri App for yt-dlp"
 authors = ["Syntax Free"]
 license = "MIT"
