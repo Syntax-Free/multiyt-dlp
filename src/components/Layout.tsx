@@ -31,7 +31,7 @@ export function Layout({ SidebarContent, MainContent }: LayoutProps) {
                 <img 
                     src={icon} 
                     alt="App Icon" 
-                    className="w-10 h-10 transition-transform duration-300 group-hover:scale-110 shadow-glow-cyan rounded-lg"
+                    className="w-11 h-11 transition-transform duration-300 group-hover:scale-110 shadow-glow-cyan rounded-lg"
                 />
                 
                 <div>
