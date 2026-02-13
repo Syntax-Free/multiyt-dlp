@@ -4,7 +4,8 @@ import { Button } from './ui/Button';
 import { SettingsModal } from './settings/SettingsModal';
 import { useAppContext } from '@/contexts/AppContext';
 import { Toast } from './ui/Toast';
-import { SFIcon } from './icons/SFIcon';
+import { UpdateChecker } from './UpdateChecker';
+import icon from '@/assets/icon.webp';
 
 interface LayoutProps {
   SidebarContent: ReactNode;
@@ -15,24 +16,28 @@ export function Layout({ SidebarContent, MainContent }: LayoutProps) {
   const { isJsRuntimeMissing, openSettings } = useAppContext();
 
   return (
-    <div className="flex h-screen overflow-hidden bg-zinc-900 text-zinc-100">
+    <div className="flex h-screen overflow-hidden bg-zinc-900 text-zinc-100 relative">
       <SettingsModal />
       
-      {/* Toast Notification Layer */}
+      {/* Notifications */}
       <Toast />
+      <UpdateChecker />
       
       {/* Sidebar */}
       <aside className="w-80 flex-shrink-0 bg-zinc-900/50 border-r border-zinc-800 p-4 overflow-y-auto flex flex-col">
         <div className="flex items-center justify-between px-2 mb-8 mt-4 group">
             <div className="flex items-center gap-3">
-                {/* Icon with Scale Animation Only */}
-                <SFIcon className="w-10 h-10 transition-transform duration-300 group-hover:scale-110" />
+                {/* Official App Icon */}
+                <img 
+                    src={icon} 
+                    alt="App Icon" 
+                    className="w-10 h-10 transition-transform duration-300 group-hover:scale-110 shadow-glow-cyan rounded-lg"
+                />
                 
                 <div>
                     <h1 className="text-lg font-bold tracking-tight text-white leading-none">
                         Multiyt-dlp
                     </h1>
-                    {/* Reverted Text */}
                     <div className="text-xs text-zinc-500 mt-1">
                         SYN SQUAD
                     </div>

@@ -10,6 +10,8 @@ export interface SkipNotice {
     skippedUrls: string[];
 }
 
+export type UpdateCheckStatus = 'idle' | 'checking' | 'error' | 'success';
+
 interface AppContextType {
   isConfigLoaded: boolean;
   isJsRuntimeMissing: boolean;
@@ -50,6 +52,7 @@ interface AppContextType {
   checkForUpdates: boolean;
   setCheckForUpdates: (enabled: boolean) => void;
   isUpdateAvailable: boolean;
+  updateCheckStatus: UpdateCheckStatus;
   latestVersion: string | null;
   currentVersion: string | null;
   checkAppUpdate: () => Promise<void>;
@@ -109,6 +112,7 @@ export const AppProvider = ({ children }: { children: React.ReactNode }) => {
 
   const [checkForUpdates, _setCheckForUpdates] = useState(true);
   const [isUpdateAvailable, setIsUpdateAvailable] = useState(false);
+  const [updateCheckStatus, setUpdateCheckStatus] = useState<UpdateCheckStatus>('idle');
   const [latestVersion, setLatestVersion] = useState<string | null>(null);
   const [currentVersion, setCurrentVersion] = useState<string | null>(null);
 
@@ -129,6 +133,7 @@ export const AppProvider = ({ children }: { children: React.ReactNode }) => {
   }, []);
 
   const checkAppUpdate = async () => {
+    setUpdateCheckStatus('checking');
     try {
         const current = await getVersion();
         setCurrentVersion(current);
@@ -151,8 +156,10 @@ export const AppProvider = ({ children }: { children: React.ReactNode }) => {
         }
 
         setIsUpdateAvailable(isNewer);
+        setUpdateCheckStatus('success');
     } catch (e) {
-        console.warn("App Update Check: Background verification failed (silently ignoring).", e);
+        console.warn("App Update Check: Background verification failed.", e);
+        setUpdateCheckStatus('error');
     }
   };
 
@@ -341,6 +348,7 @@ export const AppProvider = ({ children }: { children: React.ReactNode }) => {
     checkForUpdates,
     setCheckForUpdates,
     isUpdateAvailable,
+    updateCheckStatus,
     latestVersion,
     currentVersion,
     checkAppUpdate,
