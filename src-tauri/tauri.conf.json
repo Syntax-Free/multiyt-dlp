@@ -3,7 +3,7 @@
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build",
     "devPath": "http://localhost:1420",
-    "distDir": "../dist", 
+    "distDir": "../dist",
     "withGlobalTauri": true
   },
   "package": {
@@ -68,7 +68,10 @@
       ],
       "windows": {
         "nsis": {
-          "installMode": "perMachine"
+          "installMode": "perMachine",
+          "shortcutFolderName": "Syntax Free",
+          "allowElevation": true,
+          "displayLanguageSelector": false
         }
       }
     }
