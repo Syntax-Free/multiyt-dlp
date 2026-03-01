@@ -1,5 +1,5 @@
 use std::fs::{self, File};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 use serde::Serialize;
 use std::process::Command;
@@ -55,6 +55,126 @@ pub struct InstallProgressPayload {
     pub name: String,
     pub percentage: u64,
     pub status: String,
+}
+
+// --- Syntax Free Suite: Shared Directory Strategy ---
+pub fn get_common_bin_dir() -> PathBuf {
+    let base = dirs::data_local_dir().unwrap_or_else(|| PathBuf::from("."));
+    base.join("Syntax Free").join("Common").join("bin")
+}
+
+#[cfg(target_os = "windows")]
+pub fn is_any_sfs_app_running() -> bool {
+    use std::collections::HashSet;
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS
+    };
+    use windows::Win32::Foundation::{CloseHandle};
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+
+    let mut sfs_apps = HashSet::new();
+
+    // 1. Collect from Start Menu
+    let start_menu_paths = [
+        PathBuf::from(r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Syntax Free"),
+        dirs::data_dir().unwrap_or_else(|| PathBuf::from("")).join(r"Microsoft\Windows\Start Menu\Programs\Syntax Free")
+    ];
+
+    for path in &start_menu_paths {
+        if let Ok(entries) = fs::read_dir(path) {
+            for entry in entries.flatten() {
+                if let Some(ext) = entry.path().extension() {
+                    if ext.to_string_lossy().to_lowercase() == "lnk" {
+                        if let Some(stem) = entry.path().file_stem() {
+                            let exe_name = format!("{}.exe", stem.to_string_lossy()).to_lowercase();
+                            sfs_apps.insert(exe_name);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if sfs_apps.is_empty() {
+        return false;
+    }
+
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(name) = current_exe.file_name() {
+            sfs_apps.remove(&name.to_string_lossy().to_lowercase());
+        }
+    }
+
+    if sfs_apps.is_empty() {
+        return false;
+    }
+
+    // 2. Check running processes
+    // CreateToolhelp32Snapshot returns Result<HANDLE>
+    let snapshot_result = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    
+    if let Ok(snapshot) = snapshot_result {
+        let mut entry = PROCESSENTRY32W::default();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+
+        unsafe {
+            // Process32FirstW returns a BOOL struct. Use .as_bool() for Rust if logic.
+            if Process32FirstW(snapshot, &mut entry).as_bool() {
+                loop {
+                    let len = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len());
+                    let exe_name = OsString::from_wide(&entry.szExeFile[..len]).to_string_lossy().to_lowercase();
+                    
+                    if sfs_apps.contains(&exe_name) {
+                        let _ = CloseHandle(snapshot);
+                        return true;
+                    }
+
+                    // Process32NextW also returns a BOOL struct.
+                    if !Process32NextW(snapshot, &mut entry).as_bool() {
+                        break;
+                    }
+                }
+            }
+            let _ = CloseHandle(snapshot);
+        }
+    }
+
+    false
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn is_any_sfs_app_running() -> bool {
+    // Basic fallback for non-Windows platforms (e.g., macOS/Linux where start-menu shortcuts differ)
+    false
+}
+
+/// Robustly replaces an existing dependency, taking into consideration file locks by other running SFS apps.
+pub fn replace_dependency_robust_sync(source: &Path, target: &Path) -> Result<(), std::io::Error> {
+    let is_locked = is_any_sfs_app_running();
+    
+    if target.exists() {
+        if is_locked {
+            // Rename to bypass "File in Use" locks gracefully
+            let old_path = target.with_extension(format!("old.{}", uuid::Uuid::new_v4().simple()));
+            let _ = std::fs::rename(target, &old_path);
+        } else {
+            let _ = std::fs::remove_file(target);
+        }
+    }
+    
+    std::fs::rename(source, target)?;
+    
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = std::fs::metadata(target) {
+            let mut perms = metadata.permissions();
+            perms.set_mode(0o755);
+            let _ = std::fs::set_permissions(target, perms);
+        }
+    }
+    Ok(())
 }
 
 #[async_trait]
@@ -166,8 +286,14 @@ fn extract_zip_finding_binary(zip_path: &PathBuf, target_dir: &PathBuf, binary_n
         if let Some(file_name) = outpath.file_name() {
             let file_name_str = file_name.to_string_lossy();
             if binary_names.contains(&file_name_str.as_ref()) {
-                let mut out_file = File::create(target_dir.join(file_name)).map_err(|e| e.to_string())?;
+                let final_target = target_dir.join(file_name);
+                let tmp_target = final_target.with_extension("tmp_extract");
+                
+                let mut out_file = File::create(&tmp_target).map_err(|e| e.to_string())?;
                 std::io::copy(&mut file, &mut out_file).map_err(|e| e.to_string())?;
+                
+                // Atomically/Safely rename
+                replace_dependency_robust_sync(&tmp_target, &final_target).map_err(|e| e.to_string())?;
             }
         }
     }
@@ -283,8 +409,7 @@ pub fn get_provider(name: &str) -> Option<Box<dyn DependencyProvider>> {
 
 pub async fn install_dep(name: String, app_handle: AppHandle) -> Result<(), String> {
     let provider = get_provider(&name).ok_or("Unknown dependency")?;
-    let app_dir = app_handle.path_resolver().app_data_dir().ok_or("AppData dir not found")?;
-    let bin_dir = app_dir.join("bin");
+    let bin_dir = get_common_bin_dir();
     if !bin_dir.exists() { fs::create_dir_all(&bin_dir).map_err(|e| e.to_string())?; }
     provider.install(app_handle, bin_dir).await
 }

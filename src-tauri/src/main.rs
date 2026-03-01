@@ -39,6 +39,19 @@ fn main() {
         let _ = fs::create_dir_all(&temp_dir);
     }
 
+    // --- SFS Common Dependencies Cleanup ---
+    let common_bin_dir = core::deps::get_common_bin_dir();
+    if let Ok(entries) = std::fs::read_dir(&common_bin_dir) {
+        for entry in entries.flatten() {
+            if let Some(ext) = entry.path().extension() {
+                if ext.to_string_lossy().starts_with("old") {
+                    // Silently try to delete. Will fail gracefully if locked.
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+    }
+
     if let Err(e) = rotate_logs() {
         eprintln!("WARNING: Log rotation failed: {}", e);
     }

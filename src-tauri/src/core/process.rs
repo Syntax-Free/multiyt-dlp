@@ -184,9 +184,7 @@ pub async fn run_download_process(
 
     loop {
         let general_config = config_manager.get_config().general;
-
-        let app_dir = app_handle.path_resolver().app_data_dir().unwrap();
-        let bin_dir = app_dir.join("bin");
+        let bin_dir = crate::core::deps::get_common_bin_dir();
         
         let target_dir = if let Some(ref path) = job_data.download_path {
             PathBuf::from(path)
@@ -548,7 +546,6 @@ pub async fn run_download_process(
                     Err(e) => {
                         if e.kind() == std::io::ErrorKind::AlreadyExists {
                             // CONFLICT: Notify manager and preserve temp file
-                            // We use FileConflict message, which Manager now handles by clearing the buffer
                             let _ = tx_actor.send(JobMessage::FileConflict { 
                                 id: job_id, 
                                 temp_path: src_path.to_string_lossy().to_string(),

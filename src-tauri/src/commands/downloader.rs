@@ -19,13 +19,12 @@ fn get_probe_semaphore() -> Arc<Semaphore> {
     PROBE_SEMAPHORE.get_or_init(|| Arc::new(Semaphore::new(3))).clone()
 }
 
-async fn probe_url(url: &str, app: &AppHandle, config_manager: &Arc<ConfigManager>) -> Result<Vec<PlaylistEntry>, AppError> {
+async fn probe_url(url: &str, _app: &AppHandle, config_manager: &Arc<ConfigManager>) -> Result<Vec<PlaylistEntry>, AppError> {
     let semaphore = get_probe_semaphore();
     let _permit = semaphore.acquire().await.map_err(|_| AppError::ValidationFailed("Semaphore closed".into()))?;
 
     let config = config_manager.get_config().general;
-    let app_dir = app.path_resolver().app_data_dir().unwrap();
-    let bin_dir = app_dir.join("bin");
+    let bin_dir = crate::core::deps::get_common_bin_dir();
     
     let url_clone = url.to_string();
     

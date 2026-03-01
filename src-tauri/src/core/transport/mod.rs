@@ -39,8 +39,7 @@ pub async fn download_file_robust(
     });
 
     // 1. Check if Aria2 is available and if this isn't a download for Aria2 itself
-    let app_dir = app_handle.path_resolver().app_data_dir().unwrap();
-    let bin_dir = app_dir.join("bin");
+    let bin_dir = crate::core::deps::get_common_bin_dir();
     let aria_exe = if cfg!(windows) { "aria2c.exe" } else { "aria2c" };
     let aria_path = bin_dir.join(aria_exe);
     

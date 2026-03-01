@@ -184,9 +184,8 @@ pub async fn analyze_js_runtime(_app_handle: &AppHandle, bin_path: &PathBuf) -> 
 /// Optimized Splash Scan: Only checks local existence to be instant.
 /// Constructing LocalScanResult here satisfies construction requirement.
 #[tauri::command]
-pub async fn check_local_deps(app_handle: AppHandle) -> LocalScanResult {
-    let app_dir = app_handle.path_resolver().app_data_dir().unwrap();
-    let bin_dir = app_dir.join("bin");
+pub async fn check_local_deps(_app_handle: AppHandle) -> LocalScanResult {
+    let bin_dir = crate::core::deps::get_common_bin_dir();
     
     if !bin_dir.exists() {
         let _ = std::fs::create_dir_all(&bin_dir);
@@ -219,18 +218,15 @@ pub async fn check_local_deps(app_handle: AppHandle) -> LocalScanResult {
 }
 
 #[tauri::command]
-pub async fn check_ytdlp_update(app_handle: AppHandle) -> Result<bool, String> {
-    let app_dir = app_handle.path_resolver().app_data_dir().unwrap();
-    let bin_dir = app_dir.join("bin");
-    
+pub async fn check_ytdlp_update(_app_handle: AppHandle) -> Result<bool, String> {
+    let bin_dir = crate::core::deps::get_common_bin_dir();
     let provider = deps::YtDlpProvider;
     provider.check_update_available(&bin_dir).await
 }
 
 #[tauri::command]
 pub async fn check_dependencies(app_handle: AppHandle) -> AppDependencies {
-    let app_dir = app_handle.path_resolver().app_data_dir().unwrap();
-    let bin_dir = app_dir.join("bin");
+    let bin_dir = crate::core::deps::get_common_bin_dir();
 
     let (yt_res, ff_res, aria_res, js_res) = tokio::join!(
         async {

@@ -407,21 +407,7 @@ impl TransportEngine {
     }
 
     async fn finalize(&self, source_path: &Path) -> Result<(), TransportError> {
-        if self.target_path.exists() {
-            let _ = fs::remove_file(&self.target_path).await;
-        }
-        
-        fs::rename(source_path, &self.target_path).await?;
-        
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if let Ok(metadata) = fs::metadata(&self.target_path).await {
-                let mut perms = metadata.permissions();
-                perms.set_mode(0o755);
-                let _ = fs::set_permissions(&self.target_path, perms).await;
-            }
-        }
+        crate::core::deps::replace_dependency_robust_sync(source_path, &self.target_path).map_err(TransportError::FileSystem)?;
         Ok(())
     }
 }

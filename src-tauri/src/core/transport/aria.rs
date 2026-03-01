@@ -52,6 +52,12 @@ impl AriaEngine {
         let dir = self.target_path.parent().ok_or(TransportError::Validation("Invalid path".into()))?;
         let filename = self.target_path.file_name().ok_or(TransportError::Validation("Invalid filename".into()))?;
         
+        let tmp_filename = format!("{}.tmp", filename.to_string_lossy());
+        let tmp_path = dir.join(&tmp_filename);
+        
+        // Ensure no leftover tmp
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+
         let mut cmd = Command::new(&self.aria_bin);
         
         #[cfg(target_os = "windows")]
@@ -61,7 +67,7 @@ impl AriaEngine {
 
         cmd.arg(&self.url)
            .arg("-d").arg(dir)
-           .arg("-o").arg(filename)
+           .arg("-o").arg(&tmp_filename)
            .arg("-s").arg("8") // 8 connections
            .arg("-x").arg("8") // 8 connections per server
            .arg("-j").arg("1") // 1 download at a time
@@ -117,11 +123,15 @@ impl AriaEngine {
         let status = child.wait().await.map_err(TransportError::FileSystem)?;
         
         if status.success() {
+            crate::core::deps::replace_dependency_robust_sync(&tmp_path, &self.target_path).map_err(TransportError::FileSystem)?;
+            
             // Ensure 100% is reported on success
             let total = self.fallback_size.unwrap_or(0);
             on_progress(total, total, 0.0);
             Ok(())
         } else {
+            // Cleanup partial tmp if failed
+            let _ = tokio::fs::remove_file(&tmp_path).await;
             Err(TransportError::Validation(format!("Aria2 exited with code {:?}", status.code())))
         }
     }
