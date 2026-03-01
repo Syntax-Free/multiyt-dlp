@@ -3,7 +3,7 @@
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build",
     "devPath": "http://localhost:1420",
-    "distDir": "../dist",
+    "distDir": "../dist", 
     "withGlobalTauri": true
   },
   "package": {
@@ -62,18 +62,9 @@
       "active": true,
       "targets": "all",
       "identifier": "net.syntaxfree.multiyt-dlp",
-      "publisher": "Syntax Free",
       "icon": [
         "icons/icon.ico"
-      ],
-      "windows": {
-        "nsis": {
-          "installMode": "perMachine",
-          "shortcutFolderName": "Syntax Free",
-          "allowElevation": true,
-          "displayLanguageSelector": false
-        }
-      }
+      ]
     }
   }
 }

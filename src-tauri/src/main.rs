@@ -32,6 +32,9 @@ fn main() {
     }
 
     core::logging::register_panic_hook();
+    
+    // Self-register in the SFS Common Registry map so other suite members can detect our presence
+    core::deps::register_sfs_app();
 
     let home = dirs::home_dir().expect("Could not find home directory");
     let temp_dir = home.join(".multiyt-dlp").join("temp_downloads");

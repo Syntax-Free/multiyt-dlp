@@ -1,7 +1,8 @@
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 use std::process::Command;
 use async_trait::async_trait;
 use crate::core::transport::download_file_robust;
@@ -63,6 +64,64 @@ pub fn get_common_bin_dir() -> PathBuf {
     base.join("Syntax Free").join("Common").join("bin")
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SfsAppEntry {
+    pub version: String,
+    pub path: String,
+    pub last_used: u64,
+}
+
+/// Registers the current application in the global SFS JSON registry
+pub fn register_sfs_app() {
+    // Run in a detached thread to prevent any startup bloat
+    std::thread::spawn(|| {
+        let common_dir = match get_common_bin_dir().parent() {
+            Some(p) => p.to_path_buf(),
+            None => return,
+        };
+
+        if !common_dir.exists() {
+            let _ = std::fs::create_dir_all(&common_dir);
+        }
+        
+        let list_path = common_dir.join("sfs_list.json");
+        let mut registry: HashMap<String, SfsAppEntry> = HashMap::new();
+
+        if let Ok(content) = std::fs::read_to_string(&list_path) {
+            if let Ok(parsed) = serde_json::from_str(&content) {
+                registry = parsed;
+            }
+        }
+
+        let current_exe = match std::env::current_exe() {
+            Ok(p) => p.to_string_lossy().to_string(),
+            Err(_) => return,
+        };
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        registry.insert(
+            "multiyt-dlp".to_string(),
+            SfsAppEntry {
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                path: current_exe,
+                last_used: now,
+            }
+        );
+
+        // Atomic write via temp file
+        if let Ok(json) = serde_json::to_string_pretty(&registry) {
+            let tmp_path = list_path.with_extension("tmp");
+            if std::fs::write(&tmp_path, json).is_ok() {
+                let _ = std::fs::rename(tmp_path, list_path);
+            }
+        }
+    });
+}
+
 #[cfg(target_os = "windows")]
 pub fn is_any_sfs_app_running() -> bool {
     use std::collections::HashSet;
@@ -73,25 +132,32 @@ pub fn is_any_sfs_app_running() -> bool {
     use std::ffi::OsString;
     use std::os::windows::ffi::OsStringExt;
 
+    // 1. Read SFS Registry
+    let common_dir = match get_common_bin_dir().parent() {
+        Some(p) => p.to_path_buf(),
+        None => return false,
+    };
+    
+    let list_path = common_dir.join("sfs_list.json");
+    
+    let content = match fs::read_to_string(&list_path) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    let registry: HashMap<String, SfsAppEntry> = match serde_json::from_str(&content) {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+
     let mut sfs_apps = HashSet::new();
 
-    // 1. Collect from Start Menu
-    let start_menu_paths = [
-        PathBuf::from(r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Syntax Free"),
-        dirs::data_dir().unwrap_or_else(|| PathBuf::from("")).join(r"Microsoft\Windows\Start Menu\Programs\Syntax Free")
-    ];
-
-    for path in &start_menu_paths {
-        if let Ok(entries) = fs::read_dir(path) {
-            for entry in entries.flatten() {
-                if let Some(ext) = entry.path().extension() {
-                    if ext.to_string_lossy().to_lowercase() == "lnk" {
-                        if let Some(stem) = entry.path().file_stem() {
-                            let exe_name = format!("{}.exe", stem.to_string_lossy()).to_lowercase();
-                            sfs_apps.insert(exe_name);
-                        }
-                    }
-                }
+    // Collect target executables excluding ourselves
+    for (name, entry) in registry {
+        if name.to_lowercase() != "multiyt-dlp" {
+            if let Some(file_name) = Path::new(&entry.path).file_name() {
+                let exe_name = file_name.to_string_lossy().to_lowercase();
+                sfs_apps.insert(exe_name);
             }
         }
     }
@@ -100,18 +166,7 @@ pub fn is_any_sfs_app_running() -> bool {
         return false;
     }
 
-    if let Ok(current_exe) = std::env::current_exe() {
-        if let Some(name) = current_exe.file_name() {
-            sfs_apps.remove(&name.to_string_lossy().to_lowercase());
-        }
-    }
-
-    if sfs_apps.is_empty() {
-        return false;
-    }
-
     // 2. Check running processes
-    // CreateToolhelp32Snapshot returns Result<HANDLE>
     let snapshot_result = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     
     if let Ok(snapshot) = snapshot_result {
@@ -119,7 +174,6 @@ pub fn is_any_sfs_app_running() -> bool {
         entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
 
         unsafe {
-            // Process32FirstW returns a BOOL struct. Use .as_bool() for Rust if logic.
             if Process32FirstW(snapshot, &mut entry).as_bool() {
                 loop {
                     let len = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len());
@@ -130,7 +184,6 @@ pub fn is_any_sfs_app_running() -> bool {
                         return true;
                     }
 
-                    // Process32NextW also returns a BOOL struct.
                     if !Process32NextW(snapshot, &mut entry).as_bool() {
                         break;
                     }
@@ -145,7 +198,7 @@ pub fn is_any_sfs_app_running() -> bool {
 
 #[cfg(not(target_os = "windows"))]
 pub fn is_any_sfs_app_running() -> bool {
-    // Basic fallback for non-Windows platforms (e.g., macOS/Linux where start-menu shortcuts differ)
+    // Unix platforms cleanly allow binary unlinking/overwrites while executing, so locking isn't strictly required.
     false
 }
 
