@@ -31,31 +31,25 @@ pub async fn download_file_robust(
     let name_arc = Arc::new(name.to_string());
     let app_handle_clone = app_handle.clone();
     
-    // OPTIMISTIC UPDATE: Emit initializing immediately
+    // Initial UI Update
     let _ = app_handle_clone.emit_all("install-progress", InstallProgressPayload {
         name: name_arc.to_string(),
         percentage: 0,
         status: "Initializing...".to_string()
     });
 
-    // 1. Check if Aria2 is available and if this isn't a download for Aria2 itself
+    // 1. Check if Aria2 is available
     let bin_dir = crate::core::deps::get_common_bin_dir();
     let aria_exe = if cfg!(windows) { "aria2c.exe" } else { "aria2c" };
     let aria_path = bin_dir.join(aria_exe);
     
-    let use_aria = aria_path.exists() && name.to_lowercase() != "aria2";
+    let aria_exists = aria_path.exists() && name.to_lowercase() != "aria2";
 
     // Shared state for the progress closure
     let last_percentage = Arc::new(AtomicU64::new(0));
     
     let callback = move |downloaded: u64, total: u64, speed: f64| {
-        // Fallback Logic: If engine reports 0 total, use fallback if available
-        let effective_total = if total == 0 {
-             fallback_size.unwrap_or(0)
-        } else {
-             total
-        };
-
+        let effective_total = if total == 0 { fallback_size.unwrap_or(0) } else { total };
         let percentage = if effective_total > 0 { (downloaded * 100) / effective_total } else { 0 };
         let previous = last_percentage.load(Ordering::Relaxed);
         
@@ -80,9 +74,9 @@ pub async fn download_file_robust(
         }
     };
 
-    if use_aria {
-        info!("Using Aria2 for download: {}", name);
-        // Pass fallback_size to AriaEngine
+    // 2. Try Aria2 if available
+    if aria_exists {
+        info!("Attempting Aria2 download: {}", name);
         let engine = AriaEngine::new(url, destination.clone(), aria_path, fallback_size);
         
         // Fallback to standard engine if Aria2 fails
@@ -90,32 +84,30 @@ pub async fn download_file_robust(
             Ok(_) => return Ok(()),
             Err(e) => {
                 warn!("Aria2 failed, falling back to internal engine: {}", e);
-                // Clean up partial files from aria2 if any
+                // Clean up partial files from aria2 to avoid conflicts with native engine
                 let _ = std::fs::remove_file(&destination);
+                let _ = std::fs::remove_file(format!("{}.aria2", destination.display()));
             }
         }
-    } else {
-        // NATIVE ENGINE STRATEGY: Indeterminate Loading State
-        // We explicitly tell frontend we are in native mode by keeping percentage at 0 
-        // and setting a specific status text that the frontend looks for to trigger spinner mode.
-        let _ = app_handle.emit_all("install-progress", InstallProgressPayload {
-            name: name.to_string(),
-            percentage: 0,
-            status: "Downloading (Native)...".to_string()
-        });
-
-        // Use a dummy callback that basically ignores updates to prevent "broken" progress bars
-        // The transport engine will still do its job, but we won't stream granular updates.
-        let dummy_callback = |_: u64, _: u64, _: f64| {};
-        
-        let mut engine = TransportEngine::new(url, destination);
-        if let Some(s) = fallback_size {
-            engine = engine.with_fallback_size(s);
-        }
-        
-        // Execute with the dummy callback
-        return engine.execute(dummy_callback).await;
     }
+
+    // 3. Native Engine Fallback
+    // This code runs if Aria2 was missing OR if it failed above.
+    info!("Using native internal engine: {}", name);
+    let _ = app_handle.emit_all("install-progress", InstallProgressPayload {
+        name: name.to_string(),
+        percentage: 0,
+        status: "Downloading (Native Fallback)...".to_string()
+    });
+
+    // Native engine uses an indeterminate progress approach for stability
+    let dummy_callback = |_: u64, _: u64, _: f64| {};
+    let mut engine = TransportEngine::new(url, destination);
+    if let Some(s) = fallback_size {
+        engine = engine.with_fallback_size(s);
+    }
+    
+    engine.execute(dummy_callback).await?;
 
     Ok(())
 }
