@@ -68,8 +68,8 @@ impl AriaEngine {
         cmd.arg(&self.url)
            .arg("-d").arg(dir)
            .arg("-o").arg(&tmp_filename)
-           .arg("-s").arg("8") // 8 connections
-           .arg("-x").arg("8") // 8 connections per server
+           .arg("-s").arg("16") // 16 connections
+           .arg("-x").arg("16") // 16 connections per server
            .arg("-j").arg("1") // 1 download at a time
            .arg("--min-split-size=1M")
            .arg("--allow-overwrite=true")
