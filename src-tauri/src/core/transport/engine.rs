@@ -366,12 +366,18 @@ impl TransportEngine {
             
         let mut stream = response.bytes_stream();
         let mut downloaded_in_this_session = 0;
+        let remaining_for_chunk = chunk.len.saturating_sub(current_len);
 
         while let Some(chunk_res) = tokio::time::timeout(IO_TIMEOUT, stream.next()).await.ok() {
             match chunk_res {
                 Some(Ok(bytes)) => {
-                    file.write_all(&bytes).await?;
                     let len = bytes.len() as u64;
+                    // Strict bound check to prevent disk exhaustion from malicious/infinite streaming responses
+                    if downloaded_in_this_session + len > remaining_for_chunk {
+                        global_bytes.fetch_sub(downloaded_in_this_session, Ordering::Relaxed);
+                        return Err(TransportError::Validation("Server exceeded requested byte range".into()));
+                    }
+                    file.write_all(&bytes).await?;
                     downloaded_in_this_session += len;
                     global_bytes.fetch_add(len, Ordering::Relaxed);
                 },
@@ -393,17 +399,34 @@ impl TransportEngine {
 
     async fn merge_parts_optimized(&self, parts: &[PathBuf]) -> Result<(), TransportError> {
         if parts.is_empty() { return Ok(()); }
-        let first_part = &parts[0];
-        let mut target_file = OpenOptions::new().write(true).append(true).open(first_part).await?;
+        
+        let hash = self.calculate_deterministic_hash();
+        let final_tmp_path = self.target_path.with_extension(format!("final.{}", hash));
+        
+        if final_tmp_path.exists() {
+            let _ = fs::remove_file(&final_tmp_path).await;
+        }
 
-        for part_path in parts.iter().skip(1) {
+        let mut target_file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&final_tmp_path)
+            .await?;
+
+        for part_path in parts.iter() {
             let mut part_file = fs::File::open(part_path).await?;
             tokio::io::copy(&mut part_file, &mut target_file).await?;
-            let _ = fs::remove_file(part_path).await;
         }
         
         target_file.flush().await?;
-        self.finalize(first_part).await
+
+        // Atomic cleanup guarantees deterministic resumes for chunks if app is killed during merge
+        for part_path in parts.iter() {
+            let _ = fs::remove_file(part_path).await;
+        }
+        
+        self.finalize(&final_tmp_path).await
     }
 
     async fn finalize(&self, source_path: &Path) -> Result<(), TransportError> {

@@ -46,8 +46,23 @@ export function useDownloadManager() {
     });
   };
 
+  // Optimistic UI updates with explicitly escalated sequence IDs to protect against race conditions
   const updateDownload = (jobId: string, newProps: Partial<Download>) => {
-      updateDownloadsBatch([{ jobId, data: newProps }]);
+      setDownloads((prev) => {
+          const newMap = new Map(prev);
+          const existing = newMap.get(jobId);
+          if (existing) {
+              const nextSequence = existing.sequence_id + 1;
+              const mergedFilename = newProps.filename || existing.filename;
+              newMap.set(jobId, {
+                  ...existing,
+                  ...newProps,
+                  sequence_id: Math.max(existing.sequence_id, nextSequence),
+                  filename: mergedFilename
+              });
+          }
+          return newMap;
+      });
   };
 
   useEffect(() => {
@@ -252,8 +267,8 @@ export function useDownloadManager() {
 
     if (job.status === 'downloading' || job.status === 'pending' || job.status === 'file_conflict') {
         try {
-            await apiCancelDownload(jobId);
             updateDownload(jobId, { status: 'cancelled', phase: 'Cancelling...' });
+            await apiCancelDownload(jobId);
         } catch (error) {
             console.error('Failed to cancel download:', error);
             updateDownload(jobId, { status: 'error', error: 'Failed to cancel.' });
@@ -270,8 +285,8 @@ export function useDownloadManager() {
       
       for (const job of targets) {
           try {
-              await apiCancelDownload(job.jobId);
               updateDownload(job.jobId, { status: 'cancelled', phase: 'Cancelling...' });
+              await apiCancelDownload(job.jobId);
           } catch (e) {
               console.error(`Bulk cancel failed for ${job.jobId}`, e);
           }

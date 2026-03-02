@@ -1,6 +1,5 @@
 use tauri::{State, AppHandle};
 use uuid::Uuid;
-use std::process::Command;
 use std::sync::Arc;
 use std::collections::HashSet;
 use tokio::sync::Semaphore;
@@ -28,76 +27,77 @@ async fn probe_url(url: &str, _app: &AppHandle, config_manager: &Arc<ConfigManag
     
     let url_clone = url.to_string();
     
-    let result = tauri::async_runtime::spawn_blocking(move || {
-        let mut yt_dlp_cmd = "yt-dlp".to_string();
-        let local_exe = bin_dir.join(if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" });
-        if local_exe.exists() { 
-            yt_dlp_cmd = local_exe.to_string_lossy().to_string(); 
-        }
+    let mut yt_dlp_cmd = "yt-dlp".to_string();
+    let local_exe = bin_dir.join(if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" });
+    if local_exe.exists() { 
+        yt_dlp_cmd = local_exe.to_string_lossy().to_string(); 
+    }
 
-        let mut cmd = Command::new(yt_dlp_cmd);
+    let mut cmd = tokio::process::Command::new(yt_dlp_cmd);
 
-        if let Ok(current_path) = std::env::var("PATH") {
-            let new_path = format!("{}{}{}", bin_dir.to_string_lossy(), if cfg!(windows) { ";" } else { ":" }, current_path);
-            cmd.env("PATH", new_path);
-        } else {
-            cmd.env("PATH", bin_dir.to_string_lossy().to_string());
-        }
+    if let Ok(current_path) = std::env::var("PATH") {
+        let new_path = format!("{}{}{}", bin_dir.to_string_lossy(), if cfg!(windows) { ";" } else { ":" }, current_path);
+        cmd.env("PATH", new_path);
+    } else {
+        cmd.env("PATH", bin_dir.to_string_lossy().to_string());
+    }
 
-        cmd.arg("--flat-playlist")
-        .arg("--dump-single-json")
-        .arg("--no-warnings")
-        .arg(&url_clone);
+    cmd.arg("--flat-playlist")
+    .arg("--dump-single-json")
+    .arg("--no-warnings")
+    .arg(&url_clone);
 
-        if let Some(path) = config.cookies_path {
-            if !path.trim().is_empty() { cmd.arg("--cookies").arg(path); }
-        } else if let Some(browser) = config.cookies_from_browser {
-            if !browser.trim().is_empty() && browser != "none" { cmd.arg("--cookies-from-browser").arg(browser); }
-        }
+    if let Some(path) = config.cookies_path {
+        if !path.trim().is_empty() { cmd.arg("--cookies").arg(path); }
+    } else if let Some(browser) = config.cookies_from_browser {
+        if !browser.trim().is_empty() && browser != "none" { cmd.arg("--cookies-from-browser").arg(browser); }
+    }
 
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x08000000);
-        }
+    #[cfg(target_os = "windows")]
+    {
+        cmd.creation_flags(0x08000000);
+    }
 
-        let output = cmd.output().map_err(|e| AppError::IoError(e.to_string()))?;
+    let output_result = tokio::time::timeout(std::time::Duration::from_secs(30), cmd.output()).await;
 
-        if !output.status.success() {
-            return Err(AppError::ProcessFailed { 
-                exit_code: output.status.code().unwrap_or(-1), 
-                stderr: String::from_utf8_lossy(&output.stderr).to_string() 
-            });
-        }
+    let output = match output_result {
+        Ok(Ok(out)) => out,
+        Ok(Err(e)) => return Err(AppError::IoError(e.to_string())),
+        Err(_) => return Err(AppError::ValidationFailed("Probe timed out after 30 seconds".into())),
+    };
 
-        let json_str = String::from_utf8_lossy(&output.stdout);
-        let parsed: serde_json::Value = serde_json::from_str(&json_str)
-            .map_err(|e| AppError::ValidationFailed(format!("Failed to parse probe JSON: {}", e)))?;
+    if !output.status.success() {
+        return Err(AppError::ProcessFailed { 
+            exit_code: output.status.code().unwrap_or(-1), 
+            stderr: String::from_utf8_lossy(&output.stderr).to_string() 
+        });
+    }
 
-        let mut entries = Vec::new();
+    let json_str = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&json_str)
+        .map_err(|e| AppError::ValidationFailed(format!("Failed to parse probe JSON: {}", e)))?;
 
-        if let Some(entries_arr) = parsed.get("entries").and_then(|e| e.as_array()) {
-            for entry in entries_arr {
-                if let Some(u) = entry.get("url").and_then(|s| s.as_str()) {
-                    entries.push(PlaylistEntry {
-                        id: entry.get("id").and_then(|s| s.as_str()).map(|s| s.to_string()),
-                        url: u.to_string(),
-                        title: entry.get("title").and_then(|s| s.as_str()).unwrap_or("Unknown").to_string(),
-                    });
-                }
+    let mut entries = Vec::new();
+
+    if let Some(entries_arr) = parsed.get("entries").and_then(|e| e.as_array()) {
+        for entry in entries_arr {
+            if let Some(u) = entry.get("url").and_then(|s| s.as_str()) {
+                entries.push(PlaylistEntry {
+                    id: entry.get("id").and_then(|s| s.as_str()).map(|s| s.to_string()),
+                    url: u.to_string(),
+                    title: entry.get("title").and_then(|s| s.as_str()).unwrap_or("Unknown").to_string(),
+                });
             }
-        } else {
-            entries.push(PlaylistEntry {
-                id: parsed.get("id").and_then(|s| s.as_str()).map(|s| s.to_string()),
-                url: parsed.get("webpage_url").and_then(|s| s.as_str()).unwrap_or(&url_clone).to_string(),
-                title: parsed.get("title").and_then(|s| s.as_str()).unwrap_or("Unknown").to_string(),
-            });
         }
+    } else {
+        entries.push(PlaylistEntry {
+            id: parsed.get("id").and_then(|s| s.as_str()).map(|s| s.to_string()),
+            url: parsed.get("webpage_url").and_then(|s| s.as_str()).unwrap_or(&url_clone).to_string(),
+            title: parsed.get("title").and_then(|s| s.as_str()).unwrap_or("Unknown").to_string(),
+        });
+    }
 
-        Ok(entries)
-    }).await.map_err(|e| AppError::IoError(e.to_string()))??;
-
-    Ok(result)
+    Ok(entries)
 }
 
 #[tauri::command]

@@ -376,7 +376,7 @@ pub struct FfmpegProvider;
 #[async_trait]
 impl DependencyProvider for FfmpegProvider {
     fn get_name(&self) -> String { "FFmpeg".to_string() }
-    fn get_binaries(&self) -> Vec<&str> { if cfg!(windows) { vec!["ffmpeg.exe"] } else { vec!["ffmpeg"] } }
+    fn get_binaries(&self) -> Vec<&str> { if cfg!(windows) { vec!["ffmpeg.exe", "ffprobe.exe"] } else { vec!["ffmpeg", "ffprobe"] } }
     async fn install(&self, app_handle: AppHandle, target_dir: PathBuf) -> Result<(), String> {
         let archive_path = std::env::temp_dir().join("ffmpeg_tmp");
         download_file_robust(FFMPEG_URL, archive_path.clone(), &self.get_name(), &app_handle, Some(FFMPEG_SIZE)).await.map_err(|e| e.to_string())?;

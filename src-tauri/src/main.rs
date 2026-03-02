@@ -46,8 +46,8 @@ fn main() {
     let common_bin_dir = core::deps::get_common_bin_dir();
     if let Ok(entries) = std::fs::read_dir(&common_bin_dir) {
         for entry in entries.flatten() {
-            if let Some(ext) = entry.path().extension() {
-                if ext.to_string_lossy().starts_with("old") {
+            if let Some(name) = entry.path().file_name() {
+                if name.to_string_lossy().contains(".old.") {
                     // Silently try to delete. Will fail gracefully if locked.
                     let _ = std::fs::remove_file(entry.path());
                 }
