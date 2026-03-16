@@ -98,7 +98,11 @@ export function SettingsModal() {
     const handleTabChange = (id: string) => {
         setSettingsActiveTab(id);
         if (contentRef.current) {
-            contentRef.current.scrollTop = 0;
+            // Find the closest scrollable container (the one inside Modal.tsx) to reset scroll position
+            const scrollContainer = contentRef.current.closest('.overflow-y-auto');
+            if (scrollContainer) {
+                scrollContainer.scrollTop = 0;
+            }
         }
     };
 
@@ -160,10 +164,10 @@ export function SettingsModal() {
                     </div>
                 </nav>
 
-                {/* Scrollable Content Area */}
+                {/* Main Content Area - Delegating scroll to the parent Modal */}
                 <div 
                     ref={contentRef}
-                    className="flex-1 min-w-0 md:border-l md:border-zinc-800/50 md:pl-6 max-h-[65vh] overflow-y-auto pr-2 scroll-smooth"
+                    className="flex-1 min-w-0 md:border-l md:border-zinc-800/50 md:pl-6 pr-2"
                 >
                     {activeTab === 'general' && <GeneralSettings />}
                     {activeTab === 'ytdlp' && <YtdlpSettings />}
