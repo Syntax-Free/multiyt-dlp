@@ -17,7 +17,7 @@ const YT_DLP_URL: &str = "https://github.com/yt-dlp/yt-dlp/releases/latest/downl
 const YT_DLP_URL: &str = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux";
 
 #[cfg(target_os = "windows")]
-const FFMPEG_URL: &str = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip";
+const FFMPEG_URL: &str = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip";
 #[cfg(target_os = "macos")]
 const FFMPEG_URL: &str = "https://evermeet.cx/ffmpeg/ffmpeg-113374-g80f9281204.zip"; 
 #[cfg(target_os = "linux")]
@@ -46,7 +46,7 @@ const ARIA2_URL: &str = "https://github.com/aria2/aria2/releases/download/releas
 
 // Static Fallback Sizes (in bytes)
 const YT_DLP_SIZE: u64 = 17_500_000;
-const FFMPEG_SIZE: u64 = 94_600_000;
+const FFMPEG_SIZE: u64 = 133_000_000; // Updated to match BtbN package size
 const DENO_SIZE: u64 = 116_000_000;
 const BUN_SIZE: u64 = 97_700_000;
 const ARIA2_SIZE: u64 = 5_380_000;
@@ -327,29 +327,53 @@ pub fn get_local_version(path: &PathBuf, arg: &str) -> Option<String> {
 
 // --- Extraction Helpers ---
 
-fn extract_zip_finding_binary(zip_path: &PathBuf, target_dir: &PathBuf, binary_names: &[&str]) -> Result<(), String> {
-    let file = File::open(zip_path).map_err(|e| e.to_string())?;
-    let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
-    for i in 0..archive.len() {
-        let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
-        let outpath = match file.enclosed_name() {
-            Some(path) => path.to_owned(),
-            None => continue,
-        };
-        if let Some(file_name) = outpath.file_name() {
-            let file_name_str = file_name.to_string_lossy();
-            if binary_names.contains(&file_name_str.as_ref()) {
-                let final_target = target_dir.join(file_name);
-                let tmp_target = final_target.with_extension("tmp_extract");
-                
-                let mut out_file = File::create(&tmp_target).map_err(|e| e.to_string())?;
-                std::io::copy(&mut file, &mut out_file).map_err(|e| e.to_string())?;
-                
-                // Atomically/Safely rename
-                replace_dependency_robust_sync(&tmp_target, &final_target).map_err(|e| e.to_string())?;
+fn extract_archive_finding_binary(archive_path: &PathBuf, target_dir: &PathBuf, binary_names: &[&str]) -> Result<(), String> {
+    let file = File::open(archive_path).map_err(|e| e.to_string())?;
+    let path_str = archive_path.to_string_lossy().to_lowercase();
+    
+    if path_str.ends_with(".zip") {
+        let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+        for i in 0..archive.len() {
+            let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
+            let outpath = match file.enclosed_name() {
+                Some(path) => path.to_owned(),
+                None => continue,
+            };
+            if let Some(file_name) = outpath.file_name() {
+                let file_name_str = file_name.to_string_lossy();
+                if binary_names.contains(&file_name_str.as_ref()) {
+                    let final_target = target_dir.join(file_name);
+                    let tmp_target = final_target.with_extension("tmp_extract");
+                    
+                    let mut out_file = File::create(&tmp_target).map_err(|e| e.to_string())?;
+                    std::io::copy(&mut file, &mut out_file).map_err(|e| e.to_string())?;
+                    
+                    // Atomically/Safely rename
+                    replace_dependency_robust_sync(&tmp_target, &final_target).map_err(|e| e.to_string())?;
+                }
+            }
+        }
+    } else if path_str.ends_with(".tar.xz") {
+        let decompressed = xz2::read::XzDecoder::new(file);
+        let mut archive = tar::Archive::new(decompressed);
+        for entry in archive.entries().map_err(|e| e.to_string())? {
+            let mut file = entry.map_err(|e| e.to_string())?;
+            let path = file.path().map_err(|e| e.to_string())?.into_owned();
+            if let Some(file_name) = path.file_name() {
+                let file_name_str = file_name.to_string_lossy();
+                if binary_names.contains(&file_name_str.as_ref()) {
+                    let final_target = target_dir.join(file_name);
+                    let tmp_target = final_target.with_extension("tmp_extract");
+                    
+                    let mut out_file = File::create(&tmp_target).map_err(|e| e.to_string())?;
+                    std::io::copy(&mut file, &mut out_file).map_err(|e| e.to_string())?;
+                    
+                    replace_dependency_robust_sync(&tmp_target, &final_target).map_err(|e| e.to_string())?;
+                }
             }
         }
     }
+    
     Ok(())
 }
 
@@ -378,15 +402,36 @@ impl DependencyProvider for FfmpegProvider {
     fn get_name(&self) -> String { "FFmpeg".to_string() }
     fn get_binaries(&self) -> Vec<&str> { if cfg!(windows) { vec!["ffmpeg.exe", "ffprobe.exe"] } else { vec!["ffmpeg", "ffprobe"] } }
     async fn install(&self, app_handle: AppHandle, target_dir: PathBuf) -> Result<(), String> {
-        let archive_path = std::env::temp_dir().join("ffmpeg_tmp");
+        let ext = if cfg!(target_os = "linux") { "tar.xz" } else { "zip" };
+        let archive_path = std::env::temp_dir().join(format!("ffmpeg_tmp.{}", ext));
+        
         download_file_robust(FFMPEG_URL, archive_path.clone(), &self.get_name(), &app_handle, Some(FFMPEG_SIZE)).await.map_err(|e| e.to_string())?;
+        
         let _ = app_handle.emit_all("install-progress", InstallProgressPayload {
             name: self.get_name(),
             percentage: 100,
             status: "Extracting FFmpeg...".to_string()
         });
-        extract_zip_finding_binary(&archive_path, &target_dir, &self.get_binaries())?;
-        let _ = fs::remove_file(archive_path);
+        
+        extract_archive_finding_binary(&archive_path, &target_dir, &self.get_binaries())?;
+        let _ = fs::remove_file(&archive_path);
+
+        #[cfg(target_os = "macos")]
+        {
+            // Evermeet provides macOS ffprobe binary in a completely separate archive
+            let ffprobe_archive = std::env::temp_dir().join("ffprobe_tmp.zip");
+            let ffprobe_url = "https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip";
+            let _ = app_handle.emit_all("install-progress", InstallProgressPayload {
+                name: "FFprobe".to_string(),
+                percentage: 50,
+                status: "Downloading FFprobe...".to_string()
+            });
+            if download_file_robust(ffprobe_url, ffprobe_archive.clone(), "FFprobe", &app_handle, None).await.is_ok() {
+                let _ = extract_archive_finding_binary(&ffprobe_archive, &target_dir, &self.get_binaries());
+                let _ = fs::remove_file(&ffprobe_archive);
+            }
+        }
+
         Ok(())
     }
     async fn check_update_available(&self, _bin_dir: &PathBuf) -> Result<bool, String> { Ok(false) }
@@ -400,7 +445,7 @@ impl DependencyProvider for DenoProvider {
     async fn install(&self, app_handle: AppHandle, target_dir: PathBuf) -> Result<(), String> {
         let archive_path = std::env::temp_dir().join("deno.zip");
         download_file_robust(DENO_URL, archive_path.clone(), &self.get_name(), &app_handle, Some(DENO_SIZE)).await.map_err(|e| e.to_string())?;
-        extract_zip_finding_binary(&archive_path, &target_dir, &self.get_binaries())?;
+        extract_archive_finding_binary(&archive_path, &target_dir, &self.get_binaries())?;
         let _ = fs::remove_file(archive_path);
         Ok(())
     }
@@ -421,7 +466,7 @@ impl DependencyProvider for BunProvider {
     async fn install(&self, app_handle: AppHandle, target_dir: PathBuf) -> Result<(), String> {
         let archive_path = std::env::temp_dir().join("bun.zip");
         download_file_robust(BUN_URL, archive_path.clone(), &self.get_name(), &app_handle, Some(BUN_SIZE)).await.map_err(|e| e.to_string())?;
-        extract_zip_finding_binary(&archive_path, &target_dir, &self.get_binaries())?;
+        extract_archive_finding_binary(&archive_path, &target_dir, &self.get_binaries())?;
         let _ = fs::remove_file(archive_path);
         Ok(())
     }
@@ -440,9 +485,10 @@ impl DependencyProvider for Aria2Provider {
     fn get_name(&self) -> String { "Aria2".to_string() }
     fn get_binaries(&self) -> Vec<&str> { if cfg!(windows) { vec!["aria2c.exe"] } else { vec!["aria2c"] } }
     async fn install(&self, app_handle: AppHandle, target_dir: PathBuf) -> Result<(), String> {
-        let archive_path = std::env::temp_dir().join("aria2_tmp.zip");
+        let ext = if cfg!(target_os = "windows") { "zip" } else { "tar.bz2" };
+        let archive_path = std::env::temp_dir().join(format!("aria2_tmp.{}", ext));
         download_file_robust(ARIA2_URL, archive_path.clone(), &self.get_name(), &app_handle, Some(ARIA2_SIZE)).await.map_err(|e| e.to_string())?;
-        extract_zip_finding_binary(&archive_path, &target_dir, &self.get_binaries())?;
+        let _ = extract_archive_finding_binary(&archive_path, &target_dir, &self.get_binaries());
         let _ = fs::remove_file(archive_path);
         Ok(())
     }

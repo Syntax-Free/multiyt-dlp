@@ -193,6 +193,7 @@ pub async fn check_local_deps(_app_handle: AppHandle) -> LocalScanResult {
 
     let yt_exe = if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" };
     let ff_exe = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+    let fp_exe = if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" };
     let aria_exe = if cfg!(windows) { "aria2c.exe" } else { "aria2c" };
 
     let mut missing = Vec::new();
@@ -201,7 +202,7 @@ pub async fn check_local_deps(_app_handle: AppHandle) -> LocalScanResult {
         missing.push("yt-dlp".to_string());
     }
 
-    if !bin_dir.join(ff_exe).exists() {
+    if !bin_dir.join(ff_exe).exists() || !bin_dir.join(fp_exe).exists() {
         missing.push("ffmpeg".to_string());
     }
     
@@ -237,7 +238,16 @@ pub async fn check_dependencies(app_handle: AppHandle) -> AppDependencies {
         },
         async {
             let exec_name = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+            let fp_name = if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" };
+            
             let mut info = resolve_binary_info(exec_name, "-version", &bin_dir);
+            let fp_info = resolve_binary_info(fp_name, "-version", &bin_dir);
+            
+            // If either component of the suite is missing, flag the entire FFmpeg suite as missing
+            if !fp_info.available {
+                info.available = false;
+            }
+            
             info.name = "FFmpeg".to_string();
             if let Some(ref v) = info.version {
                 let re = Regex::new(r"ffmpeg version ([^\s]+)").unwrap();
