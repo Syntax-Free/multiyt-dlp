@@ -6,6 +6,6 @@ build
 .DS_Store
 Cargo.lock
 target/
-converter_gitignore.py
 versions/
 *.log
+C.R.A.M.py
