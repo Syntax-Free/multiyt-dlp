@@ -123,13 +123,9 @@ fn construct_error(job_id: uuid::Uuid, msg: String, exit_code: Option<i32>, stde
     }
 }
 
-/// Robustly moves a file, handling potential cross-device errors or locks.
-/// Returns std::io::ErrorKind::AlreadyExists if destination exists.
 async fn robust_move_file(src: &Path, dest: &Path) -> Result<(), std::io::Error> {
     let mut attempts = 0;
     loop {
-        // Explicit check for destination existence to avoid implicit overwrites or failures on Windows
-        // This ensures the Conflict Handler in manager.rs gets triggered.
         if dest.exists() {
              return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "Destination file already exists"));
         }
@@ -138,14 +134,10 @@ async fn robust_move_file(src: &Path, dest: &Path) -> Result<(), std::io::Error>
             Ok(_) => return Ok(()),
             Err(e) => {
                 attempts += 1;
-                // If the error was specifically "AlreadyExists", bail immediately
                 if e.kind() == std::io::ErrorKind::AlreadyExists {
                     return Err(e);
                 }
-                
-                // Retry a few times for transient locks
                 if attempts > 3 {
-                    // Fallback to Copy + Delete for cross-filesystem moves
                     if let Ok(_) = fs::copy(src, dest) {
                         let _ = fs::remove_file(src);
                         return Ok(());
@@ -168,7 +160,6 @@ pub async fn run_download_process(
     let job_id = job_data.id;
     let url = job_data.url.clone();
     
-    // Flag to skip cleanup if we enter Conflict state
     let mut preserve_temp_file = false;
     let mut fallback_level = 0;
 
@@ -187,13 +178,17 @@ pub async fn run_download_process(
         let general_config = config_manager.get_config().general;
         let bin_dir = crate::core::deps::get_common_bin_dir();
         
+        // --- TARGET DIR RESOLUTION ---
+        // Path is already resolved by downloader.rs before job creation. 
+        // We strictly use job_data.download_path to ensure fallbacks don't lose the folder.
         let target_dir = if let Some(ref path) = job_data.download_path {
             PathBuf::from(path)
         } else {
+            // Fallback for unexpected legacy jobs without path metadata
             match tauri::api::path::download_dir() {
                 Some(path) => path,
                 None => {
-                    let _ = tx_actor.send(construct_error(job_id, "Missing download dir".into(), None, String::new(), vec![])).await;
+                    let _ = tx_actor.send(construct_error(job_id, "Critical Error: Could not determine save directory.".into(), None, String::new(), vec![])).await;
                     return; 
                 }
             }
@@ -252,6 +247,9 @@ pub async fn run_download_process(
             cmd.arg("-N").arg("1");
         }
 
+        // SUPPRESS EXTERNAL CONFIGS to prevent hijacking output location
+        cmd.arg("--ignore-config");
+
         cmd.arg(&url)
             .arg("-o").arg(&job_data.filename_template) 
             .arg("--no-playlist")
@@ -307,7 +305,6 @@ pub async fn run_download_process(
             DownloadFormatPreset::AudioM4a => { cmd.arg("-x").args(["--audio-format", "m4a", "--audio-quality", "0"]); }
         }
 
-        // Accurately capture the exact arguments used to spawn the process
         let args: Vec<String> = cmd.as_std().get_args().map(|s| s.to_string_lossy().to_string()).collect();
         let used_command = format!("{} {}", yt_dlp_cmd, args.join(" "));
 
@@ -514,7 +511,7 @@ pub async fn run_download_process(
                         if e.file_type().is_file() {
                              if let Some(ext) = e.path().extension() {
                                 let ext_str = ext.to_string_lossy();
-                                if["mp4", "mkv", "webm", "mp3", "flac", "m4a", "wav"].contains(&ext_str.as_ref()) {
+                                if ["mp4", "mkv", "webm", "mp3", "flac", "m4a", "wav"].contains(&ext_str.as_ref()) {
                                     final_src_path = Some(e.path().to_path_buf());
                                     break;
                                 }
@@ -525,6 +522,7 @@ pub async fn run_download_process(
             }
 
             if let Some(src_path) = final_src_path {
+                // target_dir is resolved once at top of loop
                 if !target_dir.exists() { let _ = std::fs::create_dir_all(&target_dir); }
 
                 let file_name = src_path.file_name().unwrap();
@@ -631,7 +629,6 @@ pub async fn run_download_process(
         }
     }
     
-    // Robust cleanup on exit, UNLESS we are in a conflict state
     if !preserve_temp_file {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         let base_temp_dir = home.join(".multiyt-dlp").join("temp_downloads");
