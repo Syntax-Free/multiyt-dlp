@@ -211,16 +211,12 @@ pub async fn run_download_process(
         let general_config = config_manager.get_config().general;
         let bin_dir = crate::core::deps::get_common_bin_dir();
 
-        // --- TARGET DIR RESOLUTION ---
-        // Path is already resolved by downloader.rs before job creation.
-        // We strictly use job_data.download_path to ensure fallbacks don't lose the folder.
         let target_dir = if let Some(ref path) = job_data.download_path {
             PathBuf::from(path)
         } else {
-            // Fallback for unexpected legacy jobs without path metadata
-            match tauri::api::path::download_dir() {
-                Some(path) => path,
-                None => {
+            match app_handle.path().download_dir() {
+                Ok(path) => path,
+                Err(_) => {
                     let _ = tx_actor
                         .send(construct_error(
                             job_id,
@@ -309,7 +305,6 @@ pub async fn run_download_process(
             cmd.arg("-N").arg("1");
         }
 
-        // SUPPRESS EXTERNAL CONFIGS to prevent hijacking output location
         cmd.arg("--ignore-config");
 
         cmd.arg(&url)
@@ -660,7 +655,7 @@ pub async fn run_download_process(
                         if e.file_type().is_file() {
                             if let Some(ext) = e.path().extension() {
                                 let ext_str = ext.to_string_lossy();
-                                if ["mp4", "mkv", "webm", "mp3", "flac", "m4a", "wav"]
+                                if["mp4", "mkv", "webm", "mp3", "flac", "m4a", "wav"]
                                     .contains(&ext_str.as_ref())
                                 {
                                     final_src_path = Some(e.path().to_path_buf());
@@ -673,7 +668,6 @@ pub async fn run_download_process(
             }
 
             if let Some(src_path) = final_src_path {
-                // target_dir is resolved once at top of loop
                 if !target_dir.exists() {
                     let _ = std::fs::create_dir_all(&target_dir);
                 }

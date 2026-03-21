@@ -1,4 +1,4 @@
-use tauri::{AppHandle, Manager, Window};
+use tauri::{AppHandle, Manager};
 
 #[cfg(target_os = "windows")]
 use windows::Win32::{
@@ -18,7 +18,7 @@ use cocoa::foundation::NSString;
 /// `progress` should be between 0.0 and 1.0
 /// `is_error` determines if the bar should be colored red (Windows only)
 pub fn set_taskbar_progress(app: &AppHandle, progress: f64, is_error: bool) {
-    let main_window = match app.get_window("main") {
+    let main_window = match app.get_webview_window("main") {
         Some(w) => w,
         None => return,
     };
@@ -32,7 +32,7 @@ pub fn set_taskbar_progress(app: &AppHandle, progress: f64, is_error: bool) {
 
 /// Removes progress bar/badge
 pub fn clear_taskbar_progress(app: &AppHandle) {
-    let main_window = match app.get_window("main") {
+    let main_window = match app.get_webview_window("main") {
         Some(w) => w,
         None => return,
     };
@@ -45,7 +45,7 @@ pub fn clear_taskbar_progress(app: &AppHandle) {
 }
 
 #[cfg(target_os = "windows")]
-fn set_windows_progress(window: &Window, progress: f64, is_error: bool) -> Result<(), String> {
+fn set_windows_progress(window: &tauri::WebviewWindow, progress: f64, is_error: bool) -> Result<(), String> {
     let hwnd = window.hwnd().map_err(|e| e.to_string())?;
 
     unsafe {
@@ -68,7 +68,7 @@ fn set_windows_progress(window: &Window, progress: f64, is_error: bool) -> Resul
 }
 
 #[cfg(target_os = "windows")]
-fn set_windows_progress_state(window: &Window, visible: bool) -> Result<(), String> {
+fn set_windows_progress_state(window: &tauri::WebviewWindow, visible: bool) -> Result<(), String> {
     let hwnd = window.hwnd().map_err(|e| e.to_string())?;
     unsafe {
         let _ = CoInitialize(None);

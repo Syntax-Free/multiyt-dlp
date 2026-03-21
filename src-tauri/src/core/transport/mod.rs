@@ -9,7 +9,8 @@ use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
+use tauri::Emitter;
 use tracing::{info, warn};
 
 #[derive(Clone, Serialize)]
@@ -31,7 +32,7 @@ pub async fn download_file_robust(
     let app_handle_clone = app_handle.clone();
 
     // Initial UI Update
-    let _ = app_handle_clone.emit_all(
+    let _ = app_handle_clone.emit(
         "install-progress",
         InstallProgressPayload {
             name: name_arc.to_string(),
@@ -83,7 +84,7 @@ pub async fn download_file_robust(
                 format!("{:.1} MB/s", speed_mb)
             };
 
-            let _ = app_handle_clone.emit_all(
+            let _ = app_handle_clone.emit(
                 "install-progress",
                 InstallProgressPayload {
                     name: name_arc.to_string(),
@@ -114,7 +115,7 @@ pub async fn download_file_robust(
     // 3. Native Engine Fallback
     // This code runs if Aria2 was missing OR if it failed above.
     info!("Using native internal engine: {}", name);
-    let _ = app_handle.emit_all(
+    let _ = app_handle.emit(
         "install-progress",
         InstallProgressPayload {
             name: name.to_string(),

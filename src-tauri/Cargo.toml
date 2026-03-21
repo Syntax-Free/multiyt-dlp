@@ -37,6 +37,7 @@ tauri-plugin-notification = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-process = "2"
+tauri-plugin-opener = "2"
 
 [target.'cfg(not(windows))'.dependencies]
 nix = { version = "0.27", features = ["signal"] }

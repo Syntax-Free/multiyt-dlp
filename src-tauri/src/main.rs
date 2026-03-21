@@ -4,7 +4,7 @@
 use std::fs;
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::{Manager, WindowEvent};
+use tauri::Manager;
 use tokio::sync::mpsc;
 
 #[cfg(target_os = "windows")]
@@ -74,14 +74,15 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_opener::init())
         .manage(config_manager)
         .manage(log_manager)
         .manage(history_manager)
         .setup(move |app| {
-            let job_manager_handle = JobManagerHandle::new(app.handle());
+            let job_manager_handle = JobManagerHandle::new(app.handle().clone());
             app.manage(job_manager_handle);
 
-            let main_window = app.get_window("main").unwrap();
+            let main_window = app.get_webview_window("main").unwrap();
             let config = config_manager_setup.get_config();
 
             let _ = main_window.set_size(tauri::Size::Physical(tauri::PhysicalSize {
@@ -107,15 +108,14 @@ fn main() {
 
             Ok(())
         })
-        .on_window_event(move |event| {
-            let window = event.window();
+        .on_window_event(move |window, event| {
             let window_label = window.label();
 
-            match event.event() {
-                WindowEvent::Destroyed => {
+            match event {
+                tauri::WindowEvent::Destroyed => {
                     if window_label == "splashscreen" {
                         let app_handle = window.app_handle();
-                        if let Some(main) = app_handle.get_window("main") {
+                        if let Some(main) = app_handle.get_webview_window("main") {
                             if !main.is_visible().unwrap_or(false) {
                                 app_handle.exit(0);
                             }
@@ -124,7 +124,7 @@ fn main() {
                         }
                     }
                     if window_label == "main" {
-                        let app_handle = window.app_handle();
+                        let app_handle = window.app_handle().clone();
                         let manager = app_handle.state::<JobManagerHandle>();
                         let manager_clone = manager.inner().clone();
 
@@ -135,7 +135,7 @@ fn main() {
                     }
                 }
 
-                WindowEvent::Moved(pos) => {
+                tauri::WindowEvent::Moved(pos) => {
                     if window_label == "main" && !window.is_minimized().unwrap_or(false) {
                         if pos.x > -10000 && pos.y > -10000 {
                             let mut current_config = config_manager_event.get_config();
@@ -147,7 +147,7 @@ fn main() {
                         }
                     }
                 }
-                WindowEvent::Resized(size) => {
+                tauri::WindowEvent::Resized(size) => {
                     if window_label == "main" && !window.is_minimized().unwrap_or(false) {
                         if size.width > 0 && size.height > 0 {
                             let mut current_config = config_manager_event.get_config();

@@ -2,7 +2,9 @@ use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tauri::Emitter;
 use tauri::{AppHandle, Manager};
+use tauri_plugin_notification::NotificationExt;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{self, Duration};
 use tracing::{debug, error, info, warn};
@@ -289,7 +291,7 @@ impl JobManagerActor {
                 self.persistence_registry.remove(&id);
                 self.mark_dirty();
 
-                let _ = self.app_handle.emit_all(
+                let _ = self.app_handle.emit(
                     "download-cancelled",
                     DownloadCancelledPayload { job_id: id },
                 );
@@ -363,7 +365,7 @@ impl JobManagerActor {
                             job.phase = Some("Discarded".to_string());
                             job.sequence_id += 1;
 
-                            let _ = self.app_handle.emit_all(
+                            let _ = self.app_handle.emit(
                                 "download-cancelled",
                                 DownloadCancelledPayload { job_id: id },
                             );
@@ -382,7 +384,7 @@ impl JobManagerActor {
                 self.mark_dirty();
 
                 if let (Some(st), Some(p)) = (status_to_emit, path_to_emit) {
-                    let _ = self.app_handle.emit_all(
+                    let _ = self.app_handle.emit(
                         "download-complete",
                         DownloadCompletePayload {
                             job_id: id,
@@ -470,7 +472,7 @@ impl JobManagerActor {
                     job.used_command = Some(used_command.clone());
                     job.sequence_id += 1;
 
-                    let _ = self.app_handle.emit_all(
+                    let _ = self.app_handle.emit(
                         "download-progress-batch",
                         BatchProgressPayload {
                             updates: vec![DownloadProgressPayload {
@@ -519,7 +521,7 @@ impl JobManagerActor {
                 self.persistence_registry.remove(&id);
                 self.mark_dirty();
 
-                let _ = self.app_handle.emit_all(
+                let _ = self.app_handle.emit(
                     "download-complete",
                     DownloadCompletePayload {
                         job_id: id,
@@ -557,7 +559,7 @@ impl JobManagerActor {
                 }
                 self.mark_dirty();
 
-                let _ = self.app_handle.emit_all("download-error", payload);
+                let _ = self.app_handle.emit("download-error", payload);
             }
             JobMessage::WorkerFinished => {
                 debug!(target: "core::manager", "Worker finished signal received");
@@ -680,7 +682,7 @@ impl JobManagerActor {
         self.pending_updates.clear();
         let _ = self
             .app_handle
-            .emit_all("download-progress-batch", BatchProgressPayload { updates });
+            .emit("download-progress-batch", BatchProgressPayload { updates });
     }
 
     fn process_queue(&mut self) {
@@ -753,13 +755,13 @@ impl JobManagerActor {
     }
 
     fn trigger_finished_notification(&mut self) {
-        use tauri::api::notification::Notification;
         let count = self.completed_session_count;
         if count == 0 {
             return;
         }
 
-        let _ = Notification::new(self.app_handle.config().tauri.bundle.identifier.clone())
+        let _ = self.app_handle.notification()
+            .builder()
             .title("Downloads Finished")
             .body(format!("Queue processed. {} files handled.", count))
             .icon("icons/128x128.png")

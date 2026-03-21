@@ -6,7 +6,8 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
+use tauri::Emitter;
 use tokio::time::{sleep, timeout, Duration};
 
 #[cfg(target_os = "windows")]
@@ -494,7 +495,7 @@ impl DependencyProvider for FfmpegProvider {
         .await
         .map_err(|e| e.to_string())?;
 
-        let _ = app_handle.emit_all(
+        let _ = app_handle.emit(
             "install-progress",
             InstallProgressPayload {
                 name: self.get_name(),
@@ -511,7 +512,7 @@ impl DependencyProvider for FfmpegProvider {
             // Evermeet provides macOS ffprobe binary in a completely separate archive
             let ffprobe_archive = std::env::temp_dir().join("ffprobe_tmp.zip");
             let ffprobe_url = "https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip";
-            let _ = app_handle.emit_all(
+            let _ = app_handle.emit(
                 "install-progress",
                 InstallProgressPayload {
                     name: "FFprobe".to_string(),

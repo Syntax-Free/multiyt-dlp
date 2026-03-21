@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
+use tauri_plugin_opener::OpenerExt;
 use tokio::time::{timeout, Duration};
 use tracing::{debug, error, info, warn};
 
@@ -117,7 +118,7 @@ pub fn resolve_binary_info(
 }
 
 pub fn get_js_runtime_info(bin_path: &PathBuf) -> Option<(String, String)> {
-    let providers = [
+    let providers =[
         ("deno", "deno"),
         ("node", "node"),
         ("bun", "bun"),
@@ -157,7 +158,7 @@ pub fn get_js_runtime_info(bin_path: &PathBuf) -> Option<(String, String)> {
 }
 
 pub async fn analyze_js_runtime(_app_handle: &AppHandle, bin_path: &PathBuf) -> DependencyInfo {
-    let providers = [
+    let providers =[
         ("deno", "Deno", "--version"),
         ("node", "Node.js", "--version"),
         ("bun", "Bun", "--version"),
@@ -206,8 +207,6 @@ pub async fn analyze_js_runtime(_app_handle: &AppHandle, bin_path: &PathBuf) -> 
     }
 }
 
-/// Optimized Splash Scan: Only checks local existence to be instant.
-/// Constructing LocalScanResult here satisfies construction requirement.
 #[tauri::command]
 pub async fn check_local_deps(_app_handle: AppHandle) -> LocalScanResult {
     let bin_dir = crate::core::deps::get_common_bin_dir();
@@ -296,7 +295,6 @@ pub async fn check_dependencies(app_handle: AppHandle) -> AppDependencies {
             let mut info = resolve_binary_info(exec_name, "-version", &bin_dir);
             let fp_info = resolve_binary_info(fp_name, "-version", &bin_dir);
 
-            // If either component of the suite is missing, flag the entire FFmpeg suite as missing
             if !fp_info.available {
                 info.available = false;
             }
@@ -364,16 +362,16 @@ pub async fn sync_dependencies(app_handle: AppHandle) -> Result<AppDependencies,
 
 #[tauri::command]
 pub fn open_external_link(app_handle: AppHandle, url: String) -> Result<(), String> {
-    tauri::api::shell::open(&app_handle.shell_scope(), url, None)
+    app_handle.opener().open_url(url, None::<&str>)
         .map_err(|e| format!("Failed to open URL: {}", e))
 }
 
 #[tauri::command]
 pub fn close_splash(app_handle: AppHandle) {
-    if let Some(splash) = app_handle.get_window("splashscreen") {
+    if let Some(splash) = app_handle.get_webview_window("splashscreen") {
         let _ = splash.close();
     }
-    if let Some(main) = app_handle.get_window("main") {
+    if let Some(main) = app_handle.get_webview_window("main") {
         let _ = main.show();
         let _ = main.set_focus();
     }
@@ -394,7 +392,7 @@ pub async fn get_latest_app_version() -> Result<String, String> {
 
 #[tauri::command]
 pub fn request_attention(app_handle: AppHandle) {
-    if let Some(window) = app_handle.get_window("splashscreen") {
+    if let Some(window) = app_handle.get_webview_window("splashscreen") {
         let _ = window.request_user_attention(Some(tauri::UserAttentionType::Informational));
     }
 }

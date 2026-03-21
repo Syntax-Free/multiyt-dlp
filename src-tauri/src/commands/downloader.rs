@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::sync::Arc;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use tokio::sync::Semaphore;
 use uuid::Uuid;
 
@@ -58,7 +58,6 @@ async fn probe_url(
         cmd.env("PATH", bin_dir.to_string_lossy().to_string());
     }
 
-    // Suppress config files and only probe for metadata
     cmd.arg("--ignore-config")
         .arg("--flat-playlist")
         .arg("--dump-single-json")
@@ -161,7 +160,7 @@ pub async fn expand_playlist(
 pub async fn start_download(
     app: AppHandle,
     url: String,
-    download_path: Option<String>, // Path from the Download Form
+    download_path: Option<String>,
     format_preset: DownloadFormatPreset,
     video_resolution: String,
     embed_metadata: bool,
@@ -182,13 +181,9 @@ pub async fn start_download(
     let config_manager = config.inner().clone();
     let general_config = config_manager.get_config().general;
 
-    // --- RESOLVE DOWNLOAD PATH PRECEDENCE ---
-    // 1. Explicit path from the UI Form
-    // 2. Saved path from Settings (Global)
-    // 3. System Downloads folder
     let final_download_path = download_path
         .or(general_config.download_path)
-        .or_else(|| tauri::api::path::download_dir().map(|p| p.to_string_lossy().to_string()));
+        .or_else(|| app.path().download_dir().ok().map(|p| p.to_string_lossy().to_string()));
 
     if final_download_path.is_none() {
         return Err(AppError::ValidationFailed(
@@ -238,7 +233,7 @@ pub async fn start_download(
         let job_data = QueuedJob {
             id: job_id,
             url: entry.url.clone(),
-            download_path: final_download_path.clone(), // Pass the strictly resolved path
+            download_path: final_download_path.clone(),
             format_preset: format_preset.clone(),
             video_resolution: video_resolution.clone(),
             embed_metadata,
