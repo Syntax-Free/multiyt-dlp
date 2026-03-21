@@ -56,7 +56,7 @@ If you enjoy suffering and want to read error logs, go ahead. I’m not stopping
 
 1.  **Clone the Repo**
     ```bash
-    git clone https://github.com/zqily/multiyt-dlp.git
+    git clone https://github.com/Syntax-Free/multiyt-dlp.git
     ```
 2.  **Install Dependencies** (Wait for an eternity)
     ```bash
