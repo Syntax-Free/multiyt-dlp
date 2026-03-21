@@ -1,5 +1,5 @@
 import { Download } from '@/types';
-import { X, CheckCircle2, AlertTriangle, Hourglass, MonitorPlay, Headphones, Tags, FileOutput, Image as ImageIcon, Activity, FolderOpen, Trash2, FileWarning, RefreshCw } from 'lucide-react';
+import { X, CheckCircle2, AlertTriangle, Hourglass, MonitorPlay, Headphones, Tags, FileOutput, Image as ImageIcon, Activity, FolderOpen, Trash2, FileWarning, RefreshCw, HelpCircle } from 'lucide-react';
 import { twMerge } from 'tailwind-merge';
 import { showInFolder } from '@/api/invoke';
 import { parseError } from '@/utils/errorRegistry';
@@ -18,7 +18,7 @@ function middleTruncate(str: string, maxLength: number) {
 
 export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) {
   const { resolveConflict } = useDownloadManager();
-  const { jobId, status, progress, error, phase, preset, embedThumbnail, filename, url, outputPath, stderr } = download;
+  const { jobId, status, progress, error, phase, preset, embedThumbnail, filename, url, outputPath, stderr, usedCommand } = download;
 
   const isAudio = preset?.startsWith('audio');
   const rawTitle = filename || url;
@@ -29,6 +29,7 @@ export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) 
   const isActive = status === 'downloading'; 
   const isError = status === 'error';
   const isCompleted = status === 'completed';
+  const isModified = status === 'modified';
   const isCancelled = status === 'cancelled';
   const isConflict = status === 'file_conflict';
 
@@ -58,6 +59,7 @@ export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) 
   const getContainerStyles = () => {
       if (isError) return "border-red-500/50 bg-red-950/20 shadow-[0_0_15px_-5px_rgba(239,68,68,0.3)]";
       if (isConflict) return "border-amber-500/60 bg-amber-950/20 shadow-[0_0_15px_-5px_rgba(245,158,11,0.3)] ring-1 ring-amber-500/30";
+      if (isModified) return "border-fuchsia-500/50 bg-fuchsia-950/20 shadow-[0_0_15px_-5px_rgba(217,70,239,0.3)] ring-1 ring-fuchsia-500/30";
       if (isCompleted) return "border-emerald-500/50 bg-emerald-950/20 shadow-[0_0_15px_-5px_rgba(16,185,129,0.3)]";
       if (isProcessingPhase || isMetaPhase) return "border-amber-500/50 bg-amber-950/20 shadow-[0_0_15px_-5px_rgba(245,158,11,0.3)]";
       if (isActive) return "border-theme-cyan/50 bg-zinc-900 shadow-[0_0_15px_-5px_rgba(6,182,212,0.3)]";
@@ -68,6 +70,7 @@ export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) 
   const IconComponent = () => {
     if (isError) return <AlertTriangle className="h-7 w-7 text-red-500 drop-shadow-lg" />;
     if (isConflict) return <FileWarning className="h-8 w-8 text-amber-500 drop-shadow-lg animate-pulse" />;
+    if (isModified) return <CheckCircle2 className="h-7 w-7 text-fuchsia-500 drop-shadow-lg" />;
     if (isCompleted) return <CheckCircle2 className="h-7 w-7 text-emerald-500 drop-shadow-lg" />;
     if (isCancelled) return <X className="h-7 w-7 text-zinc-600" />;
     if (isQueued) return <Hourglass className="h-7 w-7 text-zinc-500 animate-pulse" />;
@@ -90,7 +93,7 @@ export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) 
   }
 
   const handleCardClick = (e: React.MouseEvent) => {
-      if (isCompleted && outputPath) {
+      if ((isCompleted || isModified) && outputPath) {
           e.stopPropagation();
           showInFolder(outputPath);
       }
@@ -102,9 +105,20 @@ export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) 
         className={twMerge(
             "group relative aspect-square w-full min-h-[160px] rounded-xl border-2 overflow-hidden transition-all duration-300 select-none flex flex-col",
             getContainerStyles(),
-            isCompleted && outputPath ? "cursor-pointer hover:border-emerald-500/80 hover:shadow-emerald-500/20" : ""
+            (isCompleted || isModified) && outputPath ? "cursor-pointer hover:border-emerald-500/80 hover:shadow-emerald-500/20" : "",
+            isModified && "hover:border-fuchsia-500/80 hover:shadow-fuchsia-500/20"
         )}
     >
+        {/* MODIFIED HELPER: Top right ? badge */}
+        {isModified && (
+            <div 
+                className="absolute top-2 right-2 z-30 flex items-center justify-center p-1 bg-fuchsia-500/20 text-fuchsia-300 rounded-full cursor-help border border-fuchsia-500/30 shadow-lg"
+                title={`Fallback used.\nExact command:\n${usedCommand}`}
+            >
+                <HelpCircle className="h-4 w-4" />
+            </div>
+        )}
+
         {/* ERROR STATE: Striped Background Pattern */}
         {isError && (
             <div className="absolute inset-0 opacity-10 bg-[repeating-linear-gradient(45deg,transparent,transparent_10px,#ef4444_10px,#ef4444_20px)]" />
@@ -159,12 +173,11 @@ export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) 
         {/* --- HOVER OVERLAY ACTIONS --- */}
         <div className={twMerge(
             "absolute inset-0 z-20 transition-all duration-300 flex flex-col p-3",
-            // Special styling for Completed State: Full overlay acts as button
-            isCompleted ? "bg-black/60 backdrop-blur-sm opacity-0 group-hover:opacity-100 items-center justify-center" : "bg-zinc-950/95 backdrop-blur-[2px] opacity-0 group-hover:opacity-100",
+            (isCompleted || isModified) ? "bg-black/60 backdrop-blur-sm opacity-0 group-hover:opacity-100 items-center justify-center" : "bg-zinc-950/95 backdrop-blur-[2px] opacity-0 group-hover:opacity-100",
             isConflict ? "opacity-100" : "" 
         )}>
-            {/* COMPLETED STATE: Big Folder Icon */}
-            {isCompleted && outputPath ? (
+            {/* COMPLETED/MODIFIED STATE: Big Folder Icon */}
+            {(isCompleted || isModified) && outputPath ? (
                 <>
                     <div className="absolute top-3 left-3 flex gap-1">
                         <span className={twMerge(
@@ -174,7 +187,13 @@ export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) 
                             {badgeText}
                         </span>
                     </div>
-                    <FolderOpen className="h-16 w-16 text-emerald-400 drop-shadow-[0_0_15px_rgba(52,211,153,0.5)] transform group-hover:scale-110 transition-transform duration-300" strokeWidth={1.5} />
+                    <FolderOpen 
+                        className={twMerge(
+                            "h-16 w-16 drop-shadow-[0_0_15px_rgba(52,211,153,0.5)] transform group-hover:scale-110 transition-transform duration-300",
+                            isModified ? "text-fuchsia-400 drop-shadow-[0_0_15px_rgba(217,70,239,0.5)]" : "text-emerald-400"
+                        )} 
+                        strokeWidth={1.5} 
+                    />
                 </>
             ) : (
                 // STANDARD OVERLAY FOR OTHER STATES

@@ -8,9 +8,10 @@ pub enum JobStatus {
     Pending,
     Downloading,
     Completed,
+    Modified,
     Cancelled,
     Error,
-    FileConflict, // NEW
+    FileConflict,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,7 +35,7 @@ pub struct Job {
     pub status: JobStatus,
     pub progress: f32,
     pub output_path: Option<String>,
-    pub temp_path: Option<String>, // NEW: Track temp file location for resolution
+    pub temp_path: Option<String>, 
     
     // Sync & UI Fields
     pub sequence_id: u64,
@@ -68,6 +69,9 @@ pub struct Job {
     
     #[serde(rename = "liveFromStart")]
     pub live_from_start: Option<bool>,
+
+    pub is_modified: bool,
+    pub used_command: Option<String>,
 }
 
 impl Job {
@@ -97,6 +101,8 @@ impl Job {
             embed_thumbnail: None,
             restrict_filenames: None,
             live_from_start: None,
+            is_modified: false,
+            used_command: None,
         }
     }
 }
@@ -112,7 +118,7 @@ pub struct Download {
     pub speed: Option<String>,
     pub eta: Option<String>,
     pub output_path: Option<String>,
-    pub temp_path: Option<String>, // NEW
+    pub temp_path: Option<String>,
     pub error: Option<String>,
     pub filename: Option<String>,
     pub phase: Option<String>,
@@ -141,6 +147,9 @@ pub struct Download {
     
     #[serde(rename = "liveFromStart")]
     pub live_from_start: Option<bool>,
+
+    #[serde(rename = "usedCommand")]
+    pub used_command: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -191,7 +200,7 @@ pub struct DownloadProgressPayload {
     pub eta: String,
     pub filename: Option<String>,
     pub phase: Option<String>,
-    pub status: Option<JobStatus>, // NEW: Allow progress to carry status transitions
+    pub status: Option<JobStatus>,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -205,6 +214,9 @@ pub struct DownloadCompletePayload {
     pub job_id: Uuid,
     #[serde(rename = "outputPath")]
     pub output_path: String,
+    pub status: JobStatus,
+    #[serde(rename = "usedCommand")]
+    pub used_command: Option<String>,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -236,9 +248,9 @@ pub enum JobMessage {
         phase: String 
     },
     ProcessStarted { id: Uuid, pid: u32 },
-    JobCompleted { id: Uuid, output_path: String },
+    JobCompleted { id: Uuid, output_path: String, is_modified: bool, used_command: String },
     JobError { id: Uuid, payload: DownloadErrorPayload },
-    FileConflict { id: Uuid, temp_path: String, output_path: String },
+    FileConflict { id: Uuid, temp_path: String, output_path: String, is_modified: bool, used_command: String },
     WorkerFinished,
     GetPendingCount(oneshot::Sender<u32>),
     ResumePending(oneshot::Sender<Vec<QueuedJob>>),

@@ -9,7 +9,6 @@ export function useDownloadManager() {
   const [downloads, setDownloads] = useState<Map<string, Download>>(new Map());
   const hasSynced = useRef(false);
 
-  // Consolidated update function for batching with Sequence ID checking
   const updateDownloadsBatch = (updates: { jobId: string, data: Partial<Download> }[]) => {
     setDownloads((prev) => {
         const newMap = new Map(prev);
@@ -17,12 +16,10 @@ export function useDownloadManager() {
             const existing = newMap.get(update.jobId);
             
             if (existing) {
-                // SEQUENCE CHECK: Ignore out-of-order updates
                 if (update.data.sequence_id !== undefined && existing.sequence_id > update.data.sequence_id) {
                     return;
                 }
 
-                // If the update payload has no filename, but the existing state DOES, preserve it.
                 const mergedFilename = update.data.filename || existing.filename;
 
                 newMap.set(update.jobId, { 
@@ -31,7 +28,6 @@ export function useDownloadManager() {
                     filename: mergedFilename 
                 });
             } else {
-                // New job from an event
                 newMap.set(update.jobId, {
                     jobId: update.jobId,
                     url: update.data.filename || 'Resumed Download',
@@ -46,7 +42,6 @@ export function useDownloadManager() {
     });
   };
 
-  // Optimistic UI updates with explicitly escalated sequence IDs to protect against race conditions
   const updateDownload = (jobId: string, newProps: Partial<Download>) => {
       setDownloads((prev) => {
           const newMap = new Map(prev);
@@ -66,7 +61,6 @@ export function useDownloadManager() {
   };
 
   useEffect(() => {
-    // 1. Recover state on mount (UI Refresh resilience)
     if (!hasSynced.current) {
         hasSynced.current = true;
         syncDownloadState().then((recovered) => {
@@ -76,7 +70,6 @@ export function useDownloadManager() {
                     recovered.forEach(remoteJob => {
                         const localJob = newMap.get(remoteJob.jobId);
                         
-                        // ZOMBIE FIX: We trust the backend state regarding status.
                         if (localJob && localJob.sequence_id > remoteJob.sequence_id) {
                             return;
                         }
@@ -107,10 +100,11 @@ export function useDownloadManager() {
 
     const unlistenComplete = listen<DownloadCompletePayload>('download-complete', (event) => {
       updateDownload(event.payload.jobId, {
-        status: 'completed',
+        status: event.payload.status || 'completed',
         progress: 100,
         outputPath: event.payload.outputPath,
         phase: 'Done',
+        usedCommand: event.payload.usedCommand,
       });
     });
 
@@ -139,7 +133,7 @@ export function useDownloadManager() {
       unlistenError.then((f) => f());
       unlistenCancelled.then((f) => f());
     };
-  }, []);
+  },[]);
 
   const startDownload = useCallback(async (
     url: string, 
@@ -251,7 +245,7 @@ export function useDownloadManager() {
           });
           return newMap;
       });
-  }, []);
+  },[]);
 
   const removeDownload = useCallback((jobId: string) => {
       setDownloads((prev) => {
@@ -259,7 +253,7 @@ export function useDownloadManager() {
           newMap.delete(jobId);
           return newMap;
       });
-  }, []);
+  },[]);
 
   const cancelDownload = useCallback(async (jobId: string) => {
     const job = downloads.get(jobId);
@@ -295,14 +289,13 @@ export function useDownloadManager() {
 
   const resolveConflict = useCallback(async (jobId: string, resolution: 'overwrite' | 'discard') => {
       try {
-          // Optimistically update UI
           updateDownload(jobId, { phase: resolution === 'overwrite' ? 'Overwriting...' : 'Discarding...' });
           await apiResolveConflict(jobId, resolution);
       } catch (err) {
           console.error("Failed to resolve conflict", err);
           updateDownload(jobId, { status: 'error', error: 'Failed to resolve conflict' });
       }
-  }, []);
+  },[]);
 
   return { downloads, startDownload, cancelDownload, removeDownload, importResumedJobs, cancelAllDownloads, resolveConflict };
 }

@@ -170,6 +170,7 @@ pub async fn run_download_process(
     
     // Flag to skip cleanup if we enter Conflict state
     let mut preserve_temp_file = false;
+    let mut fallback_level = 0;
 
     let _ = tx_actor.send(JobMessage::UpdateProgress {
         id: job_id,
@@ -210,7 +211,7 @@ pub async fn run_download_process(
         let local_exe = bin_dir.join(if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" });
         if local_exe.exists() { yt_dlp_cmd = local_exe.to_string_lossy().to_string(); }
 
-        let mut cmd = Command::new(yt_dlp_cmd);
+        let mut cmd = Command::new(&yt_dlp_cmd);
         
         if let Ok(current_path) = std::env::var("PATH") {
             let new_path = format!("{}{}{}", bin_dir.to_string_lossy(), if cfg!(windows) { ";" } else { ":" }, current_path);
@@ -306,7 +307,11 @@ pub async fn run_download_process(
             DownloadFormatPreset::AudioM4a => { cmd.arg("-x").args(["--audio-format", "m4a", "--audio-quality", "0"]); }
         }
 
-        debug!(target: "core::process", job_id = ?job_id, "Spawning process: {:?}", cmd.as_std());
+        // Accurately capture the exact arguments used to spawn the process
+        let args: Vec<String> = cmd.as_std().get_args().map(|s| s.to_string_lossy().to_string()).collect();
+        let used_command = format!("{} {}", yt_dlp_cmd, args.join(" "));
+
+        debug!(target: "core::process", job_id = ?job_id, "Spawning process: {}", used_command);
 
         let mut child = match cmd.spawn() {
             Ok(child) => child,
@@ -333,7 +338,7 @@ pub async fn run_download_process(
              let _ = tx_actor.send(JobMessage::ProcessStarted { id: job_id, pid }).await;
         }
 
-        if job_data.restrict_filenames {
+        if job_data.restrict_filenames && fallback_level == 0 {
             let _ = tx_actor.send(JobMessage::UpdateProgress {
                 id: job_id, percentage: 0.0, speed: "Retrying...".to_string(), eta: "--".to_string(), filename: None,
                 phase: "Sanitizing Filenames (Retry)".to_string(),
@@ -509,7 +514,7 @@ pub async fn run_download_process(
                         if e.file_type().is_file() {
                              if let Some(ext) = e.path().extension() {
                                 let ext_str = ext.to_string_lossy();
-                                if ["mp4", "mkv", "webm", "mp3", "flac", "m4a", "wav"].contains(&ext_str.as_ref()) {
+                                if["mp4", "mkv", "webm", "mp3", "flac", "m4a", "wav"].contains(&ext_str.as_ref()) {
                                     final_src_path = Some(e.path().to_path_buf());
                                     break;
                                 }
@@ -525,7 +530,6 @@ pub async fn run_download_process(
                 let file_name = src_path.file_name().unwrap();
                 let dest_path = target_dir.join(file_name);
                 
-                // Notify "Moving" phase before attempting move
                 let _ = tx_actor.send(JobMessage::UpdateProgress {
                     id: job_id,
                     percentage: 100.0,
@@ -535,21 +539,28 @@ pub async fn run_download_process(
                     phase: "Moving to Library".to_string()
                 }).await;
 
-                // Sync wait to ensure the message is processed by actor buffer before conflict logic fires
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 
+                let is_modified = fallback_level > 0;
+
                 match robust_move_file(&src_path, &dest_path).await {
                     Ok(_) => {
-                        let _ = tx_actor.send(JobMessage::JobCompleted { id: job_id, output_path: dest_path.to_string_lossy().to_string() }).await;
+                        let _ = tx_actor.send(JobMessage::JobCompleted { 
+                            id: job_id, 
+                            output_path: dest_path.to_string_lossy().to_string(),
+                            is_modified,
+                            used_command,
+                        }).await;
                         break;
                     },
                     Err(e) => {
                         if e.kind() == std::io::ErrorKind::AlreadyExists {
-                            // CONFLICT: Notify manager and preserve temp file
                             let _ = tx_actor.send(JobMessage::FileConflict { 
                                 id: job_id, 
                                 temp_path: src_path.to_string_lossy().to_string(),
-                                output_path: dest_path.to_string_lossy().to_string()
+                                output_path: dest_path.to_string_lossy().to_string(),
+                                is_modified,
+                                used_command,
                             }).await;
                             preserve_temp_file = true;
                             break;
@@ -574,6 +585,37 @@ pub async fn run_download_process(
                 warn!(target: "core::process", job_id = ?job_id, "Retrying with restricted filenames");
                 job_data.restrict_filenames = true;
                 continue; 
+            }
+
+            let is_fatal_auth_js = stderr_blob.contains("No supported JavaScript runtime") 
+                || stderr_blob.contains("Sign in to confirm") 
+                || stderr_blob.contains("confirm you're not a bot");
+
+            if !is_fatal_auth_js {
+                if fallback_level == 0 {
+                    warn!(target: "core::process", job_id = ?job_id, "Download failed, falling back to Level 1 (Loose Format)...");
+                    fallback_level = 1;
+                    job_data.video_resolution = "best".to_string();
+                    job_data.embed_metadata = false;
+                    job_data.embed_thumbnail = false;
+                    job_data.live_from_start = false;
+                    
+                    let _ = tx_actor.send(JobMessage::UpdateProgress {
+                        id: job_id, percentage: 0.0, speed: "Retrying...".to_string(), eta: "--".to_string(), filename: None,
+                        phase: "Fallback Level 1 (Loose Format)".to_string(),
+                    }).await;
+                    continue;
+                } else if fallback_level == 1 {
+                    warn!(target: "core::process", job_id = ?job_id, "Download failed again, falling back to Level 2 (Any Format)...");
+                    fallback_level = 2;
+                    job_data.format_preset = DownloadFormatPreset::Best;
+                    
+                    let _ = tx_actor.send(JobMessage::UpdateProgress {
+                        id: job_id, percentage: 0.0, speed: "Retrying...".to_string(), eta: "--".to_string(), filename: None,
+                        phase: "Fallback Level 2 (Any Format)".to_string(),
+                    }).await;
+                    continue;
+                }
             }
 
             let short_msg = if stderr_blob.contains("No supported JavaScript runtime") {
