@@ -1,8 +1,8 @@
-pub mod error;
-pub mod manager;
-pub mod process;
-pub mod logging;
 pub mod deps;
-pub mod native;
+pub mod error;
 pub mod history;
+pub mod logging;
+pub mod manager;
+pub mod native;
+pub mod process;
 pub mod transport;

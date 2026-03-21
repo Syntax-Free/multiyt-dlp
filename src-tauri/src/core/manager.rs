@@ -1,23 +1,20 @@
 use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot};
-use tokio::time::{self, Duration};
-use tauri::{AppHandle, Manager};
-use uuid::Uuid;
 use std::fs;
 use std::path::{Path, PathBuf};
-use tracing::{info, warn, error, debug};
+use std::sync::Arc;
+use tauri::{AppHandle, Manager};
+use tokio::sync::{mpsc, oneshot};
+use tokio::time::{self, Duration};
+use tracing::{debug, error, info, warn};
+use uuid::Uuid;
 
-use crate::models::{
-    Job, JobStatus, QueuedJob, JobMessage, 
-    DownloadProgressPayload, BatchProgressPayload, 
-    DownloadCompletePayload,
-    DownloadCancelledPayload,
-    Download
-};
 use crate::config::ConfigManager;
-use crate::core::process::run_download_process;
 use crate::core::native;
+use crate::core::process::run_download_process;
+use crate::models::{
+    BatchProgressPayload, Download, DownloadCancelledPayload, DownloadCompletePayload,
+    DownloadProgressPayload, Job, JobMessage, JobStatus, QueuedJob,
+};
 
 #[derive(Clone)]
 pub struct JobManagerHandle {
@@ -29,7 +26,7 @@ impl JobManagerHandle {
         let (sender, receiver) = mpsc::channel(1000);
         let actor = JobManagerActor::new(app_handle, receiver, sender.clone());
         tauri::async_runtime::spawn(actor.run());
-        
+
         Self { sender }
     }
 
@@ -45,7 +42,14 @@ impl JobManagerHandle {
 
     pub async fn resolve_conflict(&self, id: Uuid, resolution: String) -> Result<(), String> {
         let (tx, rx) = oneshot::channel();
-        let _ = self.sender.send(JobMessage::ResolveConflict { id, resolution, resp: tx }).await;
+        let _ = self
+            .sender
+            .send(JobMessage::ResolveConflict {
+                id,
+                resolution,
+                resp: tx,
+            })
+            .await;
         rx.await.map_err(|_| "Actor closed".to_string())?
     }
 
@@ -70,7 +74,7 @@ impl JobManagerHandle {
         let _ = self.sender.send(JobMessage::SyncState(tx)).await;
         rx.await.unwrap_or_default()
     }
-    
+
     pub async fn shutdown(&self) {
         let (tx, rx) = oneshot::channel();
         let _ = self.sender.send(JobMessage::Shutdown(tx)).await;
@@ -80,7 +84,7 @@ impl JobManagerHandle {
 
 enum PersistenceMsg {
     Save(Vec<QueuedJob>),
-    Clear
+    Clear,
 }
 
 struct JobManagerActor {
@@ -92,7 +96,7 @@ struct JobManagerActor {
     queue: VecDeque<QueuedJob>,
     persistence_registry: HashMap<Uuid, QueuedJob>,
     persistence_tx: mpsc::Sender<PersistenceMsg>,
-    
+
     dirty_persistence: bool,
 
     active_network_jobs: u32,
@@ -103,8 +107,11 @@ struct JobManagerActor {
 }
 
 impl JobManagerActor {
-    fn new(app_handle: AppHandle, receiver: mpsc::Receiver<JobMessage>, self_sender: mpsc::Sender<JobMessage>) -> Self {
-        
+    fn new(
+        app_handle: AppHandle,
+        receiver: mpsc::Receiver<JobMessage>,
+        self_sender: mpsc::Sender<JobMessage>,
+    ) -> Self {
         let (ptx, mut prx) = mpsc::channel(100);
         tauri::async_runtime::spawn(async move {
             let path = Self::get_persistence_path();
@@ -119,10 +126,10 @@ impl JobManagerActor {
                                 warn!(target: "core::persistence", "Failed to write persistence file");
                             }
                         }
-                    },
+                    }
                     PersistenceMsg::Clear => {
-                        if path.exists() { 
-                            let _ = tokio::fs::remove_file(&path).await; 
+                        if path.exists() {
+                            let _ = tokio::fs::remove_file(&path).await;
                         }
                     }
                 }
@@ -172,7 +179,7 @@ impl JobManagerActor {
                 _ = interval.tick() => {
                     self.flush_updates();
                     self.update_native_ui();
-                    
+
                     if self.dirty_persistence {
                         let jobs: Vec<QueuedJob> = self.persistence_registry.values().cloned().collect();
                         if let Ok(_) = self.persistence_tx.try_send(PersistenceMsg::Save(jobs)) {
@@ -185,10 +192,8 @@ impl JobManagerActor {
     }
 
     async fn handle_shutdown(&mut self) {
-        let pids: Vec<u32> = self.jobs.values()
-            .filter_map(|j| j.pid)
-            .collect();
-        
+        let pids: Vec<u32> = self.jobs.values().filter_map(|j| j.pid).collect();
+
         info!(target: "core::manager", "Killing {} active processes", pids.len());
 
         for pid in pids {
@@ -197,16 +202,19 @@ impl JobManagerActor {
 
         let deadline = time::Instant::now() + Duration::from_secs(3);
         while self.active_process_instances > 0 {
-             if time::Instant::now() > deadline {
-                 warn!("Shutdown timeout reached with {} active processes", self.active_process_instances);
-                 break;
-             }
-             if let Ok(msg) = self.receiver.try_recv() {
-                 if matches!(msg, JobMessage::WorkerFinished) {
-                     self.handle_message(msg).await;
-                 }
-             }
-             time::sleep(Duration::from_millis(50)).await;
+            if time::Instant::now() > deadline {
+                warn!(
+                    "Shutdown timeout reached with {} active processes",
+                    self.active_process_instances
+                );
+                break;
+            }
+            if let Ok(msg) = self.receiver.try_recv() {
+                if matches!(msg, JobMessage::WorkerFinished) {
+                    self.handle_message(msg).await;
+                }
+            }
+            time::sleep(Duration::from_millis(50)).await;
         }
 
         self.clean_temp_directory().await;
@@ -214,10 +222,10 @@ impl JobManagerActor {
 
     fn is_fatal_error(err_msg: &str) -> bool {
         let msg = err_msg.to_lowercase();
-        msg.contains("video unavailable") || 
-        msg.contains("this video has been removed") ||
-        (msg.contains("fragment") && msg.contains("not received")) ||
-        msg.contains("http error 404")
+        msg.contains("video unavailable")
+            || msg.contains("this video has been removed")
+            || (msg.contains("fragment") && msg.contains("not received"))
+            || msg.contains("http error 404")
     }
 
     async fn handle_message(&mut self, msg: JobMessage) {
@@ -227,14 +235,16 @@ impl JobManagerActor {
                     let _ = resp.send(Err("Job already exists".into()));
                 } else {
                     let is_duplicate_active = self.jobs.values().any(|j| {
-                        j.url == job.url && (j.status == JobStatus::Pending || j.status == JobStatus::Downloading)
+                        j.url == job.url
+                            && (j.status == JobStatus::Pending
+                                || j.status == JobStatus::Downloading)
                     });
 
                     if is_duplicate_active {
                         let _ = resp.send(Err("URL is already in queue".into()));
                     } else {
                         info!(target: "core::manager", job_id = ?job.id, url = %job.url, "Job added to queue");
-                        
+
                         let mut j = Job::new(job.id, job.url.clone());
                         j.preset = Some(job.format_preset.clone());
                         j.video_resolution = Some(job.video_resolution.clone());
@@ -253,10 +263,10 @@ impl JobManagerActor {
                         let _ = resp.send(Ok(()));
                     }
                 }
-            },
+            }
             JobMessage::CancelJob { id } => {
                 info!(target: "core::manager", job_id = ?id, "Cancelling job");
-                
+
                 self.pending_updates.remove(&id);
 
                 if let Some(job) = self.jobs.get_mut(&id) {
@@ -265,7 +275,9 @@ impl JobManagerActor {
                     }
                     if let Some(temp) = &job.temp_path {
                         let path = PathBuf::from(temp);
-                        if path.exists() { let _ = tokio::fs::remove_file(&path).await; }
+                        if path.exists() {
+                            let _ = tokio::fs::remove_file(&path).await;
+                        }
                         if let Some(parent) = path.parent() {
                             let _ = tokio::fs::remove_dir(parent).await;
                         }
@@ -273,15 +285,20 @@ impl JobManagerActor {
                     job.status = JobStatus::Cancelled;
                     job.sequence_id += 1;
                 }
-                
+
                 self.persistence_registry.remove(&id);
                 self.mark_dirty();
 
-                let _ = self.app_handle.emit_all("download-cancelled", DownloadCancelledPayload {
-                    job_id: id
-                });
-            },
-            JobMessage::ResolveConflict { id, resolution, resp } => {
+                let _ = self.app_handle.emit_all(
+                    "download-cancelled",
+                    DownloadCancelledPayload { job_id: id },
+                );
+            }
+            JobMessage::ResolveConflict {
+                id,
+                resolution,
+                resp,
+            } => {
                 let mut status_to_emit = None;
                 let mut cmd_to_emit = None;
                 let mut path_to_emit = None;
@@ -303,15 +320,21 @@ impl JobManagerActor {
 
                         if resolution == "overwrite" {
                             info!(target: "core::manager", "Resolving conflict: Overwrite");
-                            if o_path.exists() { let _ = tokio::fs::remove_file(&o_path).await; }
-                            
+                            if o_path.exists() {
+                                let _ = tokio::fs::remove_file(&o_path).await;
+                            }
+
                             match tokio::fs::rename(&t_path, &o_path).await {
                                 Ok(_) => {
-                                    job.status = if job.is_modified { JobStatus::Modified } else { JobStatus::Completed };
+                                    job.status = if job.is_modified {
+                                        JobStatus::Modified
+                                    } else {
+                                        JobStatus::Completed
+                                    };
                                     job.progress = 100.0;
                                     job.phase = Some("Done".to_string());
                                     job.sequence_id += 1;
-                                    
+
                                     if let Some(parent) = t_path.parent() {
                                         let _ = tokio::fs::remove_dir(parent).await;
                                     }
@@ -321,7 +344,7 @@ impl JobManagerActor {
                                     path_to_emit = Some(output);
 
                                     let _ = resp.send(Ok(()));
-                                },
+                                }
                                 Err(e) => {
                                     let _ = resp.send(Err(format!("Failed to move file: {}", e)));
                                     return;
@@ -329,23 +352,26 @@ impl JobManagerActor {
                             }
                         } else {
                             info!(target: "core::manager", "Resolving conflict: Discard");
-                            if t_path.exists() { let _ = tokio::fs::remove_file(&t_path).await; }
+                            if t_path.exists() {
+                                let _ = tokio::fs::remove_file(&t_path).await;
+                            }
                             if let Some(parent) = t_path.parent() {
                                 let _ = tokio::fs::remove_dir(parent).await;
                             }
-                            
+
                             job.status = JobStatus::Cancelled;
                             job.phase = Some("Discarded".to_string());
                             job.sequence_id += 1;
-                            
-                            let _ = self.app_handle.emit_all("download-cancelled", DownloadCancelledPayload {
-                                job_id: id
-                            });
+
+                            let _ = self.app_handle.emit_all(
+                                "download-cancelled",
+                                DownloadCancelledPayload { job_id: id },
+                            );
                             let _ = resp.send(Ok(()));
                         }
                     } else {
-                         let _ = resp.send(Err("Missing file paths".into()));
-                         return;
+                        let _ = resp.send(Err("Missing file paths".into()));
+                        return;
                     }
                 } else {
                     let _ = resp.send(Err("Job not found".into()));
@@ -356,14 +382,17 @@ impl JobManagerActor {
                 self.mark_dirty();
 
                 if let (Some(st), Some(p)) = (status_to_emit, path_to_emit) {
-                    let _ = self.app_handle.emit_all("download-complete", DownloadCompletePayload {
-                        job_id: id,
-                        output_path: p,
-                        status: st,
-                        used_command: cmd_to_emit,
-                    });
+                    let _ = self.app_handle.emit_all(
+                        "download-complete",
+                        DownloadCompletePayload {
+                            job_id: id,
+                            output_path: p,
+                            status: st,
+                            used_command: cmd_to_emit,
+                        },
+                    );
                 }
-            },
+            }
             JobMessage::ProcessStarted { id, pid } => {
                 debug!(target: "core::manager", job_id = ?id, pid = pid, "Process started");
                 if let Some(job) = self.jobs.get_mut(&id) {
@@ -375,37 +404,61 @@ impl JobManagerActor {
                         job.sequence_id += 1;
                     }
                 }
-            },
-            JobMessage::UpdateProgress { id, percentage, speed, eta, filename, phase } => {
+            }
+            JobMessage::UpdateProgress {
+                id,
+                percentage,
+                speed,
+                eta,
+                filename,
+                phase,
+            } => {
                 if let Some(job) = self.jobs.get_mut(&id) {
-                    if job.status == JobStatus::Cancelled { return; }
-                    
-                    if job.status == JobStatus::FileConflict || job.status == JobStatus::Completed || job.status == JobStatus::Modified || job.status == JobStatus::Error {
+                    if job.status == JobStatus::Cancelled {
+                        return;
+                    }
+
+                    if job.status == JobStatus::FileConflict
+                        || job.status == JobStatus::Completed
+                        || job.status == JobStatus::Modified
+                        || job.status == JobStatus::Error
+                    {
                         return;
                     }
 
                     job.progress = percentage;
                     job.speed = Some(speed.clone());
                     job.eta = Some(eta.clone());
-                    if filename.is_some() { job.filename = filename.clone(); }
+                    if filename.is_some() {
+                        job.filename = filename.clone();
+                    }
                     job.phase = Some(phase.clone());
                     job.sequence_id += 1;
 
-                    self.pending_updates.insert(id, DownloadProgressPayload {
-                        job_id: id,
-                        percentage,
-                        sequence_id: job.sequence_id,
-                        speed,
-                        eta,
-                        filename,
-                        phase: Some(phase),
-                        status: Some(job.status.clone())
-                    });
+                    self.pending_updates.insert(
+                        id,
+                        DownloadProgressPayload {
+                            job_id: id,
+                            percentage,
+                            sequence_id: job.sequence_id,
+                            speed,
+                            eta,
+                            filename,
+                            phase: Some(phase),
+                            status: Some(job.status.clone()),
+                        },
+                    );
                 }
-            },
-            JobMessage::FileConflict { id, temp_path, output_path, is_modified, used_command } => {
+            }
+            JobMessage::FileConflict {
+                id,
+                temp_path,
+                output_path,
+                is_modified,
+                used_command,
+            } => {
                 warn!(target: "core::manager", job_id = ?id, "File conflict detected");
-                
+
                 self.pending_updates.remove(&id);
 
                 if let Some(job) = self.jobs.get_mut(&id) {
@@ -417,29 +470,43 @@ impl JobManagerActor {
                     job.used_command = Some(used_command.clone());
                     job.sequence_id += 1;
 
-                    let _ = self.app_handle.emit_all("download-progress-batch", BatchProgressPayload { 
-                        updates: vec![DownloadProgressPayload {
-                            job_id: id,
-                            percentage: job.progress,
-                            sequence_id: job.sequence_id,
-                            speed: job.speed.clone().unwrap_or_default(),
-                            eta: job.eta.clone().unwrap_or_default(),
-                            filename: job.filename.clone(),
-                            phase: job.phase.clone(),
-                            status: Some(JobStatus::FileConflict),
-                        }]
-                    });
+                    let _ = self.app_handle.emit_all(
+                        "download-progress-batch",
+                        BatchProgressPayload {
+                            updates: vec![DownloadProgressPayload {
+                                job_id: id,
+                                percentage: job.progress,
+                                sequence_id: job.sequence_id,
+                                speed: job.speed.clone().unwrap_or_default(),
+                                eta: job.eta.clone().unwrap_or_default(),
+                                filename: job.filename.clone(),
+                                phase: job.phase.clone(),
+                                status: Some(JobStatus::FileConflict),
+                            }],
+                        },
+                    );
                 }
-            },
-            JobMessage::JobCompleted { id, output_path, is_modified, used_command } => {
+            }
+            JobMessage::JobCompleted {
+                id,
+                output_path,
+                is_modified,
+                used_command,
+            } => {
                 info!(target: "core::manager", job_id = ?id, path = %output_path, modified = is_modified, "Job completed");
-                
+
                 self.pending_updates.remove(&id);
 
-                let status = if is_modified { JobStatus::Modified } else { JobStatus::Completed };
+                let status = if is_modified {
+                    JobStatus::Modified
+                } else {
+                    JobStatus::Completed
+                };
 
                 if let Some(job) = self.jobs.get_mut(&id) {
-                    if job.status == JobStatus::Cancelled { return; }
+                    if job.status == JobStatus::Cancelled {
+                        return;
+                    }
                     job.status = status.clone();
                     job.progress = 100.0;
                     job.output_path = Some(output_path.clone());
@@ -448,24 +515,29 @@ impl JobManagerActor {
                     job.used_command = Some(used_command.clone());
                     job.sequence_id += 1;
                 }
-                
+
                 self.persistence_registry.remove(&id);
                 self.mark_dirty();
 
-                let _ = self.app_handle.emit_all("download-complete", DownloadCompletePayload {
-                    job_id: id,
-                    output_path,
-                    status,
-                    used_command: Some(used_command),
-                });
-            },
+                let _ = self.app_handle.emit_all(
+                    "download-complete",
+                    DownloadCompletePayload {
+                        job_id: id,
+                        output_path,
+                        status,
+                        used_command: Some(used_command),
+                    },
+                );
+            }
             JobMessage::JobError { id, payload } => {
                 error!(target: "core::manager", job_id = ?id, error = %payload.error, "Job failed");
-                
+
                 self.pending_updates.remove(&id);
 
                 if let Some(job) = self.jobs.get_mut(&id) {
-                    if job.status == JobStatus::Cancelled { return; }
+                    if job.status == JobStatus::Cancelled {
+                        return;
+                    }
                     job.status = JobStatus::Error;
                     job.error = Some(payload.error.clone());
                     job.stderr = Some(payload.stderr.clone());
@@ -473,7 +545,7 @@ impl JobManagerActor {
                     job.exit_code = payload.exit_code;
                     job.sequence_id += 1;
                 }
-                
+
                 if Self::is_fatal_error(&payload.error) || Self::is_fatal_error(&payload.stderr) {
                     self.persistence_registry.remove(&id);
                 } else {
@@ -486,7 +558,7 @@ impl JobManagerActor {
                 self.mark_dirty();
 
                 let _ = self.app_handle.emit_all("download-error", payload);
-            },
+            }
             JobMessage::WorkerFinished => {
                 debug!(target: "core::manager", "Worker finished signal received");
                 if self.active_process_instances > 0 {
@@ -501,19 +573,19 @@ impl JobManagerActor {
                     self.clean_temp_directory().await;
                 }
                 self.process_queue();
-            },
+            }
             JobMessage::GetPendingCount(tx) => {
                 let path = Self::get_persistence_path();
                 if path.exists() {
-                     if let Ok(content) = fs::read_to_string(path) {
-                         if let Ok(jobs) = serde_json::from_str::<Vec<QueuedJob>>(&content) {
-                             let _ = tx.send(jobs.len() as u32);
-                             return;
-                         }
-                     }
+                    if let Ok(content) = fs::read_to_string(path) {
+                        if let Ok(jobs) = serde_json::from_str::<Vec<QueuedJob>>(&content) {
+                            let _ = tx.send(jobs.len() as u32);
+                            return;
+                        }
+                    }
                 }
                 let _ = tx.send(0);
-            },
+            }
             JobMessage::ResumePending(tx) => {
                 info!(target: "core::manager", "Resuming pending jobs from disk");
                 let path = Self::get_persistence_path();
@@ -532,7 +604,7 @@ impl JobManagerActor {
                                     j.embed_thumbnail = Some(job.embed_thumbnail);
                                     j.restrict_filenames = Some(job.restrict_filenames);
                                     j.live_from_start = Some(job.live_from_start);
-                                    
+
                                     if let Some(st) = &job.status {
                                         if st == "error" {
                                             j.status = JobStatus::Error;
@@ -543,25 +615,25 @@ impl JobManagerActor {
 
                                     self.jobs.insert(job.id, j.clone());
                                     self.persistence_registry.insert(job.id, job.clone());
-                                    
+
                                     if j.status != JobStatus::Error {
                                         self.queue.push_back(job.clone());
                                     }
-                                    
+
                                     resumed.push(job);
                                 }
                             }
                         }
                     }
                 }
-                self.process_queue(); 
+                self.process_queue();
                 let _ = tx.send(resumed);
-            },
+            }
             JobMessage::ClearPending => {
                 info!(target: "core::manager", "Clearing pending jobs");
                 let _ = self.persistence_tx.try_send(PersistenceMsg::Clear);
                 self.clean_temp_directory().await;
-            },
+            }
             JobMessage::SyncState(tx) => {
                 let mut downloads: Vec<Download> = Vec::new();
                 for job in self.jobs.values() {
@@ -593,17 +665,22 @@ impl JobManagerActor {
                     });
                 }
                 let _ = tx.send(downloads);
-            },
+            }
             JobMessage::Shutdown(_) => {}
         }
     }
 
     fn flush_updates(&mut self) {
-        if self.pending_updates.is_empty() { return; }
+        if self.pending_updates.is_empty() {
+            return;
+        }
 
-        let updates: Vec<DownloadProgressPayload> = self.pending_updates.values().cloned().collect();
+        let updates: Vec<DownloadProgressPayload> =
+            self.pending_updates.values().cloned().collect();
         self.pending_updates.clear();
-        let _ = self.app_handle.emit_all("download-progress-batch", BatchProgressPayload { updates });
+        let _ = self
+            .app_handle
+            .emit_all("download-progress-batch", BatchProgressPayload { updates });
     }
 
     fn process_queue(&mut self) {
@@ -616,25 +693,27 @@ impl JobManagerActor {
             config.max_concurrent_downloads
         };
 
-        while self.active_network_jobs < effective_concurrent_limit 
-           && self.active_process_instances < config.max_total_instances 
+        while self.active_network_jobs < effective_concurrent_limit
+            && self.active_process_instances < config.max_total_instances
         {
             if let Some(next_job) = self.queue.pop_front() {
-                 if let Some(job) = self.jobs.get(&next_job.id) {
-                     if job.status == JobStatus::Cancelled { continue; }
-                 }
+                if let Some(job) = self.jobs.get(&next_job.id) {
+                    if job.status == JobStatus::Cancelled {
+                        continue;
+                    }
+                }
 
-                 debug!(target: "core::manager", job_id = ?next_job.id, "Spawning worker for job");
-                 
-                 self.active_network_jobs += 1;
-                 self.active_process_instances += 1;
-                 
-                 let tx = self.self_sender.clone();
-                 let app = self.app_handle.clone();
-                 
-                 tauri::async_runtime::spawn(async move {
+                debug!(target: "core::manager", job_id = ?next_job.id, "Spawning worker for job");
+
+                self.active_network_jobs += 1;
+                self.active_process_instances += 1;
+
+                let tx = self.self_sender.clone();
+                let app = self.app_handle.clone();
+
+                tauri::async_runtime::spawn(async move {
                     run_download_process(next_job, app, tx).await;
-                 });
+                });
             } else {
                 break;
             }
@@ -642,10 +721,12 @@ impl JobManagerActor {
     }
 
     fn update_native_ui(&self) {
-        let active_jobs: Vec<&Job> = self.jobs.values()
+        let active_jobs: Vec<&Job> = self
+            .jobs
+            .values()
             .filter(|j| j.status == JobStatus::Downloading || j.status == JobStatus::Pending)
             .collect();
-        
+
         let active_count = active_jobs.len();
 
         if active_count == 0 {
@@ -655,37 +736,54 @@ impl JobManagerActor {
 
         let total_progress: f32 = active_jobs.iter().map(|j| j.progress).sum();
         let aggregated = total_progress / (active_count as f32);
-        let has_error = self.jobs.values().any(|j| j.status == JobStatus::Error || j.status == JobStatus::FileConflict);
+        let has_error = self
+            .jobs
+            .values()
+            .any(|j| j.status == JobStatus::Error || j.status == JobStatus::FileConflict);
 
         let app_handle_for_closure = self.app_handle.clone();
-        
+
         let _ = self.app_handle.run_on_main_thread(move || {
-            native::set_taskbar_progress(&app_handle_for_closure, (aggregated / 100.0) as f64, has_error);
+            native::set_taskbar_progress(
+                &app_handle_for_closure,
+                (aggregated / 100.0) as f64,
+                has_error,
+            );
         });
     }
 
     fn trigger_finished_notification(&mut self) {
         use tauri::api::notification::Notification;
         let count = self.completed_session_count;
-        if count == 0 { return; }
+        if count == 0 {
+            return;
+        }
 
         let _ = Notification::new(self.app_handle.config().tauri.bundle.identifier.clone())
             .title("Downloads Finished")
             .body(format!("Queue processed. {} files handled.", count))
-            .icon("icons/128x128.png") 
+            .icon("icons/128x128.png")
             .show();
 
         self.completed_session_count = 0;
     }
 
     async fn clean_temp_directory(&self) {
-        if !self.queue.is_empty() || !self.persistence_registry.is_empty() { return; }
-        if self.jobs.values().any(|j| j.status == JobStatus::FileConflict) { return; }
+        if !self.queue.is_empty() || !self.persistence_registry.is_empty() {
+            return;
+        }
+        if self
+            .jobs
+            .values()
+            .any(|j| j.status == JobStatus::FileConflict)
+        {
+            return;
+        }
 
         debug!(target: "core::manager", "Cleaning temp directory");
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         let temp_dir = home.join(".multiyt-dlp").join("temp_downloads");
-        
+
         if temp_dir.exists() {
             async fn robust_remove_dir(path: &Path) -> std::io::Result<()> {
                 for i in 0..5 {
@@ -701,12 +799,12 @@ impl JobManagerActor {
 
             if let Ok(entries) = fs::read_dir(&temp_dir) {
                 for entry in entries.flatten() {
-                     let path = entry.path();
-                     if path.is_dir() {
-                         let _ = robust_remove_dir(&path).await;
-                     } else {
-                         let _ = fs::remove_file(&path);
-                     }
+                    let path = entry.path();
+                    if path.is_dir() {
+                        let _ = robust_remove_dir(&path).await;
+                    } else {
+                        let _ = fs::remove_file(&path);
+                    }
                 }
             }
         }
@@ -728,7 +826,7 @@ fn kill_process(pid: u32) {
         let mut cmd = std::process::Command::new("taskkill");
         cmd.args(&["/F", "/T", "/PID", &pid.to_string()]);
         use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000); 
+        cmd.creation_flags(0x08000000);
         let _ = cmd.spawn();
     }
 }

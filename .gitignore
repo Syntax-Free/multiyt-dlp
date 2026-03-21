@@ -9,3 +9,4 @@ target/
 versions/
 *.log
 C.R.A.M.py
+src-tauri/gen/

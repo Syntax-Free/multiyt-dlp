@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react';
-import { appWindow } from '@tauri-apps/api/window';
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { DownloadForm } from './components/DownloadForm';
 import { DownloadQueue } from './components/DownloadQueue';
 import { useDownloadManager } from './hooks/useDownloadManager';
@@ -9,6 +9,7 @@ import { Activity, CheckCircle2, AlertCircle, List, Database, Hourglass, LayoutG
 import { twMerge } from 'tailwind-merge';
 import { useAppContext } from './contexts/AppContext';
 import { Button } from './components/ui/Button';
+const appWindow = getCurrentWebviewWindow()
 
 function App() {
   const { skipNotice, setSkipNotice, getTemplateString, preferences } = useAppContext();

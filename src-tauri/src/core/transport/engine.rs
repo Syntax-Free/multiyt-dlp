@@ -1,20 +1,20 @@
-use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use reqwest::{Client, header};
-use tokio::fs::{self, OpenOptions};
-use tokio::io::{AsyncWriteExt};
+use crate::core::transport::retry::{RetryPolicy, TransportError};
 use futures_util::StreamExt;
+use reqwest::{header, Client};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use crate::core::transport::retry::{RetryPolicy, TransportError};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::fs::{self, OpenOptions};
+use tokio::io::AsyncWriteExt;
 
 // Constants
 const IO_TIMEOUT: Duration = Duration::from_secs(15);
 const CHUNK_THRESHOLD: u64 = 10 * 1024 * 1024; // 10 MB
 const DEFAULT_CONCURRENCY: usize = 4;
-const PROGRESS_INTERVAL_MS: u128 = 100; 
+const PROGRESS_INTERVAL_MS: u128 = 100;
 
 #[derive(Debug, Clone)]
 struct Chunk {
@@ -39,7 +39,7 @@ impl TransportEngine {
             .user_agent("Multiyt-dlp/2.2 (Resumable-Engine)")
             .connect_timeout(Duration::from_secs(10))
             // Follow redirects to ensure we get the final Content-Length
-            .redirect(reqwest::redirect::Policy::limited(10)) 
+            .redirect(reqwest::redirect::Policy::limited(10))
             .build()
             .expect("Failed to build HTTP client");
 
@@ -89,7 +89,8 @@ impl TransportEngine {
             Ok(r) if r.status().is_success() => r,
             _ => {
                 // Fallback to GET start
-                self.client.get(&self.url)
+                self.client
+                    .get(&self.url)
                     .header(header::RANGE, "bytes=0-0")
                     .send()
                     .await?
@@ -97,22 +98,21 @@ impl TransportEngine {
         };
 
         if !resp.status().is_success() && resp.status() != reqwest::StatusCode::PARTIAL_CONTENT {
-             if resp.status() == reqwest::StatusCode::NOT_FOUND {
-                 return Err(TransportError::HttpStatus(resp.status().as_u16()));
-             }
-             // Proceed with unknown length if probing fails but URL exists
-             return Ok((None, false));
+            if resp.status() == reqwest::StatusCode::NOT_FOUND {
+                return Err(TransportError::HttpStatus(resp.status().as_u16()));
+            }
+            // Proceed with unknown length if probing fails but URL exists
+            return Ok((None, false));
         }
 
         // Try extracting Content-Length from headers
-        let len = resp.content_length()
-            .or_else(|| {
-                resp.headers()
-                    .get(header::CONTENT_RANGE)
-                    .and_then(|val| val.to_str().ok())
-                    .and_then(|s| s.split('/').last())
-                    .and_then(|s| s.parse::<u64>().ok())
-            });
+        let len = resp.content_length().or_else(|| {
+            resp.headers()
+                .get(header::CONTENT_RANGE)
+                .and_then(|val| val.to_str().ok())
+                .and_then(|s| s.split('/').last())
+                .and_then(|s| s.parse::<u64>().ok())
+        });
 
         let accepts_ranges = if let Some(ranges) = resp.headers().get(header::ACCEPT_RANGES) {
             ranges.to_str().unwrap_or("").contains("bytes")
@@ -131,18 +131,27 @@ impl TransportEngine {
     }
 
     // --- LINEAR DOWNLOAD ---
-    
-    async fn download_linear<F>(&self, total_size: Option<u64>, on_progress: F) -> Result<(), TransportError>
+
+    async fn download_linear<F>(
+        &self,
+        total_size: Option<u64>,
+        on_progress: F,
+    ) -> Result<(), TransportError>
     where
         F: Fn(u64, u64, f64) + Send + Sync + 'static,
     {
         let hash = self.calculate_deterministic_hash();
-        let part_path = self.target_path.with_extension(format!("part.linear.{}", hash));
+        let part_path = self
+            .target_path
+            .with_extension(format!("part.linear.{}", hash));
 
         let mut retry_policy = RetryPolicy::new(5);
 
         loop {
-            match self.attempt_linear(&part_path, total_size, &on_progress).await {
+            match self
+                .attempt_linear(&part_path, total_size, &on_progress)
+                .await
+            {
                 Ok(_) => {
                     self.finalize(&part_path).await?;
                     // Ensure 100% is reported
@@ -150,10 +159,12 @@ impl TransportEngine {
                         on_progress(total, total, 0.0);
                     }
                     return Ok(());
-                },
+                }
                 Err(e) => {
                     let _ = fs::remove_file(&part_path).await;
-                    if let TransportError::HttpStatus(404) = e { return Err(e); }
+                    if let TransportError::HttpStatus(404) = e {
+                        return Err(e);
+                    }
                     match retry_policy.next_backoff() {
                         Some(delay) => tokio::time::sleep(delay).await,
                         None => return Err(TransportError::MaxRetriesExceeded),
@@ -163,21 +174,32 @@ impl TransportEngine {
         }
     }
 
-    async fn attempt_linear<F>(&self, path: &Path, total_size: Option<u64>, on_progress: &F) -> Result<(), TransportError>
-    where F: Fn(u64, u64, f64) + Send + Sync
+    async fn attempt_linear<F>(
+        &self,
+        path: &Path,
+        total_size: Option<u64>,
+        on_progress: &F,
+    ) -> Result<(), TransportError>
+    where
+        F: Fn(u64, u64, f64) + Send + Sync,
     {
         let response = self.client.get(&self.url).send().await?;
         if !response.status().is_success() {
-             return Err(TransportError::HttpStatus(response.status().as_u16()));
+            return Err(TransportError::HttpStatus(response.status().as_u16()));
         }
 
-        let mut file = OpenOptions::new().create(true).write(true).truncate(true).open(path).await?;
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(path)
+            .await?;
         let mut stream = response.bytes_stream();
-        
+
         let mut downloaded = 0;
         let mut last_update = Instant::now();
         let mut bytes_since_update = 0;
-        
+
         // Report 0% immediately
         on_progress(0, total_size.unwrap_or(0), 0.0);
 
@@ -190,13 +212,17 @@ impl TransportEngine {
                     bytes_since_update += len;
 
                     if last_update.elapsed().as_millis() >= PROGRESS_INTERVAL_MS {
-                         let secs = last_update.elapsed().as_secs_f64();
-                         let speed = if secs > 0.0 { (bytes_since_update as f64) / secs } else { 0.0 };
-                         on_progress(downloaded, total_size.unwrap_or(0), speed);
-                         last_update = Instant::now();
-                         bytes_since_update = 0;
+                        let secs = last_update.elapsed().as_secs_f64();
+                        let speed = if secs > 0.0 {
+                            (bytes_since_update as f64) / secs
+                        } else {
+                            0.0
+                        };
+                        on_progress(downloaded, total_size.unwrap_or(0), speed);
+                        last_update = Instant::now();
+                        bytes_since_update = 0;
                     }
-                },
+                }
                 Some(Err(e)) => return Err(TransportError::Network(e)),
                 None => break,
             }
@@ -206,7 +232,10 @@ impl TransportEngine {
 
         if let Some(total) = total_size {
             if total > 0 && downloaded != total {
-                return Err(TransportError::Validation(format!("Expected {}, got {}", total, downloaded)));
+                return Err(TransportError::Validation(format!(
+                    "Expected {}, got {}",
+                    total, downloaded
+                )));
             }
         }
 
@@ -215,7 +244,11 @@ impl TransportEngine {
 
     // --- CONCURRENT DOWNLOAD ---
 
-    async fn download_concurrent<F>(&self, total_size: u64, on_progress: F) -> Result<(), TransportError>
+    async fn download_concurrent<F>(
+        &self,
+        total_size: u64,
+        on_progress: F,
+    ) -> Result<(), TransportError>
     where
         F: Fn(u64, u64, f64) + Send + Sync + 'static + Clone,
     {
@@ -229,15 +262,22 @@ impl TransportEngine {
             } else {
                 (i as u64 + 1) * chunk_size - 1
             };
-            chunks.push(Chunk { index: i, start, end, len: end - start + 1 });
+            chunks.push(Chunk {
+                index: i,
+                start,
+                end,
+                len: end - start + 1,
+            });
         }
 
         let bytes_downloaded = Arc::new(AtomicU64::new(0));
         let hash = self.calculate_deterministic_hash();
-        
+
         let mut initial_progress = 0;
         for i in 0..self.concurrency {
-            let p = self.target_path.with_extension(format!("part.{}.{}", hash, i));
+            let p = self
+                .target_path
+                .with_extension(format!("part.{}.{}", hash, i));
             if let Ok(m) = fs::metadata(&p).await {
                 initial_progress += m.len();
             }
@@ -247,7 +287,7 @@ impl TransportEngine {
         let mut tasks = Vec::new();
         let bytes_downloaded_monitor = bytes_downloaded.clone();
         let on_progress_monitor = on_progress.clone();
-        
+
         // Initial 0 state
         on_progress(initial_progress, total_size, 0.0);
 
@@ -255,27 +295,31 @@ impl TransportEngine {
         let monitor_handle = tokio::spawn(async move {
             let mut last_bytes = initial_progress;
             let mut last_time = Instant::now();
-            
+
             loop {
                 // Smoother updates
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 let current = bytes_downloaded_monitor.load(Ordering::Relaxed);
-                
+
                 // Don't break immediately on total_size, wait for join to ensure all writes complete
-                
+
                 let now = Instant::now();
                 let elapsed = now.duration_since(last_time).as_secs_f64();
-                
+
                 let speed = if elapsed > 0.0 {
                     (current.saturating_sub(last_bytes) as f64) / elapsed
-                } else { 0.0 };
+                } else {
+                    0.0
+                };
 
                 on_progress_monitor(current, total_size, speed);
-                
+
                 last_bytes = current;
                 last_time = now;
-                
-                if current >= total_size { break; }
+
+                if current >= total_size {
+                    break;
+                }
             }
         });
 
@@ -283,28 +327,36 @@ impl TransportEngine {
             let client = self.client.clone();
             let url = self.url.clone();
             let total_bytes_atomic = bytes_downloaded.clone();
-            let part_path = self.target_path.with_extension(format!("part.{}.{}", hash, chunk.index));
-            
+            let part_path = self
+                .target_path
+                .with_extension(format!("part.{}.{}", hash, chunk.index));
+
             tasks.push(tokio::spawn(async move {
                 let mut retry_policy = RetryPolicy::new(10);
                 loop {
-                    match Self::download_chunk_resumable(&client, &url, &part_path, &chunk, &total_bytes_atomic).await {
+                    match Self::download_chunk_resumable(
+                        &client,
+                        &url,
+                        &part_path,
+                        &chunk,
+                        &total_bytes_atomic,
+                    )
+                    .await
+                    {
                         Ok(_) => return Ok(part_path),
-                        Err(e) => {
-                            match retry_policy.next_backoff() {
-                                Some(delay) => tokio::time::sleep(delay).await,
-                                None => return Err(e),
-                            }
-                        }
+                        Err(e) => match retry_policy.next_backoff() {
+                            Some(delay) => tokio::time::sleep(delay).await,
+                            None => return Err(e),
+                        },
                     }
                 }
             }));
         }
 
         let results = futures_util::future::join_all(tasks).await;
-        
+
         // Wait for monitor to finish its last tick logic
-        let _ = monitor_handle.await; 
+        let _ = monitor_handle.await;
 
         let mut part_paths = Vec::new();
         let mut failed = false;
@@ -317,15 +369,17 @@ impl TransportEngine {
         }
 
         if failed {
-            return Err(TransportError::Validation("One or more chunks failed".to_string()));
+            return Err(TransportError::Validation(
+                "One or more chunks failed".to_string(),
+            ));
         }
 
         match self.merge_parts_optimized(&part_paths).await {
             Ok(_) => {
                 on_progress(total_size, total_size, 0.0); // Force 100%
                 Ok(())
-            },
-            Err(e) => Err(e)
+            }
+            Err(e) => Err(e),
         }
     }
 
@@ -334,7 +388,7 @@ impl TransportEngine {
         url: &str,
         path: &Path,
         chunk: &Chunk,
-        global_bytes: &AtomicU64
+        global_bytes: &AtomicU64,
     ) -> Result<(), TransportError> {
         let mut current_len = 0;
         if path.exists() {
@@ -350,9 +404,12 @@ impl TransportEngine {
         let range_start = chunk.start + current_len;
         let range_end = chunk.end;
 
-        let req = client.get(url).header(header::RANGE, format!("bytes={}-{}", range_start, range_end));
+        let req = client.get(url).header(
+            header::RANGE,
+            format!("bytes={}-{}", range_start, range_end),
+        );
         let response = req.send().await?;
-        
+
         if !response.status().is_success() {
             return Err(TransportError::HttpStatus(response.status().as_u16()));
         }
@@ -363,7 +420,7 @@ impl TransportEngine {
             .append(true)
             .open(path)
             .await?;
-            
+
         let mut stream = response.bytes_stream();
         let mut downloaded_in_this_session = 0;
         let remaining_for_chunk = chunk.len.saturating_sub(current_len);
@@ -375,34 +432,41 @@ impl TransportEngine {
                     // Strict bound check to prevent disk exhaustion from malicious/infinite streaming responses
                     if downloaded_in_this_session + len > remaining_for_chunk {
                         global_bytes.fetch_sub(downloaded_in_this_session, Ordering::Relaxed);
-                        return Err(TransportError::Validation("Server exceeded requested byte range".into()));
+                        return Err(TransportError::Validation(
+                            "Server exceeded requested byte range".into(),
+                        ));
                     }
                     file.write_all(&bytes).await?;
                     downloaded_in_this_session += len;
                     global_bytes.fetch_add(len, Ordering::Relaxed);
-                },
+                }
                 Some(Err(e)) => return Err(TransportError::Network(e)),
                 None => break,
             }
         }
 
         file.flush().await?;
-        
+
         let final_len = current_len + downloaded_in_this_session;
         if final_len != chunk.len {
             global_bytes.fetch_sub(downloaded_in_this_session, Ordering::Relaxed);
-            return Err(TransportError::Validation(format!("Chunk incomplete. Got {}, expected {}", final_len, chunk.len)));
+            return Err(TransportError::Validation(format!(
+                "Chunk incomplete. Got {}, expected {}",
+                final_len, chunk.len
+            )));
         }
 
         Ok(())
     }
 
     async fn merge_parts_optimized(&self, parts: &[PathBuf]) -> Result<(), TransportError> {
-        if parts.is_empty() { return Ok(()); }
-        
+        if parts.is_empty() {
+            return Ok(());
+        }
+
         let hash = self.calculate_deterministic_hash();
         let final_tmp_path = self.target_path.with_extension(format!("final.{}", hash));
-        
+
         if final_tmp_path.exists() {
             let _ = fs::remove_file(&final_tmp_path).await;
         }
@@ -418,19 +482,20 @@ impl TransportEngine {
             let mut part_file = fs::File::open(part_path).await?;
             tokio::io::copy(&mut part_file, &mut target_file).await?;
         }
-        
+
         target_file.flush().await?;
 
         // Atomic cleanup guarantees deterministic resumes for chunks if app is killed during merge
         for part_path in parts.iter() {
             let _ = fs::remove_file(part_path).await;
         }
-        
+
         self.finalize(&final_tmp_path).await
     }
 
     async fn finalize(&self, source_path: &Path) -> Result<(), TransportError> {
-        crate::core::deps::replace_dependency_robust_sync(source_path, &self.target_path).map_err(TransportError::FileSystem)?;
+        crate::core::deps::replace_dependency_robust_sync(source_path, &self.target_path)
+            .map_err(TransportError::FileSystem)?;
         Ok(())
     }
 }

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 use tokio::sync::oneshot;
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -35,8 +35,8 @@ pub struct Job {
     pub status: JobStatus,
     pub progress: f32,
     pub output_path: Option<String>,
-    pub temp_path: Option<String>, 
-    
+    pub temp_path: Option<String>,
+
     // Sync & UI Fields
     pub sequence_id: u64,
     pub speed: Option<String>,
@@ -48,25 +48,25 @@ pub struct Job {
     pub stderr: Option<String>,
     pub logs: Option<String>,
     pub preset: Option<DownloadFormatPreset>,
-    
+
     #[serde(rename = "videoResolution")]
     pub video_resolution: Option<String>,
-    
+
     #[serde(rename = "downloadPath")]
     pub download_path: Option<String>,
-    
+
     #[serde(rename = "filenameTemplate")]
     pub filename_template: Option<String>,
-    
+
     #[serde(rename = "embedMetadata")]
     pub embed_metadata: Option<bool>,
-    
+
     #[serde(rename = "embedThumbnail")]
     pub embed_thumbnail: Option<bool>,
-    
+
     #[serde(rename = "restrictFilenames")]
     pub restrict_filenames: Option<bool>,
-    
+
     #[serde(rename = "liveFromStart")]
     pub live_from_start: Option<bool>,
 
@@ -126,25 +126,25 @@ pub struct Download {
     pub stderr: Option<String>,
     pub logs: Option<String>,
     pub preset: Option<DownloadFormatPreset>,
-    
+
     #[serde(rename = "videoResolution")]
     pub video_resolution: Option<String>,
-    
+
     #[serde(rename = "downloadPath")]
     pub download_path: Option<String>,
-    
+
     #[serde(rename = "filenameTemplate")]
     pub filename_template: Option<String>,
-    
+
     #[serde(rename = "embedMetadata")]
     pub embed_metadata: Option<bool>,
-    
+
     #[serde(rename = "embedThumbnail")]
     pub embed_thumbnail: Option<bool>,
-    
+
     #[serde(rename = "restrictFilenames")]
     pub restrict_filenames: Option<bool>,
-    
+
     #[serde(rename = "liveFromStart")]
     pub live_from_start: Option<bool>,
 
@@ -164,7 +164,7 @@ pub struct QueuedJob {
     pub filename_template: String,
     pub restrict_filenames: bool,
     pub live_from_start: bool,
-    
+
     pub status: Option<String>,
     pub error: Option<String>,
     pub stderr: Option<String>,
@@ -236,21 +236,47 @@ pub struct DownloadErrorPayload {
 }
 
 pub enum JobMessage {
-    AddJob { job: QueuedJob, resp: oneshot::Sender<Result<(), String>> },
-    CancelJob { id: Uuid },
-    ResolveConflict { id: Uuid, resolution: String, resp: oneshot::Sender<Result<(), String>> },
-    UpdateProgress { 
-        id: Uuid, 
-        percentage: f32, 
-        speed: String, 
-        eta: String, 
-        filename: Option<String>, 
-        phase: String 
+    AddJob {
+        job: QueuedJob,
+        resp: oneshot::Sender<Result<(), String>>,
     },
-    ProcessStarted { id: Uuid, pid: u32 },
-    JobCompleted { id: Uuid, output_path: String, is_modified: bool, used_command: String },
-    JobError { id: Uuid, payload: DownloadErrorPayload },
-    FileConflict { id: Uuid, temp_path: String, output_path: String, is_modified: bool, used_command: String },
+    CancelJob {
+        id: Uuid,
+    },
+    ResolveConflict {
+        id: Uuid,
+        resolution: String,
+        resp: oneshot::Sender<Result<(), String>>,
+    },
+    UpdateProgress {
+        id: Uuid,
+        percentage: f32,
+        speed: String,
+        eta: String,
+        filename: Option<String>,
+        phase: String,
+    },
+    ProcessStarted {
+        id: Uuid,
+        pid: u32,
+    },
+    JobCompleted {
+        id: Uuid,
+        output_path: String,
+        is_modified: bool,
+        used_command: String,
+    },
+    JobError {
+        id: Uuid,
+        payload: DownloadErrorPayload,
+    },
+    FileConflict {
+        id: Uuid,
+        temp_path: String,
+        output_path: String,
+        is_modified: bool,
+        used_command: String,
+    },
     WorkerFinished,
     GetPendingCount(oneshot::Sender<u32>),
     ResumePending(oneshot::Sender<Vec<QueuedJob>>),

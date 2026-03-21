@@ -1,6 +1,6 @@
 import { useAppContext } from '@/contexts/AppContext';
 import { FileKey, FolderOpen, Lock, ListChecks, X } from 'lucide-react';
-import { open } from '@tauri-apps/api/dialog';
+import { open } from '@tauri-apps/plugin-dialog';
 import { Button } from '../ui/Button';
 import { TemplateEditor } from './TemplateEditor';
 

@@ -1,13 +1,13 @@
+use crate::core::transport::download_file_robust;
+use async_trait::async_trait;
+use regex::Regex;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
-use tauri::{AppHandle, Manager};
-use serde::{Serialize, Deserialize};
 use std::process::Command;
-use async_trait::async_trait;
-use crate::core::transport::download_file_robust;
-use regex::Regex;
-use tokio::time::{timeout, Duration, sleep};
+use tauri::{AppHandle, Manager};
+use tokio::time::{sleep, timeout, Duration};
 
 #[cfg(target_os = "windows")]
 const YT_DLP_URL: &str = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe";
@@ -19,21 +19,26 @@ const YT_DLP_URL: &str = "https://github.com/yt-dlp/yt-dlp/releases/latest/downl
 #[cfg(target_os = "windows")]
 const FFMPEG_URL: &str = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip";
 #[cfg(target_os = "macos")]
-const FFMPEG_URL: &str = "https://evermeet.cx/ffmpeg/ffmpeg-113374-g80f9281204.zip"; 
+const FFMPEG_URL: &str = "https://evermeet.cx/ffmpeg/ffmpeg-113374-g80f9281204.zip";
 #[cfg(target_os = "linux")]
-const FFMPEG_URL: &str = "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz";
+const FFMPEG_URL: &str =
+    "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz";
 
 #[cfg(target_os = "windows")]
-const DENO_URL: &str = "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip";
+const DENO_URL: &str =
+    "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip";
 #[cfg(target_os = "macos")]
-const DENO_URL: &str = "https://github.com/denoland/deno/releases/latest/download/deno-aarch64-apple-darwin.zip"; 
+const DENO_URL: &str =
+    "https://github.com/denoland/deno/releases/latest/download/deno-aarch64-apple-darwin.zip";
 #[cfg(target_os = "linux")]
-const DENO_URL: &str = "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip";
+const DENO_URL: &str =
+    "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip";
 
 #[cfg(target_os = "windows")]
 const BUN_URL: &str = "https://github.com/oven-sh/bun/releases/latest/download/bun-windows-x64.zip";
 #[cfg(target_os = "macos")]
-const BUN_URL: &str = "https://github.com/oven-sh/bun/releases/latest/download/bun-darwin-aarch64.zip";
+const BUN_URL: &str =
+    "https://github.com/oven-sh/bun/releases/latest/download/bun-darwin-aarch64.zip";
 #[cfg(target_os = "linux")]
 const BUN_URL: &str = "https://github.com/oven-sh/bun/releases/latest/download/bun-linux-x64.zip";
 
@@ -83,7 +88,7 @@ pub fn register_sfs_app() {
         if !common_dir.exists() {
             let _ = std::fs::create_dir_all(&common_dir);
         }
-        
+
         let list_path = common_dir.join("sfs_list.json");
         let mut registry: HashMap<String, SfsAppEntry> = HashMap::new();
 
@@ -109,7 +114,7 @@ pub fn register_sfs_app() {
                 version: env!("CARGO_PKG_VERSION").to_string(),
                 path: current_exe,
                 last_used: now,
-            }
+            },
         );
 
         // Atomic write via temp file
@@ -125,21 +130,22 @@ pub fn register_sfs_app() {
 #[cfg(target_os = "windows")]
 pub fn is_any_sfs_app_running() -> bool {
     use std::collections::HashSet;
-    use windows::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS
-    };
-    use windows::Win32::Foundation::{CloseHandle};
     use std::ffi::OsString;
     use std::os::windows::ffi::OsStringExt;
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
 
     // 1. Read SFS Registry
     let common_dir = match get_common_bin_dir().parent() {
         Some(p) => p.to_path_buf(),
         None => return false,
     };
-    
+
     let list_path = common_dir.join("sfs_list.json");
-    
+
     let content = match fs::read_to_string(&list_path) {
         Ok(c) => c,
         Err(_) => return false,
@@ -168,7 +174,7 @@ pub fn is_any_sfs_app_running() -> bool {
 
     // 2. Check running processes
     let snapshot_result = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
-    
+
     if let Ok(snapshot) = snapshot_result {
         let mut entry = PROCESSENTRY32W::default();
         entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
@@ -176,9 +182,15 @@ pub fn is_any_sfs_app_running() -> bool {
         unsafe {
             if Process32FirstW(snapshot, &mut entry).as_bool() {
                 loop {
-                    let len = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len());
-                    let exe_name = OsString::from_wide(&entry.szExeFile[..len]).to_string_lossy().to_lowercase();
-                    
+                    let len = entry
+                        .szExeFile
+                        .iter()
+                        .position(|&c| c == 0)
+                        .unwrap_or(entry.szExeFile.len());
+                    let exe_name = OsString::from_wide(&entry.szExeFile[..len])
+                        .to_string_lossy()
+                        .to_lowercase();
+
                     if sfs_apps.contains(&exe_name) {
                         let _ = CloseHandle(snapshot);
                         return true;
@@ -205,7 +217,7 @@ pub fn is_any_sfs_app_running() -> bool {
 /// Robustly replaces an existing dependency, taking into consideration file locks by other running SFS apps.
 pub fn replace_dependency_robust_sync(source: &Path, target: &Path) -> Result<(), std::io::Error> {
     let is_locked = is_any_sfs_app_running();
-    
+
     if target.exists() {
         if is_locked {
             // Rename to bypass "File in Use" locks gracefully
@@ -215,9 +227,9 @@ pub fn replace_dependency_robust_sync(source: &Path, target: &Path) -> Result<()
             let _ = std::fs::remove_file(target);
         }
     }
-    
+
     std::fs::rename(source, target)?;
-    
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -252,9 +264,14 @@ pub async fn get_latest_github_tag(repo: &str) -> Result<String, String> {
     let max_retries = 3;
 
     for attempt in 0..max_retries {
-        match timeout(Duration::from_secs(5), client.get(&url)
-            .header(reqwest::header::ACCEPT, "application/vnd.github.v3+json")
-            .send()).await 
+        match timeout(
+            Duration::from_secs(5),
+            client
+                .get(&url)
+                .header(reqwest::header::ACCEPT, "application/vnd.github.v3+json")
+                .send(),
+        )
+        .await
         {
             Ok(Ok(resp)) => {
                 if resp.status().is_success() {
@@ -263,11 +280,13 @@ pub async fn get_latest_github_tag(repo: &str) -> Result<String, String> {
                         return Ok(tag.to_string());
                     }
                     return Err("Malformed GitHub response: tag_name missing".to_string());
-                } else if resp.status() == reqwest::StatusCode::FORBIDDEN || resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                } else if resp.status() == reqwest::StatusCode::FORBIDDEN
+                    || resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
+                {
                     return Err("GitHub API Rate Limited. Please try again later.".to_string());
                 }
                 last_error = format!("HTTP Status {}", resp.status());
-            },
+            }
             Ok(Err(e)) => last_error = format!("Network Error: {}", e),
             Err(_) => last_error = "Connection Timeout".to_string(),
         }
@@ -277,7 +296,10 @@ pub async fn get_latest_github_tag(repo: &str) -> Result<String, String> {
         }
     }
 
-    Err(format!("Update check failed after {} retries. Last error: {}", max_retries, last_error))
+    Err(format!(
+        "Update check failed after {} retries. Last error: {}",
+        max_retries, last_error
+    ))
 }
 
 // --- Version Comparison Helpers ---
@@ -288,8 +310,16 @@ pub fn compare_semver(current: &str, required: &str) -> bool {
     let r = re.captures(required);
 
     if let (Some(cc), Some(rc)) = (c, r) {
-        let cv = (cc[1].parse::<u32>().unwrap(), cc[2].parse::<u32>().unwrap(), cc[3].parse::<u32>().unwrap());
-        let rv = (rc[1].parse::<u32>().unwrap(), rc[2].parse::<u32>().unwrap(), rc[3].parse::<u32>().unwrap());
+        let cv = (
+            cc[1].parse::<u32>().unwrap(),
+            cc[2].parse::<u32>().unwrap(),
+            cc[3].parse::<u32>().unwrap(),
+        );
+        let rv = (
+            rc[1].parse::<u32>().unwrap(),
+            rc[2].parse::<u32>().unwrap(),
+            rc[3].parse::<u32>().unwrap(),
+        );
         return cv >= rv;
     }
     false
@@ -301,8 +331,16 @@ pub fn compare_date(current: &str, required: &str) -> bool {
     let r = re.captures(required);
 
     if let (Some(cc), Some(rc)) = (c, r) {
-        let cv = (cc[1].parse::<u32>().unwrap(), cc[2].parse::<u32>().unwrap(), cc[3].parse::<u32>().unwrap());
-        let rv = (rc[1].parse::<u32>().unwrap(), rc[2].parse::<u32>().unwrap(), rc[3].parse::<u32>().unwrap());
+        let cv = (
+            cc[1].parse::<u32>().unwrap(),
+            cc[2].parse::<u32>().unwrap(),
+            cc[3].parse::<u32>().unwrap(),
+        );
+        let rv = (
+            rc[1].parse::<u32>().unwrap(),
+            rc[2].parse::<u32>().unwrap(),
+            rc[3].parse::<u32>().unwrap(),
+        );
         return cv >= rv;
     }
     false
@@ -313,24 +351,32 @@ fn new_silent_command(program: &str) -> Command {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000); 
+        cmd.creation_flags(0x08000000);
     }
     cmd
 }
 
 pub fn get_local_version(path: &PathBuf, arg: &str) -> Option<String> {
-    if !path.exists() { return None; }
+    if !path.exists() {
+        return None;
+    }
     let output = new_silent_command(path.to_str()?).arg(arg).output().ok()?;
-    if !output.status.success() { return None; }
+    if !output.status.success() {
+        return None;
+    }
     Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 // --- Extraction Helpers ---
 
-fn extract_archive_finding_binary(archive_path: &PathBuf, target_dir: &PathBuf, binary_names: &[&str]) -> Result<(), String> {
+fn extract_archive_finding_binary(
+    archive_path: &PathBuf,
+    target_dir: &PathBuf,
+    binary_names: &[&str],
+) -> Result<(), String> {
     let file = File::open(archive_path).map_err(|e| e.to_string())?;
     let path_str = archive_path.to_string_lossy().to_lowercase();
-    
+
     if path_str.ends_with(".zip") {
         let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
         for i in 0..archive.len() {
@@ -344,12 +390,13 @@ fn extract_archive_finding_binary(archive_path: &PathBuf, target_dir: &PathBuf, 
                 if binary_names.contains(&file_name_str.as_ref()) {
                     let final_target = target_dir.join(file_name);
                     let tmp_target = final_target.with_extension("tmp_extract");
-                    
+
                     let mut out_file = File::create(&tmp_target).map_err(|e| e.to_string())?;
                     std::io::copy(&mut file, &mut out_file).map_err(|e| e.to_string())?;
-                    
+
                     // Atomically/Safely rename
-                    replace_dependency_robust_sync(&tmp_target, &final_target).map_err(|e| e.to_string())?;
+                    replace_dependency_robust_sync(&tmp_target, &final_target)
+                        .map_err(|e| e.to_string())?;
                 }
             }
         }
@@ -364,16 +411,17 @@ fn extract_archive_finding_binary(archive_path: &PathBuf, target_dir: &PathBuf, 
                 if binary_names.contains(&file_name_str.as_ref()) {
                     let final_target = target_dir.join(file_name);
                     let tmp_target = final_target.with_extension("tmp_extract");
-                    
+
                     let mut out_file = File::create(&tmp_target).map_err(|e| e.to_string())?;
                     std::io::copy(&mut file, &mut out_file).map_err(|e| e.to_string())?;
-                    
-                    replace_dependency_robust_sync(&tmp_target, &final_target).map_err(|e| e.to_string())?;
+
+                    replace_dependency_robust_sync(&tmp_target, &final_target)
+                        .map_err(|e| e.to_string())?;
                 }
             }
         }
     }
-    
+
     Ok(())
 }
 
@@ -382,37 +430,79 @@ fn extract_archive_finding_binary(archive_path: &PathBuf, target_dir: &PathBuf, 
 pub struct YtDlpProvider;
 #[async_trait]
 impl DependencyProvider for YtDlpProvider {
-    fn get_name(&self) -> String { "yt-dlp".to_string() }
-    fn get_binaries(&self) -> Vec<&str> { if cfg!(windows) { vec!["yt-dlp.exe"] } else { vec!["yt-dlp"] } }
+    fn get_name(&self) -> String {
+        "yt-dlp".to_string()
+    }
+    fn get_binaries(&self) -> Vec<&str> {
+        if cfg!(windows) {
+            vec!["yt-dlp.exe"]
+        } else {
+            vec!["yt-dlp"]
+        }
+    }
     async fn install(&self, app_handle: AppHandle, target_dir: PathBuf) -> Result<(), String> {
         let target_path = target_dir.join(self.get_binaries()[0]);
-        download_file_robust(YT_DLP_URL, target_path, &self.get_name(), &app_handle, Some(YT_DLP_SIZE)).await.map_err(|e| e.to_string())
+        download_file_robust(
+            YT_DLP_URL,
+            target_path,
+            &self.get_name(),
+            &app_handle,
+            Some(YT_DLP_SIZE),
+        )
+        .await
+        .map_err(|e| e.to_string())
     }
     async fn check_update_available(&self, bin_dir: &PathBuf) -> Result<bool, String> {
         let local_path = bin_dir.join(self.get_binaries()[0]);
-        if !local_path.exists() { return Ok(true); }
+        if !local_path.exists() {
+            return Ok(true);
+        }
         let remote_tag = get_latest_github_tag("yt-dlp/yt-dlp").await?;
-        Ok(get_local_version(&local_path, "--version").map_or(true, |v| v.trim() != remote_tag.trim()))
+        Ok(get_local_version(&local_path, "--version")
+            .map_or(true, |v| v.trim() != remote_tag.trim()))
     }
 }
 
 pub struct FfmpegProvider;
 #[async_trait]
 impl DependencyProvider for FfmpegProvider {
-    fn get_name(&self) -> String { "FFmpeg".to_string() }
-    fn get_binaries(&self) -> Vec<&str> { if cfg!(windows) { vec!["ffmpeg.exe", "ffprobe.exe"] } else { vec!["ffmpeg", "ffprobe"] } }
+    fn get_name(&self) -> String {
+        "FFmpeg".to_string()
+    }
+    fn get_binaries(&self) -> Vec<&str> {
+        if cfg!(windows) {
+            vec!["ffmpeg.exe", "ffprobe.exe"]
+        } else {
+            vec!["ffmpeg", "ffprobe"]
+        }
+    }
     async fn install(&self, app_handle: AppHandle, target_dir: PathBuf) -> Result<(), String> {
-        let ext = if cfg!(target_os = "linux") { "tar.xz" } else { "zip" };
+        let ext = if cfg!(target_os = "linux") {
+            "tar.xz"
+        } else {
+            "zip"
+        };
         let archive_path = std::env::temp_dir().join(format!("ffmpeg_tmp.{}", ext));
-        
-        download_file_robust(FFMPEG_URL, archive_path.clone(), &self.get_name(), &app_handle, Some(FFMPEG_SIZE)).await.map_err(|e| e.to_string())?;
-        
-        let _ = app_handle.emit_all("install-progress", InstallProgressPayload {
-            name: self.get_name(),
-            percentage: 100,
-            status: "Extracting FFmpeg...".to_string()
-        });
-        
+
+        download_file_robust(
+            FFMPEG_URL,
+            archive_path.clone(),
+            &self.get_name(),
+            &app_handle,
+            Some(FFMPEG_SIZE),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+        let _ = app_handle.emit_all(
+            "install-progress",
+            InstallProgressPayload {
+                name: self.get_name(),
+                percentage: 100,
+                status: "Extracting FFmpeg...".to_string(),
+            },
+        );
+
         extract_archive_finding_binary(&archive_path, &target_dir, &self.get_binaries())?;
         let _ = fs::remove_file(&archive_path);
 
@@ -421,78 +511,160 @@ impl DependencyProvider for FfmpegProvider {
             // Evermeet provides macOS ffprobe binary in a completely separate archive
             let ffprobe_archive = std::env::temp_dir().join("ffprobe_tmp.zip");
             let ffprobe_url = "https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip";
-            let _ = app_handle.emit_all("install-progress", InstallProgressPayload {
-                name: "FFprobe".to_string(),
-                percentage: 50,
-                status: "Downloading FFprobe...".to_string()
-            });
-            if download_file_robust(ffprobe_url, ffprobe_archive.clone(), "FFprobe", &app_handle, None).await.is_ok() {
-                let _ = extract_archive_finding_binary(&ffprobe_archive, &target_dir, &self.get_binaries());
+            let _ = app_handle.emit_all(
+                "install-progress",
+                InstallProgressPayload {
+                    name: "FFprobe".to_string(),
+                    percentage: 50,
+                    status: "Downloading FFprobe...".to_string(),
+                },
+            );
+            if download_file_robust(
+                ffprobe_url,
+                ffprobe_archive.clone(),
+                "FFprobe",
+                &app_handle,
+                None,
+            )
+            .await
+            .is_ok()
+            {
+                let _ = extract_archive_finding_binary(
+                    &ffprobe_archive,
+                    &target_dir,
+                    &self.get_binaries(),
+                );
                 let _ = fs::remove_file(&ffprobe_archive);
             }
         }
 
         Ok(())
     }
-    async fn check_update_available(&self, _bin_dir: &PathBuf) -> Result<bool, String> { Ok(false) }
+    async fn check_update_available(&self, _bin_dir: &PathBuf) -> Result<bool, String> {
+        Ok(false)
+    }
 }
 
 pub struct DenoProvider;
 #[async_trait]
 impl DependencyProvider for DenoProvider {
-    fn get_name(&self) -> String { "Deno".to_string() }
-    fn get_binaries(&self) -> Vec<&str> { if cfg!(windows) { vec!["deno.exe"] } else { vec!["deno"] } }
+    fn get_name(&self) -> String {
+        "Deno".to_string()
+    }
+    fn get_binaries(&self) -> Vec<&str> {
+        if cfg!(windows) {
+            vec!["deno.exe"]
+        } else {
+            vec!["deno"]
+        }
+    }
     async fn install(&self, app_handle: AppHandle, target_dir: PathBuf) -> Result<(), String> {
         let archive_path = std::env::temp_dir().join("deno.zip");
-        download_file_robust(DENO_URL, archive_path.clone(), &self.get_name(), &app_handle, Some(DENO_SIZE)).await.map_err(|e| e.to_string())?;
+        download_file_robust(
+            DENO_URL,
+            archive_path.clone(),
+            &self.get_name(),
+            &app_handle,
+            Some(DENO_SIZE),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
         extract_archive_finding_binary(&archive_path, &target_dir, &self.get_binaries())?;
         let _ = fs::remove_file(archive_path);
         Ok(())
     }
     async fn check_update_available(&self, bin_dir: &PathBuf) -> Result<bool, String> {
         let local_path = bin_dir.join(self.get_binaries()[0]);
-        if !local_path.exists() { return Ok(true); }
+        if !local_path.exists() {
+            return Ok(true);
+        }
         let remote_tag = get_latest_github_tag("denoland/deno").await?;
         let clean_remote = remote_tag.replace('v', "");
-        Ok(get_local_version(&local_path, "--version").map_or(true, |v| !v.contains(&clean_remote)))
+        Ok(
+            get_local_version(&local_path, "--version")
+                .map_or(true, |v| !v.contains(&clean_remote)),
+        )
     }
 }
 
 pub struct BunProvider;
 #[async_trait]
 impl DependencyProvider for BunProvider {
-    fn get_name(&self) -> String { "Bun".to_string() }
-    fn get_binaries(&self) -> Vec<&str> { if cfg!(windows) { vec!["bun.exe"] } else { vec!["bun"] } }
+    fn get_name(&self) -> String {
+        "Bun".to_string()
+    }
+    fn get_binaries(&self) -> Vec<&str> {
+        if cfg!(windows) {
+            vec!["bun.exe"]
+        } else {
+            vec!["bun"]
+        }
+    }
     async fn install(&self, app_handle: AppHandle, target_dir: PathBuf) -> Result<(), String> {
         let archive_path = std::env::temp_dir().join("bun.zip");
-        download_file_robust(BUN_URL, archive_path.clone(), &self.get_name(), &app_handle, Some(BUN_SIZE)).await.map_err(|e| e.to_string())?;
+        download_file_robust(
+            BUN_URL,
+            archive_path.clone(),
+            &self.get_name(),
+            &app_handle,
+            Some(BUN_SIZE),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
         extract_archive_finding_binary(&archive_path, &target_dir, &self.get_binaries())?;
         let _ = fs::remove_file(archive_path);
         Ok(())
     }
     async fn check_update_available(&self, bin_dir: &PathBuf) -> Result<bool, String> {
         let local_path = bin_dir.join(self.get_binaries()[0]);
-        if !local_path.exists() { return Ok(true); }
+        if !local_path.exists() {
+            return Ok(true);
+        }
         let remote_tag = get_latest_github_tag("oven-sh/bun").await?;
         let clean_remote = remote_tag.replace('v', "");
-        Ok(get_local_version(&local_path, "--version").map_or(true, |v| !v.contains(&clean_remote)))
+        Ok(
+            get_local_version(&local_path, "--version")
+                .map_or(true, |v| !v.contains(&clean_remote)),
+        )
     }
 }
 
 pub struct Aria2Provider;
 #[async_trait]
 impl DependencyProvider for Aria2Provider {
-    fn get_name(&self) -> String { "Aria2".to_string() }
-    fn get_binaries(&self) -> Vec<&str> { if cfg!(windows) { vec!["aria2c.exe"] } else { vec!["aria2c"] } }
+    fn get_name(&self) -> String {
+        "Aria2".to_string()
+    }
+    fn get_binaries(&self) -> Vec<&str> {
+        if cfg!(windows) {
+            vec!["aria2c.exe"]
+        } else {
+            vec!["aria2c"]
+        }
+    }
     async fn install(&self, app_handle: AppHandle, target_dir: PathBuf) -> Result<(), String> {
-        let ext = if cfg!(target_os = "windows") { "zip" } else { "tar.bz2" };
+        let ext = if cfg!(target_os = "windows") {
+            "zip"
+        } else {
+            "tar.bz2"
+        };
         let archive_path = std::env::temp_dir().join(format!("aria2_tmp.{}", ext));
-        download_file_robust(ARIA2_URL, archive_path.clone(), &self.get_name(), &app_handle, Some(ARIA2_SIZE)).await.map_err(|e| e.to_string())?;
+        download_file_robust(
+            ARIA2_URL,
+            archive_path.clone(),
+            &self.get_name(),
+            &app_handle,
+            Some(ARIA2_SIZE),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
         let _ = extract_archive_finding_binary(&archive_path, &target_dir, &self.get_binaries());
         let _ = fs::remove_file(archive_path);
         Ok(())
     }
-    async fn check_update_available(&self, _bin_dir: &PathBuf) -> Result<bool, String> { Ok(false) }
+    async fn check_update_available(&self, _bin_dir: &PathBuf) -> Result<bool, String> {
+        Ok(false)
+    }
 }
 
 pub fn get_provider(name: &str) -> Option<Box<dyn DependencyProvider>> {
@@ -502,13 +674,15 @@ pub fn get_provider(name: &str) -> Option<Box<dyn DependencyProvider>> {
         "deno" => Some(Box::new(DenoProvider)),
         "bun" => Some(Box::new(BunProvider)),
         "aria2" | "aria2c" => Some(Box::new(Aria2Provider)),
-        _ => None
+        _ => None,
     }
 }
 
 pub async fn install_dep(name: String, app_handle: AppHandle) -> Result<(), String> {
     let provider = get_provider(&name).ok_or("Unknown dependency")?;
     let bin_dir = get_common_bin_dir();
-    if !bin_dir.exists() { fs::create_dir_all(&bin_dir).map_err(|e| e.to_string())?; }
+    if !bin_dir.exists() {
+        fs::create_dir_all(&bin_dir).map_err(|e| e.to_string())?;
+    }
     provider.install(app_handle, bin_dir).await
 }

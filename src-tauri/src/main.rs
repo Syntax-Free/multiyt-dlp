@@ -1,27 +1,24 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::fs;
 use std::sync::Arc;
+use std::time::Duration;
 use tauri::{Manager, WindowEvent};
 use tokio::sync::mpsc;
-use std::time::Duration;
-use std::fs;
 
 #[cfg(target_os = "windows")]
-use windows::{
-    core::PCWSTR,
-    Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID,
-};
+use windows::{core::PCWSTR, Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID};
 
-use crate::core::manager::JobManagerHandle;
 use crate::config::ConfigManager;
-use crate::core::logging::{LogManager, rotate_logs};
 use crate::core::history::HistoryManager;
+use crate::core::logging::{rotate_logs, LogManager};
+use crate::core::manager::JobManagerHandle;
 
 mod commands;
+mod config;
 mod core;
 mod models;
-mod config;
 
 fn main() {
     #[cfg(target_os = "windows")]
@@ -32,7 +29,7 @@ fn main() {
     }
 
     core::logging::register_panic_hook();
-    
+
     // Self-register in the SFS Common Registry map so other suite members can detect our presence
     core::deps::register_sfs_app();
 
@@ -60,19 +57,23 @@ fn main() {
     }
 
     let config_manager = Arc::new(ConfigManager::new());
-    
+
     let initial_config = config_manager.get_config();
     let log_manager = LogManager::init(&initial_config.general.log_level);
-    
+
     let history_manager = HistoryManager::new();
 
     let config_manager_setup = config_manager.clone();
     let config_manager_event = config_manager.clone();
     let config_manager_saver = config_manager.clone();
-    
+
     let (tx_save, mut rx_save) = mpsc::unbounded_channel::<()>();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(config_manager)
         .manage(log_manager)
         .manage(history_manager)
@@ -82,7 +83,7 @@ fn main() {
 
             let main_window = app.get_window("main").unwrap();
             let config = config_manager_setup.get_config();
-            
+
             let _ = main_window.set_size(tauri::Size::Physical(tauri::PhysicalSize {
                 width: config.window.width as u32,
                 height: config.window.height as u32,
@@ -91,7 +92,7 @@ fn main() {
                 x: config.window.x as i32,
                 y: config.window.y as i32,
             }));
-            
+
             tracing::info!("Application startup complete. Window initialized.");
 
             tauri::async_runtime::spawn(async move {
@@ -126,21 +127,21 @@ fn main() {
                         let app_handle = window.app_handle();
                         let manager = app_handle.state::<JobManagerHandle>();
                         let manager_clone = manager.inner().clone();
-                        
+
                         tauri::async_runtime::spawn(async move {
                             manager_clone.shutdown().await;
                             app_handle.exit(0);
                         });
                     }
                 }
-                
+
                 WindowEvent::Moved(pos) => {
                     if window_label == "main" && !window.is_minimized().unwrap_or(false) {
                         if pos.x > -10000 && pos.y > -10000 {
                             let mut current_config = config_manager_event.get_config();
                             current_config.window.x = pos.x as f64;
                             current_config.window.y = pos.y as f64;
-                            
+
                             config_manager_event.update_window(current_config.window);
                             let _ = tx_save.send(());
                         }
@@ -152,7 +153,7 @@ fn main() {
                             let mut current_config = config_manager_event.get_config();
                             current_config.window.width = size.width as f64;
                             current_config.window.height = size.height as f64;
-                            
+
                             config_manager_event.update_window(current_config.window);
                             let _ = tx_save.send(());
                         }
@@ -170,12 +171,11 @@ fn main() {
             commands::system::sync_dependencies,
             commands::system::open_external_link,
             commands::system::close_splash,
-            commands::system::get_latest_app_version, 
-            commands::system::show_in_folder, 
+            commands::system::get_latest_app_version,
+            commands::system::show_in_folder,
             commands::system::open_log_folder,
-            commands::system::log_frontend_message, 
+            commands::system::log_frontend_message,
             commands::system::request_attention,
-            
             // Downloader Commands
             commands::downloader::start_download,
             commands::downloader::cancel_download,
@@ -185,12 +185,10 @@ fn main() {
             commands::downloader::resume_pending_jobs,
             commands::downloader::clear_pending_jobs,
             commands::downloader::sync_download_state,
-            
             // Config Commands
             commands::config::get_app_config,
             commands::config::save_general_config,
             commands::config::save_preference_config,
-            
             // History Commands
             commands::history::get_download_history,
             commands::history::save_download_history,

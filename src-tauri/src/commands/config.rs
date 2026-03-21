@@ -1,7 +1,7 @@
-use tauri::State;
-use std::sync::Arc;
 use crate::config::{AppConfig, ConfigManager, GeneralConfig, PreferenceConfig};
 use crate::core::logging::LogManager;
+use std::sync::Arc;
+use tauri::State;
 
 #[tauri::command]
 pub fn get_app_config(config_manager: State<'_, Arc<ConfigManager>>) -> AppConfig {
@@ -12,7 +12,7 @@ pub fn get_app_config(config_manager: State<'_, Arc<ConfigManager>>) -> AppConfi
 pub fn save_general_config(
     config_manager: State<'_, Arc<ConfigManager>>,
     log_manager: State<'_, LogManager>, // NEW: Inject LogManager
-    config: GeneralConfig
+    config: GeneralConfig,
 ) -> Result<(), String> {
     // 1. Update Log Level immediately
     if let Err(e) = log_manager.set_level(&config.log_level) {
@@ -28,7 +28,7 @@ pub fn save_general_config(
 #[tauri::command]
 pub fn save_preference_config(
     config_manager: State<'_, Arc<ConfigManager>>,
-    config: PreferenceConfig
+    config: PreferenceConfig,
 ) -> Result<(), String> {
     config_manager.update_preferences(config);
     config_manager.save()

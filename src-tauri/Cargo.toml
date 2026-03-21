@@ -8,10 +8,10 @@ repository = ""
 edition = "2021"
 
 [build-dependencies]
-tauri-build = { version = "1.5", features = [] }
+tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "1.5", features = [ "window-all", "dialog-open", "process-exit", "process-relaunch", "shell-open", "process-command-api", "notification-all"] }
+tauri = { version = "2", features = [] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.28", features = ["full"] }
@@ -33,6 +33,10 @@ xz2 = "0.1"
 flate2 = "1.0"
 async-trait = "0.1" 
 walkdir = "2.5.0"
+tauri-plugin-notification = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-shell = "2"
+tauri-plugin-process = "2"
 
 [target.'cfg(not(windows))'.dependencies]
 nix = { version = "0.27", features = ["signal"] }

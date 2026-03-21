@@ -1,15 +1,9 @@
+use chrono::Local;
 use std::fs;
 use std::path::PathBuf;
-use tracing::{info, error};
-use tracing_subscriber::{
-    fmt, 
-    prelude::*, 
-    reload, 
-    Registry, 
-    EnvFilter
-};
+use tracing::{error, info};
 use tracing_appender::non_blocking::WorkerGuard;
-use chrono::Local;
+use tracing_subscriber::{fmt, prelude::*, reload, EnvFilter, Registry};
 
 // --- Structs ---
 
@@ -34,7 +28,7 @@ impl LogPaths {
         let log_dir = home.join(".multiyt-dlp").join("logs");
         let latest_log = log_dir.join("latest.log");
         let archive_dir = log_dir.join("archive");
-        
+
         Some(Self {
             log_dir,
             latest_log,
@@ -47,7 +41,10 @@ impl LogPaths {
 
 pub fn register_panic_hook() {
     std::panic::set_hook(Box::new(|panic_info| {
-        let location = panic_info.location().map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_else(|| "unknown".to_string());
+        let location = panic_info
+            .location()
+            .map(|l| format!("{}:{}", l.file(), l.line()))
+            .unwrap_or_else(|| "unknown".to_string());
         let payload = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
             *s
         } else if let Some(s) = panic_info.payload().downcast_ref::<String>() {
@@ -55,10 +52,10 @@ pub fn register_panic_hook() {
         } else {
             "Box<Any>"
         };
-        
+
         // Log to tracing system (hopefully flush works before exit)
         error!(target: "panic", "APPLICATION CRASH at {}: {}", location, payload);
-        
+
         // Also print to stderr for dev context
         eprintln!("APPLICATION CRASH at {}: {}", location, payload);
     }));
@@ -90,9 +87,9 @@ pub fn rotate_logs() -> Result<(), String> {
             eprintln!("Failed to rotate log file: {}", e);
             // If rename fails (e.g. cross-device link), try copy-delete
             if let Err(copy_err) = fs::copy(&paths.latest_log, &archive_path) {
-                 eprintln!("Failed to copy log file to archive: {}", copy_err);
+                eprintln!("Failed to copy log file to archive: {}", copy_err);
             } else {
-                 let _ = fs::remove_file(&paths.latest_log);
+                let _ = fs::remove_file(&paths.latest_log);
             }
         }
     }
@@ -114,11 +111,11 @@ fn cleanup_archives(archive_dir: &PathBuf) -> std::io::Result<()> {
     entries.sort_by(|a, b| {
         let meta_a = fs::metadata(a).and_then(|m| m.modified());
         let meta_b = fs::metadata(b).and_then(|m| m.modified());
-        
+
         // If we can't get metadata, rely on name (which has timestamp)
         // Reverse sort because we want newest (largest timestamp/time) first
         match (meta_a, meta_b) {
-            (Ok(time_a), Ok(time_b)) => time_b.cmp(&time_a), 
+            (Ok(time_a), Ok(time_b)) => time_b.cmp(&time_a),
             _ => b.cmp(a), // Fallback to filename reverse sort
         }
     });
@@ -141,7 +138,7 @@ impl LogManager {
     pub fn init(log_level: &str) -> Self {
         // 1. Get Paths
         let paths = LogPaths::new().expect("Could not determine log paths during init");
-        
+
         // 2. Create/Truncate "latest.log"
         let file = std::fs::File::create(&paths.latest_log).expect("Failed to create latest.log");
 
@@ -149,7 +146,7 @@ impl LogManager {
         let (non_blocking, guard) = tracing_appender::non_blocking(file);
 
         // 4. Layers
-        
+
         // Layer A: JSON File Output (Machine readable, rich data)
         let file_layer = fmt::layer()
             .json()
@@ -169,7 +166,7 @@ impl LogManager {
         let filter_str = Self::get_filter_string(log_level);
         let initial_filter = EnvFilter::try_new(&filter_str)
             .unwrap_or_else(|_| EnvFilter::new(Self::get_filter_string("info")));
-            
+
         let (filter_layer, reload_handle) = reload::Layer::new(initial_filter);
 
         // 6. Registry Construction
@@ -180,7 +177,7 @@ impl LogManager {
             .init();
 
         info!("Logging initialized. Writing to: {:?}", paths.latest_log);
-        
+
         Self {
             _guard: guard,
             reload_handle,
@@ -191,10 +188,11 @@ impl LogManager {
         let filter_str = Self::get_filter_string(level);
         let new_filter = EnvFilter::try_new(&filter_str)
             .map_err(|e| format!("Invalid log level '{}': {}", filter_str, e))?;
-        
-        self.reload_handle.reload(new_filter)
+
+        self.reload_handle
+            .reload(new_filter)
             .map_err(|e| format!("Failed to reload log level: {}", e))?;
-            
+
         info!("Log level dynamically changed to: {}", level);
         Ok(())
     }
@@ -204,9 +202,13 @@ impl LogManager {
         // 1. "multiyt_dlp" (our crate) gets the specific 'level' requested.
         // 2. The rest of the world defaults to 'warn' to suppress noise, unless 'level' is stricter.
         // 3. Specific noisy crates are forced to 'error'.
-        
-        let global_level = if level == "trace" || level == "debug" { "info" } else { "warn" };
-        
+
+        let global_level = if level == "trace" || level == "debug" {
+            "info"
+        } else {
+            "warn"
+        };
+
         format!(
             "{global},multiyt_dlp={level},tao=error,wry=error,hyper=error,reqwest=error,h2=error",
             global = global_level,

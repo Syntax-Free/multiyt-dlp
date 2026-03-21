@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
+use tokio::fs::{File, OpenOptions};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, oneshot};
-use tokio::fs::{OpenOptions, File};
-use tokio::io::{AsyncWriteExt};
 use url::Url;
 
 #[derive(Debug)]
@@ -33,10 +33,10 @@ impl HistoryManager {
         }
 
         let cache = Arc::new(RwLock::new(HashSet::new()));
-        
+
         // Initial Load
         if file_path.exists() {
-             if let Ok(file) = std::fs::File::open(&file_path) {
+            if let Ok(file) = std::fs::File::open(&file_path) {
                 let reader = std::io::BufReader::new(file);
                 let mut c = cache.write().unwrap();
                 use std::io::BufRead;
@@ -47,13 +47,13 @@ impl HistoryManager {
                         }
                     }
                 }
-             }
+            }
         }
 
         let (tx, mut rx) = mpsc::channel(100);
         let actor_path = file_path.clone();
         let actor_cache = cache.clone();
-        
+
         // Actor Loop: Serializes all file access
         tauri::async_runtime::spawn(async move {
             while let Some(msg) = rx.recv().await {
@@ -64,7 +64,7 @@ impl HistoryManager {
                             .create(true)
                             .append(true)
                             .open(&actor_path)
-                            .await 
+                            .await
                         {
                             if let Err(e) = file.write_all(format!("{}\n", url).as_bytes()).await {
                                 eprintln!("Failed to write history: {}", e);
@@ -76,43 +76,41 @@ impl HistoryManager {
                                 }
                             }
                         }
-                    },
+                    }
                     HistoryMessage::Replace(content, resp) => {
-                         // Atomic overwrite
-                         match File::create(&actor_path).await {
-                             Ok(mut file) => {
-                                 if let Err(e) = file.write_all(content.as_bytes()).await {
-                                     let _ = resp.send(Err(e.to_string()));
-                                 } else {
-                                     // Rebuild Cache completely
-                                     let mut new_set = HashSet::new();
-                                     for line in content.lines() {
-                                         if !line.trim().is_empty() {
-                                             new_set.insert(Self::normalize_url(line));
-                                         }
-                                     }
-                                     if let Ok(mut c) = actor_cache.write() {
-                                         *c = new_set;
-                                     }
-                                     let _ = resp.send(Ok(()));
-                                 }
-                             },
-                             Err(e) => {
-                                 let _ = resp.send(Err(e.to_string()));
-                             }
-                         }
-                    },
-                    HistoryMessage::Clear(resp) => {
+                        // Atomic overwrite
                         match File::create(&actor_path).await {
-                            Ok(_) => {
-                                if let Ok(mut c) = actor_cache.write() {
-                                    c.clear();
+                            Ok(mut file) => {
+                                if let Err(e) = file.write_all(content.as_bytes()).await {
+                                    let _ = resp.send(Err(e.to_string()));
+                                } else {
+                                    // Rebuild Cache completely
+                                    let mut new_set = HashSet::new();
+                                    for line in content.lines() {
+                                        if !line.trim().is_empty() {
+                                            new_set.insert(Self::normalize_url(line));
+                                        }
+                                    }
+                                    if let Ok(mut c) = actor_cache.write() {
+                                        *c = new_set;
+                                    }
+                                    let _ = resp.send(Ok(()));
                                 }
-                                let _ = resp.send(Ok(()));
-                            },
+                            }
                             Err(e) => {
                                 let _ = resp.send(Err(e.to_string()));
                             }
+                        }
+                    }
+                    HistoryMessage::Clear(resp) => match File::create(&actor_path).await {
+                        Ok(_) => {
+                            if let Ok(mut c) = actor_cache.write() {
+                                c.clear();
+                            }
+                            let _ = resp.send(Ok(()));
+                        }
+                        Err(e) => {
+                            let _ = resp.send(Err(e.to_string()));
                         }
                     },
                     HistoryMessage::Get(resp) => {
@@ -130,10 +128,7 @@ impl HistoryManager {
             }
         });
 
-        Self {
-            cache,
-            sender: tx
-        }
+        Self { cache, sender: tx }
     }
 
     pub fn normalize_url(raw_url: &str) -> String {
@@ -160,7 +155,8 @@ impl HistoryManager {
         }
 
         let allowed_params: HashSet<&str> = ["v", "list", "id"].into_iter().collect();
-        let current_params: Vec<(String, String)> = url.query_pairs()
+        let current_params: Vec<(String, String)> = url
+            .query_pairs()
             .map(|(k, v)| (k.into_owned(), v.into_owned()))
             .collect();
 
@@ -174,7 +170,14 @@ impl HistoryManager {
                 }
             }
         } else {
-            let tracking = ["utm_source", "utm_medium", "utm_campaign", "si", "feature", "ab_channel"];
+            let tracking = [
+                "utm_source",
+                "utm_medium",
+                "utm_campaign",
+                "si",
+                "feature",
+                "ab_channel",
+            ];
             url.query_pairs_mut().clear();
             for (k, v) in current_params {
                 if !tracking.contains(&k.as_str()) {
@@ -198,7 +201,7 @@ impl HistoryManager {
     // Slow path: Send message to actor
     pub async fn add(&self, url: &str) -> Result<(), String> {
         let normalized = Self::normalize_url(url);
-        
+
         // Optimistic check to avoid channel traffic
         {
             let cache = self.cache.read().unwrap();
@@ -207,25 +210,36 @@ impl HistoryManager {
             }
         }
 
-        self.sender.send(HistoryMessage::Add(url.to_string())).await
+        self.sender
+            .send(HistoryMessage::Add(url.to_string()))
+            .await
             .map_err(|_| "History actor closed".to_string())
     }
 
     pub async fn get_content(&self) -> Result<String, String> {
         let (tx, rx) = oneshot::channel();
-        self.sender.send(HistoryMessage::Get(tx)).await.map_err(|_| "Actor closed".to_string())?;
+        self.sender
+            .send(HistoryMessage::Get(tx))
+            .await
+            .map_err(|_| "Actor closed".to_string())?;
         rx.await.map_err(|_| "Response failed".to_string())
     }
 
     pub async fn save_content(&self, content: String) -> Result<(), String> {
         let (tx, rx) = oneshot::channel();
-        self.sender.send(HistoryMessage::Replace(content, tx)).await.map_err(|_| "Actor closed".to_string())?;
+        self.sender
+            .send(HistoryMessage::Replace(content, tx))
+            .await
+            .map_err(|_| "Actor closed".to_string())?;
         rx.await.map_err(|_| "Response failed".to_string())?
     }
 
     pub async fn clear(&self) -> Result<(), String> {
         let (tx, rx) = oneshot::channel();
-        self.sender.send(HistoryMessage::Clear(tx)).await.map_err(|_| "Actor closed".to_string())?;
+        self.sender
+            .send(HistoryMessage::Clear(tx))
+            .await
+            .map_err(|_| "Actor closed".to_string())?;
         rx.await.map_err(|_| "Response failed".to_string())?
     }
 }

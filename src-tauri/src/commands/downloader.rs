@@ -1,42 +1,58 @@
-use tauri::{State, AppHandle};
-use uuid::Uuid;
-use std::sync::Arc;
 use std::collections::HashSet;
+use std::sync::Arc;
+use tauri::{AppHandle, State};
 use tokio::sync::Semaphore;
+use uuid::Uuid;
 
 use crate::config::ConfigManager;
-use crate::core::{
-    error::AppError,
-    manager::JobManagerHandle,
-    history::HistoryManager,
+use crate::core::{error::AppError, history::HistoryManager, manager::JobManagerHandle};
+use crate::models::{
+    DownloadFormatPreset, PlaylistEntry, PlaylistResult, QueuedJob, StartDownloadResponse,
 };
-use crate::models::{DownloadFormatPreset, QueuedJob, PlaylistResult, PlaylistEntry, StartDownloadResponse};
 
 static PROBE_SEMAPHORE: std::sync::OnceLock<Arc<Semaphore>> = std::sync::OnceLock::new();
 
 fn get_probe_semaphore() -> Arc<Semaphore> {
-    PROBE_SEMAPHORE.get_or_init(|| Arc::new(Semaphore::new(3))).clone()
+    PROBE_SEMAPHORE
+        .get_or_init(|| Arc::new(Semaphore::new(3)))
+        .clone()
 }
 
-async fn probe_url(url: &str, _app: &AppHandle, config_manager: &Arc<ConfigManager>) -> Result<Vec<PlaylistEntry>, AppError> {
+async fn probe_url(
+    url: &str,
+    _app: &AppHandle,
+    config_manager: &Arc<ConfigManager>,
+) -> Result<Vec<PlaylistEntry>, AppError> {
     let semaphore = get_probe_semaphore();
-    let _permit = semaphore.acquire().await.map_err(|_| AppError::ValidationFailed("Semaphore closed".into()))?;
+    let _permit = semaphore
+        .acquire()
+        .await
+        .map_err(|_| AppError::ValidationFailed("Semaphore closed".into()))?;
 
     let config = config_manager.get_config().general;
     let bin_dir = crate::core::deps::get_common_bin_dir();
-    
+
     let url_clone = url.to_string();
-    
+
     let mut yt_dlp_cmd = "yt-dlp".to_string();
-    let local_exe = bin_dir.join(if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" });
-    if local_exe.exists() { 
-        yt_dlp_cmd = local_exe.to_string_lossy().to_string(); 
+    let local_exe = bin_dir.join(if cfg!(windows) {
+        "yt-dlp.exe"
+    } else {
+        "yt-dlp"
+    });
+    if local_exe.exists() {
+        yt_dlp_cmd = local_exe.to_string_lossy().to_string();
     }
 
     let mut cmd = tokio::process::Command::new(yt_dlp_cmd);
 
     if let Ok(current_path) = std::env::var("PATH") {
-        let new_path = format!("{}{}{}", bin_dir.to_string_lossy(), if cfg!(windows) { ";" } else { ":" }, current_path);
+        let new_path = format!(
+            "{}{}{}",
+            bin_dir.to_string_lossy(),
+            if cfg!(windows) { ";" } else { ":" },
+            current_path
+        );
         cmd.env("PATH", new_path);
     } else {
         cmd.env("PATH", bin_dir.to_string_lossy().to_string());
@@ -44,15 +60,19 @@ async fn probe_url(url: &str, _app: &AppHandle, config_manager: &Arc<ConfigManag
 
     // Suppress config files and only probe for metadata
     cmd.arg("--ignore-config")
-    .arg("--flat-playlist")
-    .arg("--dump-single-json")
-    .arg("--no-warnings")
-    .arg(&url_clone);
+        .arg("--flat-playlist")
+        .arg("--dump-single-json")
+        .arg("--no-warnings")
+        .arg(&url_clone);
 
     if let Some(path) = config.cookies_path {
-        if !path.trim().is_empty() { cmd.arg("--cookies").arg(path); }
+        if !path.trim().is_empty() {
+            cmd.arg("--cookies").arg(path);
+        }
     } else if let Some(browser) = config.cookies_from_browser {
-        if !browser.trim().is_empty() && browser != "none" { cmd.arg("--cookies-from-browser").arg(browser); }
+        if !browser.trim().is_empty() && browser != "none" {
+            cmd.arg("--cookies-from-browser").arg(browser);
+        }
     }
 
     #[cfg(target_os = "windows")]
@@ -60,18 +80,23 @@ async fn probe_url(url: &str, _app: &AppHandle, config_manager: &Arc<ConfigManag
         cmd.creation_flags(0x08000000);
     }
 
-    let output_result = tokio::time::timeout(std::time::Duration::from_secs(30), cmd.output()).await;
+    let output_result =
+        tokio::time::timeout(std::time::Duration::from_secs(30), cmd.output()).await;
 
     let output = match output_result {
         Ok(Ok(out)) => out,
         Ok(Err(e)) => return Err(AppError::IoError(e.to_string())),
-        Err(_) => return Err(AppError::ValidationFailed("Probe timed out after 30 seconds".into())),
+        Err(_) => {
+            return Err(AppError::ValidationFailed(
+                "Probe timed out after 30 seconds".into(),
+            ))
+        }
     };
 
     if !output.status.success() {
-        return Err(AppError::ProcessFailed { 
-            exit_code: output.status.code().unwrap_or(-1), 
-            stderr: String::from_utf8_lossy(&output.stderr).to_string() 
+        return Err(AppError::ProcessFailed {
+            exit_code: output.status.code().unwrap_or(-1),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
         });
     }
 
@@ -85,17 +110,35 @@ async fn probe_url(url: &str, _app: &AppHandle, config_manager: &Arc<ConfigManag
         for entry in entries_arr {
             if let Some(u) = entry.get("url").and_then(|s| s.as_str()) {
                 entries.push(PlaylistEntry {
-                    id: entry.get("id").and_then(|s| s.as_str()).map(|s| s.to_string()),
+                    id: entry
+                        .get("id")
+                        .and_then(|s| s.as_str())
+                        .map(|s| s.to_string()),
                     url: u.to_string(),
-                    title: entry.get("title").and_then(|s| s.as_str()).unwrap_or("Unknown").to_string(),
+                    title: entry
+                        .get("title")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("Unknown")
+                        .to_string(),
                 });
             }
         }
     } else {
         entries.push(PlaylistEntry {
-            id: parsed.get("id").and_then(|s| s.as_str()).map(|s| s.to_string()),
-            url: parsed.get("webpage_url").and_then(|s| s.as_str()).unwrap_or(&url_clone).to_string(),
-            title: parsed.get("title").and_then(|s| s.as_str()).unwrap_or("Unknown").to_string(),
+            id: parsed
+                .get("id")
+                .and_then(|s| s.as_str())
+                .map(|s| s.to_string()),
+            url: parsed
+                .get("webpage_url")
+                .and_then(|s| s.as_str())
+                .unwrap_or(&url_clone)
+                .to_string(),
+            title: parsed
+                .get("title")
+                .and_then(|s| s.as_str())
+                .unwrap_or("Unknown")
+                .to_string(),
         });
     }
 
@@ -120,7 +163,7 @@ pub async fn start_download(
     url: String,
     download_path: Option<String>, // Path from the Download Form
     format_preset: DownloadFormatPreset,
-    video_resolution: String, 
+    video_resolution: String,
     embed_metadata: bool,
     embed_thumbnail: bool,
     filename_template: String,
@@ -129,10 +172,9 @@ pub async fn start_download(
     live_from_start: Option<bool>,
     url_whitelist: Option<Vec<String>>,
     config: State<'_, Arc<ConfigManager>>,
-    manager: State<'_, JobManagerHandle>, 
-    history: State<'_, HistoryManager>, 
-) -> Result<StartDownloadResponse, AppError> { 
-    
+    manager: State<'_, JobManagerHandle>,
+    history: State<'_, HistoryManager>,
+) -> Result<StartDownloadResponse, AppError> {
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return Err(AppError::ValidationFailed("Invalid URL provided.".into()));
     }
@@ -149,7 +191,9 @@ pub async fn start_download(
         .or_else(|| tauri::api::path::download_dir().map(|p| p.to_string_lossy().to_string()));
 
     if final_download_path.is_none() {
-        return Err(AppError::ValidationFailed("Could not determine a valid download directory.".into()));
+        return Err(AppError::ValidationFailed(
+            "Could not determine a valid download directory.".into(),
+        ));
     }
 
     let safe_template = if filename_template.trim().is_empty() {
@@ -163,9 +207,10 @@ pub async fn start_download(
     let is_forced = force_download.unwrap_or(false);
 
     let entries = probe_url(&url_clone, &app_handle, &config_manager).await?;
-    
-    let whitelist_set: Option<HashSet<String>> = url_whitelist.map(|list| list.into_iter().collect());
-    
+
+    let whitelist_set: Option<HashSet<String>> =
+        url_whitelist.map(|list| list.into_iter().collect());
+
     let total_found = if let Some(ref wl) = whitelist_set {
         wl.len() as u32
     } else {
@@ -189,7 +234,7 @@ pub async fn start_download(
         }
 
         let job_id = Uuid::new_v4();
-        
+
         let job_data = QueuedJob {
             id: job_id,
             url: entry.url.clone(),
@@ -210,7 +255,7 @@ pub async fn start_download(
             Ok(_) => {
                 created_job_ids.push(job_id);
                 urls_to_add.push(entry.url);
-            },
+            }
             Err(e) => {
                 return Err(AppError::ValidationFailed(e));
             }
@@ -252,7 +297,10 @@ pub async fn resolve_file_conflict(
     if resolution != "overwrite" && resolution != "discard" {
         return Err(AppError::ValidationFailed("Invalid resolution".into()));
     }
-    manager.resolve_conflict(job_id, resolution).await.map_err(|e| AppError::ValidationFailed(e))?;
+    manager
+        .resolve_conflict(job_id, resolution)
+        .await
+        .map_err(|e| AppError::ValidationFailed(e))?;
     Ok(())
 }
 
@@ -263,7 +311,7 @@ pub async fn get_pending_jobs(manager: State<'_, JobManagerHandle>) -> Result<u3
 
 #[tauri::command]
 pub async fn resume_pending_jobs(
-    manager: State<'_, JobManagerHandle>
+    manager: State<'_, JobManagerHandle>,
 ) -> Result<Vec<QueuedJob>, String> {
     Ok(manager.resume_pending().await)
 }
@@ -276,7 +324,7 @@ pub async fn clear_pending_jobs(manager: State<'_, JobManagerHandle>) -> Result<
 
 #[tauri::command]
 pub async fn sync_download_state(
-    manager: State<'_, JobManagerHandle>
+    manager: State<'_, JobManagerHandle>,
 ) -> Result<Vec<crate::models::Download>, String> {
     Ok(manager.sync_state().await)
 }

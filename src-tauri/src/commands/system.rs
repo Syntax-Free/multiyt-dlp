@@ -1,14 +1,14 @@
-use std::process::Command;
-use tauri::{AppHandle, Manager};
-use serde::{Serialize, Deserialize};
-use regex::Regex;
-use crate::core::deps::{self, DependencyProvider}; 
-use std::path::PathBuf;
-use tracing::{info, warn, error, debug};
-use tokio::time::{timeout, Duration};
+use crate::core::deps::{self, DependencyProvider};
 use once_cell::sync::Lazy;
-use std::sync::Mutex;
+use regex::Regex;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::path::PathBuf;
+use std::process::Command;
+use std::sync::Mutex;
+use tauri::{AppHandle, Manager};
+use tokio::time::{timeout, Duration};
+use tracing::{debug, error, info, warn};
 
 // GLOBAL LOCK to prevent concurrent dependency installs
 static INSTALL_LOCKS: Lazy<Mutex<HashSet<String>>> = Lazy::new(|| Mutex::new(HashSet::new()));
@@ -62,19 +62,27 @@ fn new_silent_command(program: &str) -> Command {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000); 
+        cmd.creation_flags(0x08000000);
     }
     cmd
 }
 
-pub fn resolve_binary_info(bin_name: &str, version_flag: &str, local_bin_path: &PathBuf) -> DependencyInfo {
+pub fn resolve_binary_info(
+    bin_name: &str,
+    version_flag: &str,
+    local_bin_path: &PathBuf,
+) -> DependencyInfo {
     let local_path = local_bin_path.join(bin_name);
     let local_available = local_path.exists();
 
     let final_path = if local_available {
         Some(local_path.to_string_lossy().to_string())
     } else {
-        let path_cmd = if cfg!(target_os = "windows") { "where" } else { "which" };
+        let path_cmd = if cfg!(target_os = "windows") {
+            "where"
+        } else {
+            "which"
+        };
         new_silent_command(path_cmd)
             .arg(bin_name)
             .output()
@@ -89,11 +97,11 @@ pub fn resolve_binary_info(bin_name: &str, version_flag: &str, local_bin_path: &
 
     if let Some(ref p) = final_path {
         if let Ok(output) = new_silent_command(p).arg(version_flag).output() {
-             if output.status.success() {
-                 let out_str = String::from_utf8_lossy(&output.stdout).to_string();
-                 let first_line = out_str.lines().next().unwrap_or("").trim().to_string();
-                 version = Some(first_line);
-             }
+            if output.status.success() {
+                let out_str = String::from_utf8_lossy(&output.stdout).to_string();
+                let first_line = out_str.lines().next().unwrap_or("").trim().to_string();
+                version = Some(first_line);
+            }
         }
     }
 
@@ -118,13 +126,21 @@ pub fn get_js_runtime_info(bin_path: &PathBuf) -> Option<(String, String)> {
     ];
 
     for (exec_base, engine_name) in providers {
-        let exec = if cfg!(windows) { format!("{}.exe", exec_base) } else { exec_base.to_string() };
+        let exec = if cfg!(windows) {
+            format!("{}.exe", exec_base)
+        } else {
+            exec_base.to_string()
+        };
         let local = bin_path.join(&exec);
         if local.exists() {
             return Some((engine_name.to_string(), local.to_string_lossy().to_string()));
         }
 
-        let path_cmd = if cfg!(target_os = "windows") { "where" } else { "which" };
+        let path_cmd = if cfg!(target_os = "windows") {
+            "where"
+        } else {
+            "which"
+        };
         let found = new_silent_command(path_cmd)
             .arg(&exec)
             .output()
@@ -150,17 +166,26 @@ pub async fn analyze_js_runtime(_app_handle: &AppHandle, bin_path: &PathBuf) -> 
     ];
 
     for (exec_base, label, flag) in providers {
-        let exec = if cfg!(windows) { format!("{}.exe", exec_base) } else { exec_base.to_string() };
+        let exec = if cfg!(windows) {
+            format!("{}.exe", exec_base)
+        } else {
+            exec_base.to_string()
+        };
         let mut info = resolve_binary_info(&exec, flag, bin_path);
-        
-        if !info.available { continue; }
+
+        if !info.available {
+            continue;
+        }
 
         info.name = label.to_string();
         let version_str = info.version.clone().unwrap_or_default();
-        
+
         let (supported, recommended) = match exec_base {
             "deno" => (deps::compare_semver(&version_str, "2.0.0"), true),
-            "node" => (deps::compare_semver(&version_str, "20.0.0"), deps::compare_semver(&version_str, "22.0.0")),
+            "node" => (
+                deps::compare_semver(&version_str, "20.0.0"),
+                deps::compare_semver(&version_str, "22.0.0"),
+            ),
             "bun" => (deps::compare_semver(&version_str, "1.0.31"), true),
             _ => (deps::compare_date(&version_str, "2023-12-09"), true),
         };
@@ -186,15 +211,31 @@ pub async fn analyze_js_runtime(_app_handle: &AppHandle, bin_path: &PathBuf) -> 
 #[tauri::command]
 pub async fn check_local_deps(_app_handle: AppHandle) -> LocalScanResult {
     let bin_dir = crate::core::deps::get_common_bin_dir();
-    
+
     if !bin_dir.exists() {
         let _ = std::fs::create_dir_all(&bin_dir);
     }
 
-    let yt_exe = if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" };
-    let ff_exe = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
-    let fp_exe = if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" };
-    let aria_exe = if cfg!(windows) { "aria2c.exe" } else { "aria2c" };
+    let yt_exe = if cfg!(windows) {
+        "yt-dlp.exe"
+    } else {
+        "yt-dlp"
+    };
+    let ff_exe = if cfg!(windows) {
+        "ffmpeg.exe"
+    } else {
+        "ffmpeg"
+    };
+    let fp_exe = if cfg!(windows) {
+        "ffprobe.exe"
+    } else {
+        "ffprobe"
+    };
+    let aria_exe = if cfg!(windows) {
+        "aria2c.exe"
+    } else {
+        "aria2c"
+    };
 
     let mut missing = Vec::new();
 
@@ -205,11 +246,11 @@ pub async fn check_local_deps(_app_handle: AppHandle) -> LocalScanResult {
     if !bin_dir.join(ff_exe).exists() || !bin_dir.join(fp_exe).exists() {
         missing.push("ffmpeg".to_string());
     }
-    
+
     if get_js_runtime_info(&bin_dir).is_none() {
         missing.push("deno".to_string());
     }
-    
+
     let aria2_available = bin_dir.join(aria_exe).exists();
 
     LocalScanResult {
@@ -231,23 +272,35 @@ pub async fn check_dependencies(app_handle: AppHandle) -> AppDependencies {
 
     let (yt_res, ff_res, aria_res, js_res) = tokio::join!(
         async {
-            let exec_name = if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" };
+            let exec_name = if cfg!(windows) {
+                "yt-dlp.exe"
+            } else {
+                "yt-dlp"
+            };
             let mut info = resolve_binary_info(exec_name, "--version", &bin_dir);
             info.name = "yt-dlp".to_string();
             info
         },
         async {
-            let exec_name = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
-            let fp_name = if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" };
-            
+            let exec_name = if cfg!(windows) {
+                "ffmpeg.exe"
+            } else {
+                "ffmpeg"
+            };
+            let fp_name = if cfg!(windows) {
+                "ffprobe.exe"
+            } else {
+                "ffprobe"
+            };
+
             let mut info = resolve_binary_info(exec_name, "-version", &bin_dir);
             let fp_info = resolve_binary_info(fp_name, "-version", &bin_dir);
-            
+
             // If either component of the suite is missing, flag the entire FFmpeg suite as missing
             if !fp_info.available {
                 info.available = false;
             }
-            
+
             info.name = "FFmpeg".to_string();
             if let Some(ref v) = info.version {
                 let re = Regex::new(r"ffmpeg version ([^\s]+)").unwrap();
@@ -258,7 +311,11 @@ pub async fn check_dependencies(app_handle: AppHandle) -> AppDependencies {
             info
         },
         async {
-            let exec_name = if cfg!(windows) { "aria2c.exe" } else { "aria2c" };
+            let exec_name = if cfg!(windows) {
+                "aria2c.exe"
+            } else {
+                "aria2c"
+            };
             let mut info = resolve_binary_info(exec_name, "--version", &bin_dir);
             info.name = "aria2c".to_string();
             if let Some(ref v) = info.version {
@@ -296,7 +353,7 @@ pub async fn install_dependency(app_handle: AppHandle, name: String) -> Result<(
         let mut locks = INSTALL_LOCKS.lock().unwrap();
         locks.remove(&name);
     }
-    
+
     result
 }
 
@@ -324,9 +381,14 @@ pub fn close_splash(app_handle: AppHandle) {
 
 #[tauri::command]
 pub async fn get_latest_app_version() -> Result<String, String> {
-    match timeout(Duration::from_secs(3), deps::get_latest_github_tag("zqily/multiyt-dlp")).await {
+    match timeout(
+        Duration::from_secs(3),
+        deps::get_latest_github_tag("zqily/multiyt-dlp"),
+    )
+    .await
+    {
         Ok(res) => res,
-        Err(_) => Err("Request timed out".into())
+        Err(_) => Err("Request timed out".into()),
     }
 }
 
@@ -346,7 +408,7 @@ pub fn show_in_folder(path: String) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        use std::os::windows::process::CommandExt; 
+        use std::os::windows::process::CommandExt;
         let normalized_path = path.replace("/", "\\");
         let _ = Command::new("explorer")
             .arg("/select,")
@@ -362,7 +424,7 @@ pub fn show_in_folder(path: String) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
         if let Some(parent) = path_obj.parent() {
-             let _ = Command::new("xdg-open").arg(parent).spawn();
+            let _ = Command::new("xdg-open").arg(parent).spawn();
         }
     }
     Ok(())
@@ -377,8 +439,14 @@ pub fn open_log_folder() -> Result<(), String> {
         std::fs::create_dir_all(&log_dir).map_err(|e| e.to_string())?;
     }
 
-    let cmd = if cfg!(target_os = "windows") { "explorer" } else if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    let cmd = if cfg!(target_os = "windows") {
+        "explorer"
+    } else if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
     let _ = Command::new(cmd).arg(&log_dir).spawn();
-    
+
     Ok(())
 }

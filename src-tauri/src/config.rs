@@ -1,13 +1,13 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
-use std::path::{PathBuf};
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 // --- Configuration Structs ---
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(default)] 
+#[serde(default)]
 pub struct WindowConfig {
     pub width: f64,
     pub height: f64,
@@ -34,8 +34,12 @@ impl WindowConfig {
             self.y = 100.0;
         }
 
-        if self.width < 400.0 { self.width = 1200.0; }
-        if self.height < 300.0 { self.height = 800.0; }
+        if self.width < 400.0 {
+            self.width = 1200.0;
+        }
+        if self.height < 300.0 {
+            self.height = 800.0;
+        }
     }
 }
 
@@ -47,7 +51,7 @@ pub struct GeneralConfig {
     pub template_blocks_json: Option<String>,
     pub max_concurrent_downloads: u32,
     pub max_total_instances: u32,
-    pub log_level: String, 
+    pub log_level: String,
     pub check_for_updates: bool,
     pub cookies_path: Option<String>,
     pub cookies_from_browser: Option<String>,
@@ -59,7 +63,7 @@ pub struct GeneralConfig {
 impl Default for GeneralConfig {
     fn default() -> Self {
         Self {
-            download_path: None, 
+            download_path: None,
             filename_template: "%(title)s.%(ext)s".to_string(),
             template_blocks_json: None,
             max_concurrent_downloads: 4,
@@ -79,10 +83,10 @@ impl Default for GeneralConfig {
 #[serde(default)]
 pub struct PreferenceConfig {
     pub mode: String,
-    pub format_preset: String, 
-    pub video_preset: String,  
-    pub audio_preset: String,  
-    pub video_resolution: String, 
+    pub format_preset: String,
+    pub video_preset: String,
+    pub audio_preset: String,
+    pub video_resolution: String,
     pub embed_metadata: bool,
     pub embed_thumbnail: bool,
     pub live_from_start: bool,
@@ -94,8 +98,8 @@ impl Default for PreferenceConfig {
         Self {
             mode: "video".to_string(),
             format_preset: "best".to_string(),
-            video_preset: "best".to_string(),        
-            audio_preset: "audio_best".to_string(),  
+            video_preset: "best".to_string(),
+            audio_preset: "audio_best".to_string(),
             video_resolution: "best".to_string(),
             embed_metadata: false,
             embed_thumbnail: false,
@@ -153,20 +157,22 @@ impl ConfigManager {
             config: Mutex::new(config),
             file_path,
         };
-        
+
         let _ = manager.save();
         manager
     }
 
     fn load_robustly(path: &PathBuf) -> Option<AppConfig> {
-        if !path.exists() { return None; }
+        if !path.exists() {
+            return None;
+        }
 
         let content = fs::read_to_string(path).ok()?;
 
         match serde_json::from_str::<AppConfig>(&content) {
             Ok(cfg) => Some(cfg),
             Err(_) => {
-                let disk_json: Value = serde_json::from_str(&content).ok()?; 
+                let disk_json: Value = serde_json::from_str(&content).ok()?;
                 let default_config = AppConfig::default();
                 let mut merged_json = serde_json::to_value(&default_config).unwrap();
                 Self::tolerant_merge(&mut merged_json, &disk_json);
@@ -202,7 +208,7 @@ impl ConfigManager {
 
     pub fn save(&self) -> Result<(), String> {
         let config_guard = self.config.lock().unwrap();
-        
+
         let json = serde_json::to_string_pretty(&*config_guard)
             .map_err(|e| format!("Serialization error: {}", e))?;
 
@@ -210,11 +216,10 @@ impl ConfigManager {
         let tmp_path = main_path.with_extension("tmp");
         let bak_path = main_path.with_extension("json.bak");
 
-        fs::write(&tmp_path, json)
-            .map_err(|e| format!("Failed to write temp config: {}", e))?;
+        fs::write(&tmp_path, json).map_err(|e| format!("Failed to write temp config: {}", e))?;
 
         if main_path.exists() {
-            let _ = fs::copy(main_path, &bak_path); 
+            let _ = fs::copy(main_path, &bak_path);
         }
 
         fs::rename(&tmp_path, main_path)
@@ -238,7 +243,7 @@ impl ConfigManager {
     }
 
     pub fn update_window(&self, mut window: WindowConfig) {
-        window.sanitize(); 
+        window.sanitize();
         let mut cfg = self.config.lock().unwrap();
         cfg.window = window;
     }

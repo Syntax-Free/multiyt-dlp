@@ -2,35 +2,23 @@
   "build": {
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build",
-    "devPath": "http://localhost:1420",
-    "distDir": "../dist", 
-    "withGlobalTauri": true
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420"
   },
-  "package": {
-    "productName": "Multiyt-dlp",
-    "version": "2.2.2"
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/icon.ico"
+    ]
   },
-  "tauri": {
-    "allowlist": {
-      "all": false,
-      "shell": {
-        "open": true
-      },
-      "dialog": {
-        "open": true
-      },
-      "notification": {
-        "all": true
-      },
-      "process": {
-        "all": false,
-        "exit": true,
-        "relaunch": true
-      },
-      "window": {
-        "all": true
-      }
-    },
+  "productName": "Multiyt-dlp",
+  "mainBinaryName": "Multiyt-dlp",
+  "version": "2.2.2",
+  "identifier": "net.syntaxfree.multiyt-dlp",
+  "plugins": {},
+  "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "label": "splashscreen",
@@ -43,7 +31,8 @@
         "decorations": false,
         "alwaysOnTop": true,
         "transparent": true,
-        "visible": true
+        "visible": true,
+        "useHttpsScheme": true
       },
       {
         "label": "main",
@@ -52,19 +41,12 @@
         "height": 800,
         "center": true,
         "resizable": true,
-        "visible": false
+        "visible": false,
+        "useHttpsScheme": true
       }
     ],
     "security": {
       "csp": null
-    },
-    "bundle": {
-      "active": true,
-      "targets": "all",
-      "identifier": "net.syntaxfree.multiyt-dlp",
-      "icon": [
-        "icons/icon.ico"
-      ]
     }
   }
 }

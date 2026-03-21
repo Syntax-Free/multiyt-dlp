@@ -1,17 +1,17 @@
-use thiserror::Error;
 use std::time::Duration;
+use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum TransportError {
     #[error("Network IO failed: {0}")]
     Network(#[from] reqwest::Error),
-    
+
     #[error("File system failed: {0}")]
     FileSystem(#[from] std::io::Error),
-    
+
     #[error("Validation failed: {0}")]
     Validation(String),
-    
+
     #[error("Server returned error status: {0}")]
     HttpStatus(u16),
 
@@ -46,7 +46,7 @@ impl RetryPolicy {
 
         // Cap delay at 10 seconds
         let capped_delay = std::cmp::min(delay, 10_000);
-        
+
         Some(Duration::from_millis(capped_delay))
     }
 }
