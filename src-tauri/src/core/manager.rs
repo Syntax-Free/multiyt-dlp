@@ -291,10 +291,12 @@ impl JobManagerActor {
                 self.persistence_registry.remove(&id);
                 self.mark_dirty();
 
-                let _ = self.app_handle.emit(
+                if let Err(e) = self.app_handle.emit(
                     "download-cancelled",
                     DownloadCancelledPayload { job_id: id },
-                );
+                ) {
+                    error!(target: "core::manager", "Failed to emit download cancelled: {}", e);
+                }
             }
             JobMessage::ResolveConflict {
                 id,
@@ -365,10 +367,12 @@ impl JobManagerActor {
                             job.phase = Some("Discarded".to_string());
                             job.sequence_id += 1;
 
-                            let _ = self.app_handle.emit(
+                            if let Err(e) = self.app_handle.emit(
                                 "download-cancelled",
                                 DownloadCancelledPayload { job_id: id },
-                            );
+                            ) {
+                                error!(target: "core::manager", "Failed to emit download cancelled: {}", e);
+                            }
                             let _ = resp.send(Ok(()));
                         }
                     } else {
@@ -384,7 +388,7 @@ impl JobManagerActor {
                 self.mark_dirty();
 
                 if let (Some(st), Some(p)) = (status_to_emit, path_to_emit) {
-                    let _ = self.app_handle.emit(
+                    if let Err(e) = self.app_handle.emit(
                         "download-complete",
                         DownloadCompletePayload {
                             job_id: id,
@@ -392,7 +396,9 @@ impl JobManagerActor {
                             status: st,
                             used_command: cmd_to_emit,
                         },
-                    );
+                    ) {
+                        error!(target: "core::manager", "Failed to emit download complete: {}", e);
+                    }
                 }
             }
             JobMessage::ProcessStarted { id, pid } => {
@@ -472,7 +478,7 @@ impl JobManagerActor {
                     job.used_command = Some(used_command.clone());
                     job.sequence_id += 1;
 
-                    let _ = self.app_handle.emit(
+                    if let Err(e) = self.app_handle.emit(
                         "download-progress-batch",
                         BatchProgressPayload {
                             updates: vec![DownloadProgressPayload {
@@ -486,7 +492,9 @@ impl JobManagerActor {
                                 status: Some(JobStatus::FileConflict),
                             }],
                         },
-                    );
+                    ) {
+                        error!(target: "core::manager", "Failed to emit file conflict batch: {}", e);
+                    }
                 }
             }
             JobMessage::JobCompleted {
@@ -521,7 +529,7 @@ impl JobManagerActor {
                 self.persistence_registry.remove(&id);
                 self.mark_dirty();
 
-                let _ = self.app_handle.emit(
+                if let Err(e) = self.app_handle.emit(
                     "download-complete",
                     DownloadCompletePayload {
                         job_id: id,
@@ -529,7 +537,9 @@ impl JobManagerActor {
                         status,
                         used_command: Some(used_command),
                     },
-                );
+                ) {
+                    error!(target: "core::manager", "Failed to emit download complete: {}", e);
+                }
             }
             JobMessage::JobError { id, payload } => {
                 error!(target: "core::manager", job_id = ?id, error = %payload.error, "Job failed");
@@ -559,7 +569,9 @@ impl JobManagerActor {
                 }
                 self.mark_dirty();
 
-                let _ = self.app_handle.emit("download-error", payload);
+                if let Err(e) = self.app_handle.emit("download-error", payload) {
+                    error!(target: "core::manager", "Failed to emit download error: {}", e);
+                }
             }
             JobMessage::WorkerFinished => {
                 debug!(target: "core::manager", "Worker finished signal received");
@@ -680,9 +692,12 @@ impl JobManagerActor {
         let updates: Vec<DownloadProgressPayload> =
             self.pending_updates.values().cloned().collect();
         self.pending_updates.clear();
-        let _ = self
+        if let Err(e) = self
             .app_handle
-            .emit("download-progress-batch", BatchProgressPayload { updates });
+            .emit("download-progress-batch", BatchProgressPayload { updates })
+        {
+            error!(target: "core::manager", "Failed to emit download-progress-batch: {}", e);
+        }
     }
 
     fn process_queue(&mut self) {

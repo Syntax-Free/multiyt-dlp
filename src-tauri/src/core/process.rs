@@ -26,11 +26,11 @@ static FILESYSTEM_ERROR_REGEX: Lazy<Regex> = Lazy::new(|| {
 
 #[derive(Deserialize, Debug)]
 struct YtDlpJsonProgress {
-    downloaded_bytes: Option<u64>,
-    total_bytes: Option<u64>,
-    total_bytes_estimate: Option<u64>,
+    downloaded_bytes: Option<f64>,
+    total_bytes: Option<f64>,
+    total_bytes_estimate: Option<f64>,
     speed: Option<f64>,
-    eta: Option<u64>,
+    eta: Option<f64>,
     filename: Option<String>,
 }
 
@@ -534,14 +534,23 @@ pub async fn run_download_process(
             let mut speed_str = "N/A".to_string();
             let mut eta_str = "N/A".to_string();
 
-            if trimmed.starts_with('{') {
-                if let Ok(progress_json) = serde_json::from_str::<YtDlpJsonProgress>(trimmed) {
+            // Isolate JSON portion from progress string ("download:{...}")
+            let json_str = if trimmed.starts_with("download:{") {
+                Some(&trimmed[9..])
+            } else if trimmed.starts_with('{') {
+                Some(trimmed)
+            } else {
+                None
+            };
+
+            if let Some(valid_json) = json_str {
+                if let Ok(progress_json) = serde_json::from_str::<YtDlpJsonProgress>(valid_json) {
                     if let Some(d) = progress_json.downloaded_bytes {
                         let t = progress_json
                             .total_bytes
                             .or(progress_json.total_bytes_estimate);
                         if let Some(total) = t {
-                            if total > 0 {
+                            if total > 0.0 {
                                 state_percentage = (d as f32 / total as f32) * 100.0;
                             }
                         }
@@ -550,7 +559,7 @@ pub async fn run_download_process(
                         speed_str = format_speed(s);
                     }
                     if let Some(e) = progress_json.eta {
-                        eta_str = format_eta(e);
+                        eta_str = format_eta(e as u64);
                     }
                     if let Some(f) = progress_json.filename {
                         if let Some(n) = Path::new(&f).file_name() {

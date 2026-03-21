@@ -128,10 +128,10 @@ export function useDownloadManager() {
     });
 
     return () => {
-      unlistenProgress.then((f) => f());
-      unlistenComplete.then((f) => f());
-      unlistenError.then((f) => f());
-      unlistenCancelled.then((f) => f());
+      unlistenProgress.then((f) => f()).catch(console.error);
+      unlistenComplete.then((f) => f()).catch(console.error);
+      unlistenError.then((f) => f()).catch(console.error);
+      unlistenCancelled.then((f) => f()).catch(console.error);
     };
   },[]);
 
@@ -295,7 +295,4 @@ export function useDownloadManager() {
           console.error("Failed to resolve conflict", err);
           updateDownload(jobId, { status: 'error', error: 'Failed to resolve conflict' });
       }
-  },[]);
-
-  return { downloads, startDownload, cancelDownload, removeDownload, importResumedJobs, cancelAllDownloads, resolveConflict };
-}
+  },
