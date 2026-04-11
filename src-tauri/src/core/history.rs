@@ -4,8 +4,6 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::fs::{OpenOptions, File};
 use tokio::io::{AsyncWriteExt, BufWriter};
 use url::Url;
-use std::path::PathBuf;
-use tracing::{info, error, warn};
 
 #[derive(Debug)]
 enum HistoryMessage {
