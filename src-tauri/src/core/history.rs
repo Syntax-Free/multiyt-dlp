@@ -4,6 +4,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::fs::{OpenOptions, File};
 use tokio::io::{AsyncWriteExt, BufWriter};
 use url::Url;
+use tracing::{error};
 
 #[derive(Debug)]
 enum HistoryMessage {
@@ -32,7 +33,6 @@ impl HistoryManager {
 
         let cache = Arc::new(RwLock::new(HashSet::new()));
         
-        // Initial Load (Synchronous for startup integrity)
         if file_path.exists() {
              if let Ok(file) = std::fs::File::open(&file_path) {
                 let reader = std::io::BufReader::new(file);
@@ -52,9 +52,7 @@ impl HistoryManager {
         let actor_path = file_path.clone();
         let actor_cache = cache.clone();
         
-        // Actor Loop: Pooling File Descriptors and Coalescing Writes
         tauri::async_runtime::spawn(async move {
-            // OPTIMIZED: Persistent Handle and Buffer
             let mut writer: Option<BufWriter<File>> = match OpenOptions::new()
                 .create(true)
                 .append(true)
@@ -64,7 +62,7 @@ impl HistoryManager {
                 Ok(f) => Some(BufWriter::with_capacity(8192, f)),
                 Err(e) => {
                     error!(target: "core::history", "Failed to open persistent history handle: {}", e);
-                    None
+                    Option::None
                 }
             };
 
@@ -75,7 +73,6 @@ impl HistoryManager {
                             if let Err(e) = w.write_all(format!("{}\n", url).as_bytes()).await {
                                 error!(target: "core::history", "Failed to write history: {}", e);
                             } else {
-                                // Flush to ensure kernel has it, but BufWriter coalesces multiple Add calls if they arrive fast
                                 let _ = w.flush().await; 
                                 
                                 let normalized = Self::normalize_url(&url);
@@ -84,14 +81,12 @@ impl HistoryManager {
                                 }
                             }
                         } else {
-                            // Re-attempt open if handle was lost
                             if let Ok(f) = OpenOptions::new().create(true).append(true).open(&actor_path).await {
                                 writer = Some(BufWriter::with_capacity(8192, f));
                             }
                         }
                     },
                     HistoryMessage::Replace(content, resp) => {
-                         // OPTIMIZED: Close existing handle before atomic overwrite
                          drop(writer.take());
 
                          match File::create(&actor_path).await {
@@ -116,7 +111,6 @@ impl HistoryManager {
                              }
                          }
 
-                         // Re-open handle for subsequent Add calls
                          if let Ok(f) = OpenOptions::new().append(true).open(&actor_path).await {
                              writer = Some(BufWriter::with_capacity(8192, f));
                          }
