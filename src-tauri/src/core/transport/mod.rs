@@ -19,7 +19,6 @@ struct InstallProgressPayload {
     status: String,
 }
 
-/// The public entry point for robust file downloading.
 pub async fn download_file_robust(
     url: &str,
     destination: PathBuf,
@@ -53,7 +52,6 @@ pub async fn download_file_robust(
         let percentage = if effective_total > 0 { (downloaded * 100) / effective_total } else { 0 };
         let previous = last_percentage.load(Ordering::Relaxed);
         
-        // Update UI if percentage changed, is complete, or periodically for indeterminate progress
         if percentage > previous || percentage == 100 || (effective_total == 0 && downloaded % (1024*1024) == 0) {
             last_percentage.store(percentage, Ordering::Relaxed);
             
@@ -74,25 +72,21 @@ pub async fn download_file_robust(
         }
     };
 
-    // 2. Try Aria2 if available
     if aria_exists {
         info!("Attempting Aria2 download: {}", name);
         let engine = AriaEngine::new(url, destination.clone(), aria_path, fallback_size);
         
-        // Fallback to standard engine if Aria2 fails
         match engine.execute(callback.clone()).await {
             Ok(_) => return Ok(()),
             Err(e) => {
                 warn!("Aria2 failed, falling back to internal engine: {}", e);
-                // Clean up partial files from aria2 to avoid conflicts with native engine
                 let _ = std::fs::remove_file(&destination);
-                let _ = std::fs::remove_file(format!("{}.aria2", destination.display()));
+                let aria_tmp = format!("{}.aria2", destination.display());
+                let _ = std::fs::remove_file(std::path::Path::new(&aria_tmp));
             }
         }
     }
 
-    // 3. Native Engine Fallback
-    // This code runs if Aria2 was missing OR if it failed above.
     info!("Using native internal engine: {}", name);
     let _ = app_handle.emit_all("install-progress", InstallProgressPayload {
         name: name.to_string(),
@@ -100,7 +94,6 @@ pub async fn download_file_robust(
         status: "Downloading (Native Fallback)...".to_string()
     });
 
-    // Native engine uses an indeterminate progress approach for stability
     let dummy_callback = |_: u64, _: u64, _: f64| {};
     let mut engine = TransportEngine::new(url, destination);
     if let Some(s) = fallback_size {

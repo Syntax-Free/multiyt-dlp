@@ -44,9 +44,8 @@ const ARIA2_URL: &str = "https://github.com/aria2/aria2/releases/download/releas
 #[cfg(target_os = "linux")]
 const ARIA2_URL: &str = "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-linux-gnu-64bit-build1.tar.bz2";
 
-// Static Fallback Sizes (in bytes)
 const YT_DLP_SIZE: u64 = 17_500_000;
-const FFMPEG_SIZE: u64 = 133_000_000; // Updated to match BtbN package size
+const FFMPEG_SIZE: u64 = 133_000_000; 
 const DENO_SIZE: u64 = 116_000_000;
 const BUN_SIZE: u64 = 97_700_000;
 const ARIA2_SIZE: u64 = 5_380_000;
@@ -58,7 +57,6 @@ pub struct InstallProgressPayload {
     pub status: String,
 }
 
-// --- Syntax Free Suite: Shared Directory Strategy ---
 pub fn get_common_bin_dir() -> PathBuf {
     let base = dirs::data_local_dir().unwrap_or_else(|| PathBuf::from("."));
     base.join("Syntax Free").join("Common").join("bin")
@@ -71,13 +69,11 @@ pub struct SfsAppEntry {
     pub last_used: u64,
 }
 
-/// Registers the current application in the global SFS JSON registry
 pub fn register_sfs_app() {
-    // Run in a detached thread to prevent any startup bloat
     std::thread::spawn(|| {
         let common_dir = match get_common_bin_dir().parent() {
             Some(p) => p.to_path_buf(),
-            None => return,
+            Option::None => return,
         };
 
         if !common_dir.exists() {
@@ -112,7 +108,6 @@ pub fn register_sfs_app() {
             }
         );
 
-        // Atomic write via temp file
         if let Ok(json) = serde_json::to_string_pretty(&registry) {
             let tmp_path = list_path.with_extension("tmp");
             if std::fs::write(&tmp_path, json).is_ok() {
@@ -132,10 +127,9 @@ pub fn is_any_sfs_app_running() -> bool {
     use std::ffi::OsString;
     use std::os::windows::ffi::OsStringExt;
 
-    // 1. Read SFS Registry
     let common_dir = match get_common_bin_dir().parent() {
         Some(p) => p.to_path_buf(),
-        None => return false,
+        Option::None => return false,
     };
     
     let list_path = common_dir.join("sfs_list.json");
@@ -152,7 +146,6 @@ pub fn is_any_sfs_app_running() -> bool {
 
     let mut sfs_apps = HashSet::new();
 
-    // Collect target executables excluding ourselves
     for (name, entry) in registry {
         if name.to_lowercase() != "multiyt-dlp" {
             if let Some(file_name) = Path::new(&entry.path).file_name() {
@@ -166,7 +159,6 @@ pub fn is_any_sfs_app_running() -> bool {
         return false;
     }
 
-    // 2. Check running processes
     let snapshot_result = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     
     if let Ok(snapshot) = snapshot_result {
@@ -198,17 +190,14 @@ pub fn is_any_sfs_app_running() -> bool {
 
 #[cfg(not(target_os = "windows"))]
 pub fn is_any_sfs_app_running() -> bool {
-    // Unix platforms cleanly allow binary unlinking/overwrites while executing, so locking isn't strictly required.
     false
 }
 
-/// Robustly replaces an existing dependency, taking into consideration file locks by other running SFS apps.
 pub fn replace_dependency_robust_sync(source: &Path, target: &Path) -> Result<(), std::io::Error> {
     let is_locked = is_any_sfs_app_running();
     
     if target.exists() {
         if is_locked {
-            // Rename to bypass "File in Use" locks gracefully
             let old_path = target.with_extension(format!("old.{}", uuid::Uuid::new_v4().simple()));
             let _ = std::fs::rename(target, &old_path);
         } else {
@@ -237,8 +226,6 @@ pub trait DependencyProvider: Send + Sync {
     async fn install(&self, app_handle: AppHandle, target_dir: PathBuf) -> Result<(), String>;
     async fn check_update_available(&self, bin_dir: &PathBuf) -> Result<bool, String>;
 }
-
-// --- GitHub Helper with Robust Retries & Timeout ---
 
 pub async fn get_latest_github_tag(repo: &str) -> Result<String, String> {
     let client = reqwest::Client::builder()
@@ -280,8 +267,6 @@ pub async fn get_latest_github_tag(repo: &str) -> Result<String, String> {
     Err(format!("Update check failed after {} retries. Last error: {}", max_retries, last_error))
 }
 
-// --- Version Comparison Helpers ---
-
 pub fn compare_semver(current: &str, required: &str) -> bool {
     let re = Regex::new(r"(\d+)\.(\d+)\.(\d+)").unwrap();
     let c = re.captures(current);
@@ -319,13 +304,11 @@ fn new_silent_command(program: &str) -> Command {
 }
 
 pub fn get_local_version(path: &PathBuf, arg: &str) -> Option<String> {
-    if !path.exists() { return None; }
+    if !path.exists() { return Option::None; }
     let output = new_silent_command(path.to_str()?).arg(arg).output().ok()?;
-    if !output.status.success() { return None; }
+    if !output.status.success() { return Option::None; }
     Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
-
-// --- Extraction Helpers ---
 
 fn extract_archive_finding_binary(archive_path: &PathBuf, target_dir: &PathBuf, binary_names: &[&str]) -> Result<(), String> {
     let file = File::open(archive_path).map_err(|e| e.to_string())?;
@@ -337,7 +320,7 @@ fn extract_archive_finding_binary(archive_path: &PathBuf, target_dir: &PathBuf, 
             let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
             let outpath = match file.enclosed_name() {
                 Some(path) => path.to_owned(),
-                None => continue,
+                Option::None => continue,
             };
             if let Some(file_name) = outpath.file_name() {
                 let file_name_str = file_name.to_string_lossy();
@@ -348,7 +331,6 @@ fn extract_archive_finding_binary(archive_path: &PathBuf, target_dir: &PathBuf, 
                     let mut out_file = File::create(&tmp_target).map_err(|e| e.to_string())?;
                     std::io::copy(&mut file, &mut out_file).map_err(|e| e.to_string())?;
                     
-                    // Atomically/Safely rename
                     replace_dependency_robust_sync(&tmp_target, &final_target).map_err(|e| e.to_string())?;
                 }
             }
@@ -376,8 +358,6 @@ fn extract_archive_finding_binary(archive_path: &PathBuf, target_dir: &PathBuf, 
     
     Ok(())
 }
-
-// --- Dependency Providers ---
 
 pub struct YtDlpProvider;
 #[async_trait]
@@ -418,7 +398,6 @@ impl DependencyProvider for FfmpegProvider {
 
         #[cfg(target_os = "macos")]
         {
-            // Evermeet provides macOS ffprobe binary in a completely separate archive
             let ffprobe_archive = std::env::temp_dir().join("ffprobe_tmp.zip");
             let ffprobe_url = "https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip";
             let _ = app_handle.emit_all("install-progress", InstallProgressPayload {
@@ -426,7 +405,7 @@ impl DependencyProvider for FfmpegProvider {
                 percentage: 50,
                 status: "Downloading FFprobe...".to_string()
             });
-            if download_file_robust(ffprobe_url, ffprobe_archive.clone(), "FFprobe", &app_handle, None).await.is_ok() {
+            if download_file_robust(ffprobe_url, ffprobe_archive.clone(), "FFprobe", &app_handle, Option::None).await.is_ok() {
                 let _ = extract_archive_finding_binary(&ffprobe_archive, &target_dir, &self.get_binaries());
                 let _ = fs::remove_file(&ffprobe_archive);
             }
@@ -502,7 +481,7 @@ pub fn get_provider(name: &str) -> Option<Box<dyn DependencyProvider>> {
         "deno" => Some(Box::new(DenoProvider)),
         "bun" => Some(Box::new(BunProvider)),
         "aria2" | "aria2c" => Some(Box::new(Aria2Provider)),
-        _ => None
+        _ => Option::None
     }
 }
 

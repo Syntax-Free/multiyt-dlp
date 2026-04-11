@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use reqwest::{Client, header};
 use tokio::fs::{self, OpenOptions};
-use tokio::io::{AsyncWriteExt, BufWriter}; // OPTIMIZED: Added BufWriter
+use tokio::io::{AsyncWriteExt, BufWriter}; 
 use futures_util::StreamExt;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -51,7 +51,7 @@ impl TransportEngine {
             target_path,
             concurrency: DEFAULT_CONCURRENCY,
             chunk_threshold: CHUNK_THRESHOLD,
-            fallback_size: None,
+            fallback_size: Option::None,
         }
     }
 
@@ -60,7 +60,6 @@ impl TransportEngine {
         self
     }
 
-    /// The Main Execution Loop
     pub async fn execute<F>(&self, on_progress: F) -> Result<(), TransportError>
     where
         F: Fn(u64, u64, f64) + Send + Sync + 'static + Clone,
@@ -96,7 +95,7 @@ impl TransportEngine {
              if resp.status() == reqwest::StatusCode::NOT_FOUND {
                  return Err(TransportError::HttpStatus(resp.status().as_u16()));
              }
-             return Ok((None, false));
+             return Ok((Option::None, false));
         }
 
         let len = resp.content_length()
@@ -123,8 +122,6 @@ impl TransportEngine {
         format!("{:x}", hasher.finish())
     }
 
-    // --- LINEAR DOWNLOAD ---
-    
     async fn download_linear<F>(&self, total_size: Option<u64>, on_progress: F) -> Result<(), TransportError>
     where
         F: Fn(u64, u64, f64) + Send + Sync + 'static,
@@ -148,7 +145,7 @@ impl TransportEngine {
                     if let TransportError::HttpStatus(404) = e { return Err(e); }
                     match retry_policy.next_backoff() {
                         Some(delay) => tokio::time::sleep(delay).await,
-                        None => return Err(TransportError::MaxRetriesExceeded),
+                        Option::None => return Err(TransportError::MaxRetriesExceeded),
                     }
                 }
             }
@@ -164,7 +161,6 @@ impl TransportEngine {
         }
 
         let raw_file = OpenOptions::new().create(true).write(true).truncate(true).open(path).await?;
-        // OPTIMIZED: Wrapped in BufWriter to aggregate syscalls
         let mut file = BufWriter::with_capacity(IO_BUFFER_SIZE, raw_file);
         
         let mut stream = response.bytes_stream();
@@ -192,11 +188,10 @@ impl TransportEngine {
                     }
                 },
                 Some(Err(e)) => return Err(TransportError::Network(e)),
-                None => break,
+                Option::None => break,
             }
         }
 
-        // OPTIMIZED: Flush BufWriter before closing
         file.flush().await?;
 
         if let Some(total) = total_size {
@@ -207,8 +202,6 @@ impl TransportEngine {
 
         Ok(())
     }
-
-    // --- CONCURRENT DOWNLOAD ---
 
     async fn download_concurrent<F>(&self, total_size: u64, on_progress: F) -> Result<(), TransportError>
     where
@@ -283,7 +276,7 @@ impl TransportEngine {
                         Err(e) => {
                             match retry_policy.next_backoff() {
                                 Some(delay) => tokio::time::sleep(delay).await,
-                                None => return Err(e),
+                                Option::None => return Err(e),
                             }
                         }
                     }
@@ -352,7 +345,6 @@ impl TransportEngine {
             .open(path)
             .await?;
             
-        // OPTIMIZED: Applied BufWriter to fragments
         let mut file = BufWriter::with_capacity(IO_BUFFER_SIZE, raw_file);
 
         let mut stream = response.bytes_stream();
@@ -372,11 +364,10 @@ impl TransportEngine {
                     global_bytes.fetch_add(len, Ordering::Relaxed);
                 },
                 Some(Err(e)) => return Err(TransportError::Network(e)),
-                None => break,
+                Option::None => break,
             }
         }
 
-        // OPTIMIZED: Flush buffer before finishing fragment
         file.flush().await?;
         
         let final_len = current_len + downloaded_in_this_session;
@@ -405,7 +396,6 @@ impl TransportEngine {
             .open(&final_tmp_path)
             .await?;
 
-        // OPTIMIZED: Merging also uses BufWriter for maximum throughput
         let mut target_file = BufWriter::with_capacity(IO_BUFFER_SIZE, raw_target_file);
 
         for part_path in parts.iter() {
