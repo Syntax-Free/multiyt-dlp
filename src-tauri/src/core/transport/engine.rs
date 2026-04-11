@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use reqwest::{Client, header};
 use tokio::fs::{self, OpenOptions};
-use tokio::io::{AsyncWriteExt};
+use tokio::io::{AsyncWriteExt, BufWriter}; // OPTIMIZED: Added BufWriter
 use futures_util::StreamExt;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -15,6 +15,9 @@ const IO_TIMEOUT: Duration = Duration::from_secs(15);
 const CHUNK_THRESHOLD: u64 = 10 * 1024 * 1024; // 10 MB
 const DEFAULT_CONCURRENCY: usize = 4;
 const PROGRESS_INTERVAL_MS: u128 = 100; 
+
+// Kernel-friendly buffer size: 4MB
+const IO_BUFFER_SIZE: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 struct Chunk {
@@ -38,7 +41,6 @@ impl TransportEngine {
         let client = Client::builder()
             .user_agent("Multiyt-dlp/2.2 (Resumable-Engine)")
             .connect_timeout(Duration::from_secs(10))
-            // Follow redirects to ensure we get the final Content-Length
             .redirect(reqwest::redirect::Policy::limited(10)) 
             .build()
             .expect("Failed to build HTTP client");
@@ -63,14 +65,11 @@ impl TransportEngine {
     where
         F: Fn(u64, u64, f64) + Send + Sync + 'static + Clone,
     {
-        // 1. Probe Phase: Check size and ranges support
         let (content_len, accepts_ranges) = self.probe().await?;
 
-        // Use fallback if probe failed
         let effective_len = content_len.or(self.fallback_size);
         let validated_len = effective_len.filter(|&s| s > 0);
 
-        // 2. Path Decision
         if let Some(total_size) = validated_len {
             if accepts_ranges && total_size >= self.chunk_threshold {
                 return self.download_concurrent(total_size, on_progress).await;
@@ -81,14 +80,11 @@ impl TransportEngine {
     }
 
     async fn probe(&self) -> Result<(Option<u64>, bool), TransportError> {
-        // Use GET with Range: bytes=0-0 to probe if HEAD fails or returns bad headers
-        // But first try HEAD for efficiency
         let head_resp = self.client.head(&self.url).send().await;
 
         let resp = match head_resp {
             Ok(r) if r.status().is_success() => r,
             _ => {
-                // Fallback to GET start
                 self.client.get(&self.url)
                     .header(header::RANGE, "bytes=0-0")
                     .send()
@@ -100,11 +96,9 @@ impl TransportEngine {
              if resp.status() == reqwest::StatusCode::NOT_FOUND {
                  return Err(TransportError::HttpStatus(resp.status().as_u16()));
              }
-             // Proceed with unknown length if probing fails but URL exists
              return Ok((None, false));
         }
 
-        // Try extracting Content-Length from headers
         let len = resp.content_length()
             .or_else(|| {
                 resp.headers()
@@ -117,7 +111,6 @@ impl TransportEngine {
         let accepts_ranges = if let Some(ranges) = resp.headers().get(header::ACCEPT_RANGES) {
             ranges.to_str().unwrap_or("").contains("bytes")
         } else {
-            // If we got PARTIAL_CONTENT, ranges are supported
             resp.status() == reqwest::StatusCode::PARTIAL_CONTENT
         };
 
@@ -145,7 +138,6 @@ impl TransportEngine {
             match self.attempt_linear(&part_path, total_size, &on_progress).await {
                 Ok(_) => {
                     self.finalize(&part_path).await?;
-                    // Ensure 100% is reported
                     if let Some(total) = total_size {
                         on_progress(total, total, 0.0);
                     }
@@ -171,14 +163,16 @@ impl TransportEngine {
              return Err(TransportError::HttpStatus(response.status().as_u16()));
         }
 
-        let mut file = OpenOptions::new().create(true).write(true).truncate(true).open(path).await?;
+        let raw_file = OpenOptions::new().create(true).write(true).truncate(true).open(path).await?;
+        // OPTIMIZED: Wrapped in BufWriter to aggregate syscalls
+        let mut file = BufWriter::with_capacity(IO_BUFFER_SIZE, raw_file);
+        
         let mut stream = response.bytes_stream();
         
         let mut downloaded = 0;
         let mut last_update = Instant::now();
         let mut bytes_since_update = 0;
         
-        // Report 0% immediately
         on_progress(0, total_size.unwrap_or(0), 0.0);
 
         while let Some(chunk_result) = tokio::time::timeout(IO_TIMEOUT, stream.next()).await.ok() {
@@ -202,6 +196,7 @@ impl TransportEngine {
             }
         }
 
+        // OPTIMIZED: Flush BufWriter before closing
         file.flush().await?;
 
         if let Some(total) = total_size {
@@ -248,20 +243,15 @@ impl TransportEngine {
         let bytes_downloaded_monitor = bytes_downloaded.clone();
         let on_progress_monitor = on_progress.clone();
         
-        // Initial 0 state
         on_progress(initial_progress, total_size, 0.0);
 
-        // Monitor Thread
         let monitor_handle = tokio::spawn(async move {
             let mut last_bytes = initial_progress;
             let mut last_time = Instant::now();
             
             loop {
-                // Smoother updates
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 let current = bytes_downloaded_monitor.load(Ordering::Relaxed);
-                
-                // Don't break immediately on total_size, wait for join to ensure all writes complete
                 
                 let now = Instant::now();
                 let elapsed = now.duration_since(last_time).as_secs_f64();
@@ -302,8 +292,6 @@ impl TransportEngine {
         }
 
         let results = futures_util::future::join_all(tasks).await;
-        
-        // Wait for monitor to finish its last tick logic
         let _ = monitor_handle.await; 
 
         let mut part_paths = Vec::new();
@@ -322,7 +310,7 @@ impl TransportEngine {
 
         match self.merge_parts_optimized(&part_paths).await {
             Ok(_) => {
-                on_progress(total_size, total_size, 0.0); // Force 100%
+                on_progress(total_size, total_size, 0.0); 
                 Ok(())
             },
             Err(e) => Err(e)
@@ -357,13 +345,16 @@ impl TransportEngine {
             return Err(TransportError::HttpStatus(response.status().as_u16()));
         }
 
-        let mut file = OpenOptions::new()
+        let raw_file = OpenOptions::new()
             .create(true)
             .write(true)
             .append(true)
             .open(path)
             .await?;
             
+        // OPTIMIZED: Applied BufWriter to fragments
+        let mut file = BufWriter::with_capacity(IO_BUFFER_SIZE, raw_file);
+
         let mut stream = response.bytes_stream();
         let mut downloaded_in_this_session = 0;
         let remaining_for_chunk = chunk.len.saturating_sub(current_len);
@@ -372,7 +363,6 @@ impl TransportEngine {
             match chunk_res {
                 Some(Ok(bytes)) => {
                     let len = bytes.len() as u64;
-                    // Strict bound check to prevent disk exhaustion from malicious/infinite streaming responses
                     if downloaded_in_this_session + len > remaining_for_chunk {
                         global_bytes.fetch_sub(downloaded_in_this_session, Ordering::Relaxed);
                         return Err(TransportError::Validation("Server exceeded requested byte range".into()));
@@ -386,6 +376,7 @@ impl TransportEngine {
             }
         }
 
+        // OPTIMIZED: Flush buffer before finishing fragment
         file.flush().await?;
         
         let final_len = current_len + downloaded_in_this_session;
@@ -407,12 +398,15 @@ impl TransportEngine {
             let _ = fs::remove_file(&final_tmp_path).await;
         }
 
-        let mut target_file = OpenOptions::new()
+        let raw_target_file = OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(true)
             .open(&final_tmp_path)
             .await?;
+
+        // OPTIMIZED: Merging also uses BufWriter for maximum throughput
+        let mut target_file = BufWriter::with_capacity(IO_BUFFER_SIZE, raw_target_file);
 
         for part_path in parts.iter() {
             let mut part_file = fs::File::open(part_path).await?;
@@ -421,7 +415,6 @@ impl TransportEngine {
         
         target_file.flush().await?;
 
-        // Atomic cleanup guarantees deterministic resumes for chunks if app is killed during merge
         for part_path in parts.iter() {
             let _ = fs::remove_file(part_path).await;
         }

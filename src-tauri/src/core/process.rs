@@ -12,6 +12,7 @@ use serde::Deserialize;
 use std::time::Duration;
 use tracing::{debug, error, warn, trace};
 use walkdir::WalkDir;
+use std::collections::VecDeque;
 
 use crate::config::ConfigManager;
 use crate::models::{DownloadFormatPreset, QueuedJob, JobMessage, DownloadErrorPayload};
@@ -108,9 +109,20 @@ fn format_eta(seconds: u64) -> String {
     else { format!("{:02}:{:02}", m, s) }
 }
 
-fn construct_error(job_id: uuid::Uuid, msg: String, exit_code: Option<i32>, stderr: String, logs: Vec<String>) -> JobMessage {
+/// Constructs a JobError message by converting the optimized ring buffer logs
+/// back into a flattened string for the frontend.
+fn construct_error(
+    job_id: uuid::Uuid, 
+    msg: String, 
+    exit_code: Option<i32>, 
+    stderr: String, 
+    logs: VecDeque<String>
+) -> JobMessage {
     error!(target: "core::process", job_id = ?job_id, exit_code = ?exit_code, "Job failed: {}", msg);
     
+    // Flatten the Ring Buffer for persistence and UI display
+    let flattened_logs = Vec::from(logs).join("\n");
+
     JobMessage::JobError {
         id: job_id,
         payload: DownloadErrorPayload {
@@ -118,7 +130,7 @@ fn construct_error(job_id: uuid::Uuid, msg: String, exit_code: Option<i32>, stde
             error: msg,
             exit_code,
             stderr,
-            logs: logs.join("\n"),
+            logs: flattened_logs,
         }
     }
 }
@@ -178,17 +190,13 @@ pub async fn run_download_process(
         let general_config = config_manager.get_config().general;
         let bin_dir = crate::core::deps::get_common_bin_dir();
         
-        // --- TARGET DIR RESOLUTION ---
-        // Path is already resolved by downloader.rs before job creation. 
-        // We strictly use job_data.download_path to ensure fallbacks don't lose the folder.
         let target_dir = if let Some(ref path) = job_data.download_path {
             PathBuf::from(path)
         } else {
-            // Fallback for unexpected legacy jobs without path metadata
             match tauri::api::path::download_dir() {
                 Some(path) => path,
                 None => {
-                    let _ = tx_actor.send(construct_error(job_id, "Critical Error: Could not determine save directory.".into(), None, String::new(), vec![])).await;
+                    let _ = tx_actor.send(construct_error(job_id, "Critical Error: Could not determine save directory.".into(), None, String::new(), VecDeque::new())).await;
                     return; 
                 }
             }
@@ -247,7 +255,6 @@ pub async fn run_download_process(
             cmd.arg("-N").arg("1");
         }
 
-        // SUPPRESS EXTERNAL CONFIGS to prevent hijacking output location
         cmd.arg("--ignore-config");
 
         cmd.arg(&url)
@@ -313,7 +320,7 @@ pub async fn run_download_process(
         let mut child = match cmd.spawn() {
             Ok(child) => child,
             Err(e) => {
-                let _ = tx_actor.send(construct_error(job_id, format!("Failed to spawn process: {}", e), None, e.to_string(), vec![])).await;
+                let _ = tx_actor.send(construct_error(job_id, format!("Failed to spawn process: {}", e), None, e.to_string(), VecDeque::new())).await;
                 let _ = std::fs::remove_dir_all(&unique_temp_dir);
                 return;
             }
@@ -365,8 +372,9 @@ pub async fn run_download_process(
         let mut detected_output_path: Option<String> = None;
         let mut detected_filename_only: Option<String> = None;
         
-        let mut captured_logs = Vec::new();
-        let mut captured_stderr = Vec::new();
+        // OPTIMIZED: VecDeque for O(1) sliding window management
+        let mut captured_logs = VecDeque::with_capacity(100);
+        let mut captured_stderr = VecDeque::with_capacity(50);
         
         while let Some((line, is_stderr)) = rx.recv().await {
             if line.len() > 2048 { continue; }
@@ -374,13 +382,17 @@ pub async fn run_download_process(
             let trimmed = line.trim();
             if trimmed.is_empty() { continue; }
             
-            captured_logs.push(trimmed.to_string());
-            if captured_logs.len() > 100 { captured_logs.remove(0); }
+            captured_logs.push_back(trimmed.to_string());
+            if captured_logs.len() > 100 { 
+                captured_logs.pop_front(); // O(1) removal
+            }
             
             if is_stderr {
                 warn!(target: "core::process::stderr", job_id = ?job_id, "{}", trimmed);
-                captured_stderr.push(trimmed.to_string());
-                if captured_stderr.len() > 50 { captured_stderr.remove(0); }
+                captured_stderr.push_back(trimmed.to_string());
+                if captured_stderr.len() > 50 { 
+                    captured_stderr.pop_front(); // O(1) removal
+                }
             } else {
                 trace!(target: "core::process::stdout", job_id = ?job_id, "{}", trimmed);
             }
@@ -522,7 +534,6 @@ pub async fn run_download_process(
             }
 
             if let Some(src_path) = final_src_path {
-                // target_dir is resolved once at top of loop
                 if !target_dir.exists() { let _ = std::fs::create_dir_all(&target_dir); }
 
                 let file_name = src_path.file_name().unwrap();
@@ -573,8 +584,8 @@ pub async fn run_download_process(
                 break;
             }
         } else {
-            let log_blob = captured_logs.join("\n");
-            let stderr_blob = captured_stderr.join("\n");
+            let log_blob = Vec::from(captured_logs.clone()).join("\n");
+            let stderr_blob = Vec::from(captured_stderr.clone()).join("\n");
             
             warn!(target: "core::process", job_id = ?job_id, exit_code = ?status.code(), "Process exited with error");
             

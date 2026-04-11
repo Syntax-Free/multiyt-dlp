@@ -2,8 +2,10 @@ use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 use tokio::sync::{mpsc, oneshot};
 use tokio::fs::{OpenOptions, File};
-use tokio::io::{AsyncWriteExt};
+use tokio::io::{AsyncWriteExt, BufWriter};
 use url::Url;
+use std::path::PathBuf;
+use tracing::{info, error, warn};
 
 #[derive(Debug)]
 enum HistoryMessage {
@@ -15,7 +17,6 @@ enum HistoryMessage {
 
 #[derive(Clone)]
 pub struct HistoryManager {
-    // Cache is now strictly a read-replica updated by the actor
     cache: Arc<RwLock<HashSet<String>>>,
     sender: mpsc::Sender<HistoryMessage>,
 }
@@ -25,7 +26,6 @@ impl HistoryManager {
         let home = dirs::home_dir().expect("Could not find home directory");
         let file_path = home.join(".multiyt-dlp").join("downloads.txt");
 
-        // Ensure directory exists
         if let Some(parent) = file_path.parent() {
             if !parent.exists() {
                 let _ = std::fs::create_dir_all(parent);
@@ -34,7 +34,7 @@ impl HistoryManager {
 
         let cache = Arc::new(RwLock::new(HashSet::new()));
         
-        // Initial Load
+        // Initial Load (Synchronous for startup integrity)
         if file_path.exists() {
              if let Ok(file) = std::fs::File::open(&file_path) {
                 let reader = std::io::BufReader::new(file);
@@ -54,37 +54,53 @@ impl HistoryManager {
         let actor_path = file_path.clone();
         let actor_cache = cache.clone();
         
-        // Actor Loop: Serializes all file access
+        // Actor Loop: Pooling File Descriptors and Coalescing Writes
         tauri::async_runtime::spawn(async move {
+            // OPTIMIZED: Persistent Handle and Buffer
+            let mut writer: Option<BufWriter<File>> = match OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&actor_path)
+                .await 
+            {
+                Ok(f) => Some(BufWriter::with_capacity(8192, f)),
+                Err(e) => {
+                    error!(target: "core::history", "Failed to open persistent history handle: {}", e);
+                    None
+                }
+            };
+
             while let Some(msg) = rx.recv().await {
                 match msg {
                     HistoryMessage::Add(url) => {
-                        // Append to file
-                        if let Ok(mut file) = OpenOptions::new()
-                            .create(true)
-                            .append(true)
-                            .open(&actor_path)
-                            .await 
-                        {
-                            if let Err(e) = file.write_all(format!("{}\n", url).as_bytes()).await {
-                                eprintln!("Failed to write history: {}", e);
+                        if let Some(ref mut w) = writer {
+                            if let Err(e) = w.write_all(format!("{}\n", url).as_bytes()).await {
+                                error!(target: "core::history", "Failed to write history: {}", e);
                             } else {
-                                // Update Read Replica only on success
+                                // Flush to ensure kernel has it, but BufWriter coalesces multiple Add calls if they arrive fast
+                                let _ = w.flush().await; 
+                                
                                 let normalized = Self::normalize_url(&url);
                                 if let Ok(mut c) = actor_cache.write() {
                                     c.insert(normalized);
                                 }
                             }
+                        } else {
+                            // Re-attempt open if handle was lost
+                            if let Ok(f) = OpenOptions::new().create(true).append(true).open(&actor_path).await {
+                                writer = Some(BufWriter::with_capacity(8192, f));
+                            }
                         }
                     },
                     HistoryMessage::Replace(content, resp) => {
-                         // Atomic overwrite
+                         // OPTIMIZED: Close existing handle before atomic overwrite
+                         drop(writer.take());
+
                          match File::create(&actor_path).await {
                              Ok(mut file) => {
                                  if let Err(e) = file.write_all(content.as_bytes()).await {
                                      let _ = resp.send(Err(e.to_string()));
                                  } else {
-                                     // Rebuild Cache completely
                                      let mut new_set = HashSet::new();
                                      for line in content.lines() {
                                          if !line.trim().is_empty() {
@@ -101,8 +117,14 @@ impl HistoryManager {
                                  let _ = resp.send(Err(e.to_string()));
                              }
                          }
+
+                         // Re-open handle for subsequent Add calls
+                         if let Ok(f) = OpenOptions::new().append(true).open(&actor_path).await {
+                             writer = Some(BufWriter::with_capacity(8192, f));
+                         }
                     },
                     HistoryMessage::Clear(resp) => {
+                        drop(writer.take());
                         match File::create(&actor_path).await {
                             Ok(_) => {
                                 if let Ok(mut c) = actor_cache.write() {
@@ -113,6 +135,9 @@ impl HistoryManager {
                             Err(e) => {
                                 let _ = resp.send(Err(e.to_string()));
                             }
+                        }
+                        if let Ok(f) = OpenOptions::new().create(true).append(true).open(&actor_path).await {
+                            writer = Some(BufWriter::with_capacity(8192, f));
                         }
                     },
                     HistoryMessage::Get(resp) => {
@@ -188,18 +213,15 @@ impl HistoryManager {
         no_scheme.trim_end_matches('/').to_string()
     }
 
-    // Fast path: Read from RAM cache
     pub fn exists(&self, url: &str) -> bool {
         let normalized = Self::normalize_url(url);
         let cache = self.cache.read().unwrap();
         cache.contains(&normalized)
     }
 
-    // Slow path: Send message to actor
     pub async fn add(&self, url: &str) -> Result<(), String> {
         let normalized = Self::normalize_url(url);
         
-        // Optimistic check to avoid channel traffic
         {
             let cache = self.cache.read().unwrap();
             if cache.contains(&normalized) {
