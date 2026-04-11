@@ -62,7 +62,7 @@ If you enjoy suffering and want to read error logs, go ahead. I’m not stopping
     ```bash
     npm install
     ```
-3.  **Run Dev Mode**
+3.  **Run Dev Mode** (Wait for an eternity AGAIN)
     ```bash
     npm run tauri dev
     ```
