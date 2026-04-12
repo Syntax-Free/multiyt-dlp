@@ -91,6 +91,10 @@ fn main() {
                 x: config.window.x as i32,
                 y: config.window.y as i32,
             }));
+
+            if config.window.is_maximized {
+                let _ = main_window.maximize();
+            }
             
             tracing::info!("Application startup complete. Window initialized.");
 
@@ -136,26 +140,34 @@ fn main() {
                 
                 WindowEvent::Moved(pos) => {
                     if window_label == "main" && !window.is_minimized().unwrap_or(false) {
-                        if pos.x > -10000 && pos.y > -10000 {
-                            let mut current_config = config_manager_event.get_config();
+                        let mut current_config = config_manager_event.get_config();
+                        let is_max = window.is_maximized().unwrap_or(false);
+                        current_config.window.is_maximized = is_max;
+
+                        // Only update coordinates if not maximized to preserve manual placement
+                        if !is_max && pos.x > -10000 && pos.y > -10000 {
                             current_config.window.x = pos.x as f64;
                             current_config.window.y = pos.y as f64;
-                            
-                            config_manager_event.update_window(current_config.window);
-                            let _ = tx_save.send(());
                         }
+                        
+                        config_manager_event.update_window(current_config.window);
+                        let _ = tx_save.send(());
                     }
                 }
                 WindowEvent::Resized(size) => {
                     if window_label == "main" && !window.is_minimized().unwrap_or(false) {
-                        if size.width > 0 && size.height > 0 {
-                            let mut current_config = config_manager_event.get_config();
+                        let mut current_config = config_manager_event.get_config();
+                        let is_max = window.is_maximized().unwrap_or(false);
+                        current_config.window.is_maximized = is_max;
+
+                        // Only update dimensions if not maximized to preserve manual sizing
+                        if !is_max && size.width > 0 && size.height > 0 {
                             current_config.window.width = size.width as f64;
                             current_config.window.height = size.height as f64;
-                            
-                            config_manager_event.update_window(current_config.window);
-                            let _ = tx_save.send(());
                         }
+                        
+                        config_manager_event.update_window(current_config.window);
+                        let _ = tx_save.send(());
                     }
                 }
                 _ => {}

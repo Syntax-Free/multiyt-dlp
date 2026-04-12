@@ -30,6 +30,7 @@ export interface WindowConfig {
   height: number;
   x: number;
   y: number;
+  is_maximized: boolean;
 }
 
 export interface AppConfig {

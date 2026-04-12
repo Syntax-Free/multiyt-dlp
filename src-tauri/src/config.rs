@@ -13,6 +13,7 @@ pub struct WindowConfig {
     pub height: f64,
     pub x: f64,
     pub y: f64,
+    pub is_maximized: bool,
 }
 
 impl Default for WindowConfig {
@@ -22,6 +23,7 @@ impl Default for WindowConfig {
             height: 800.0,
             x: 100.0,
             y: 100.0,
+            is_maximized: false,
         }
     }
 }
