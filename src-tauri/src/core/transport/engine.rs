@@ -129,7 +129,7 @@ impl TransportEngine {
         let hash = self.calculate_deterministic_hash();
         let part_path = self.target_path.with_extension(format!("part.linear.{}", hash));
 
-        let mut retry_policy = RetryPolicy::new(5);
+        let mut retry_policy = RetryPolicy::new(10); // Elevated linear retries
 
         loop {
             match self.attempt_linear(&part_path, total_size, &on_progress).await {
@@ -269,7 +269,7 @@ impl TransportEngine {
             let part_path = self.target_path.with_extension(format!("part.{}.{}", hash, chunk.index));
             
             tasks.push(tokio::spawn(async move {
-                let mut retry_policy = RetryPolicy::new(10);
+                let mut retry_policy = RetryPolicy::new(15); // Elevated chunk retries
                 loop {
                     match Self::download_chunk_resumable(&client, &url, &part_path, &chunk, &total_bytes_atomic).await {
                         Ok(_) => return Ok(part_path),

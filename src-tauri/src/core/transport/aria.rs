@@ -24,7 +24,7 @@ impl AriaEngine {
     /// Parses Aria2 size strings (e.g., "53MiB", "5.9KiB", "100B") into bytes
     fn parse_aria_size(input: &str) -> Option<f64> {
         let clean = input.trim();
-        let units = [
+        let units =[
             ("GiB", 1024.0 * 1024.0 * 1024.0), 
             ("MiB", 1024.0 * 1024.0), 
             ("KiB", 1024.0),
@@ -74,6 +74,8 @@ impl AriaEngine {
            .arg("--min-split-size=1M")
            .arg("--allow-overwrite=true")
            .arg("--summary-interval=1") // Force periodic status lines (every 1s) to allow parsing
+           .arg("--max-tries=15")       // Elevated retry limit
+           .arg("--retry-wait=2")       // Elevated retry pacing
            .stdout(Stdio::piped())
            .stderr(Stdio::piped());
 
@@ -83,7 +85,7 @@ impl AriaEngine {
         let mut reader = BufReader::new(stdout).lines();
 
         // Regex for Aria2 console output: 
-        // Example: [#42b0a0 53MiB/691MiB(7%) CN:16 DL:5.9MiB ETA:1m47s]
+        // Example:[#42b0a0 53MiB/691MiB(7%) CN:16 DL:5.9MiB ETA:1m47s]
         // Captures: Current Size, Total Size, Speed
         let re = Regex::new(r"(?P<current>[\d.]+[A-Za-z]+)/(?P<total>[\d.]+[A-Za-z]+)\((?P<percent>[\d.]+)%\).*?DL:(?P<speed>[\d.]+[A-Za-z]+)").unwrap();
 

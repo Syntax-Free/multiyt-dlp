@@ -229,34 +229,50 @@ pub trait DependencyProvider: Send + Sync {
 
 pub async fn get_latest_github_tag(repo: &str) -> Result<String, String> {
     let client = reqwest::Client::builder()
-        .user_agent("Multiyt-dlp/2.2")
-        .connect_timeout(Duration::from_secs(5))
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .connect_timeout(Duration::from_secs(10))
         .build()
         .map_err(|e| e.to_string())?;
 
-    let url = format!("https://api.github.com/repos/{}/releases/latest", repo);
+    let url = format!("https://github.com/{}/releases/latest", repo);
     let mut last_error = String::new();
     let max_retries = 3;
 
     for attempt in 0..max_retries {
-        match timeout(Duration::from_secs(5), client.get(&url)
+        // Strategy 1: HTML Redirect (Bypasses API rate limits)
+        match timeout(Duration::from_secs(10), client.get(&url).send()).await {
+            Ok(Ok(resp)) => {
+                let final_url = resp.url().as_str();
+                if let Some(tag_idx) = final_url.rfind("releases/tag/") {
+                    let tag = &final_url[tag_idx + 13..];
+                    return Ok(tag.to_string());
+                } else if !resp.status().is_success() {
+                    last_error = format!("HTML HTTP Status {}", resp.status());
+                }
+            },
+            Ok(Err(e)) => last_error = format!("HTML Network Error: {}", e),
+            Err(_) => last_error = "HTML Connection Timeout".to_string(),
+        }
+
+        // Strategy 2: GitHub API (Fallback)
+        let api_url = format!("https://api.github.com/repos/{}/releases/latest", repo);
+        match timeout(Duration::from_secs(10), client.get(&api_url)
             .header(reqwest::header::ACCEPT, "application/vnd.github.v3+json")
             .send()).await 
         {
             Ok(Ok(resp)) => {
                 if resp.status().is_success() {
-                    let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-                    if let Some(tag) = json.get("tag_name").and_then(|v| v.as_str()) {
-                        return Ok(tag.to_string());
+                    if let Ok(json) = resp.json::<serde_json::Value>().await {
+                        if let Some(tag) = json.get("tag_name").and_then(|v| v.as_str()) {
+                            return Ok(tag.to_string());
+                        }
                     }
-                    return Err("Malformed GitHub response: tag_name missing".to_string());
-                } else if resp.status() == reqwest::StatusCode::FORBIDDEN || resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                    return Err("GitHub API Rate Limited. Please try again later.".to_string());
+                } else {
+                    last_error = format!("API HTTP Status {}", resp.status());
                 }
-                last_error = format!("HTTP Status {}", resp.status());
             },
-            Ok(Err(e)) => last_error = format!("Network Error: {}", e),
-            Err(_) => last_error = "Connection Timeout".to_string(),
+            Ok(Err(e)) => last_error = format!("API Network Error: {}", e),
+            Err(_) => last_error = "API Connection Timeout".to_string(),
         }
 
         if attempt < max_retries - 1 {

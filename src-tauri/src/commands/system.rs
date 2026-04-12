@@ -109,7 +109,7 @@ pub fn resolve_binary_info(bin_name: &str, version_flag: &str, local_bin_path: &
 }
 
 pub fn get_js_runtime_info(bin_path: &PathBuf) -> Option<(String, String)> {
-    let providers = [
+    let providers =[
         ("deno", "deno"),
         ("node", "node"),
         ("bun", "bun"),
@@ -141,7 +141,7 @@ pub fn get_js_runtime_info(bin_path: &PathBuf) -> Option<(String, String)> {
 }
 
 pub async fn analyze_js_runtime(_app_handle: &AppHandle, bin_path: &PathBuf) -> DependencyInfo {
-    let providers = [
+    let providers =[
         ("deno", "Deno", "--version"),
         ("node", "Node.js", "--version"),
         ("bun", "Bun", "--version"),
@@ -324,7 +324,7 @@ pub fn close_splash(app_handle: AppHandle) {
 
 #[tauri::command]
 pub async fn get_latest_app_version() -> Result<String, String> {
-    match timeout(Duration::from_secs(3), deps::get_latest_github_tag("zqily/multiyt-dlp")).await {
+    match timeout(Duration::from_secs(45), deps::get_latest_github_tag("zqily/multiyt-dlp")).await {
         Ok(res) => res,
         Err(_) => Err("Request timed out".into())
     }
