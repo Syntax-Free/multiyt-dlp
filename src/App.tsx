@@ -62,6 +62,17 @@ function App() {
     return () => { if (cancelTimerInterval.current) clearInterval(cancelTimerInterval.current); };
   }, [cancelStatus]);
 
+  // Auto-dismiss Skip Notice
+  useEffect(() => {
+      let timer: ReturnType<typeof setTimeout>;
+      if (skipNotice) {
+          timer = setTimeout(() => {
+              setSkipNotice(null);
+          }, 12000);
+      }
+      return () => { if (timer) clearTimeout(timer); };
+  }, [skipNotice, setSkipNotice]);
+
   if (!windowLabel) return null;
 
   if (windowLabel === 'splashscreen') {

@@ -7,12 +7,17 @@ export function UpdateChecker() {
     const { updateCheckStatus } = useAppContext();
     const [visible, setVisible] = useState(false);
     
-    // Auto-hide logic for success state
+    // Auto-hide logic for success and error states
     useEffect(() => {
-        if (updateCheckStatus === 'checking' || updateCheckStatus === 'error') {
+        if (updateCheckStatus === 'checking') {
             setVisible(true);
         } else if (updateCheckStatus === 'success') {
+            setVisible(true);
             const timer = setTimeout(() => setVisible(false), 3000);
+            return () => clearTimeout(timer);
+        } else if (updateCheckStatus === 'error') {
+            setVisible(true);
+            const timer = setTimeout(() => setVisible(false), 5000);
             return () => clearTimeout(timer);
         } else {
             setVisible(false);

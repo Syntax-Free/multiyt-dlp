@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useAppContext } from '@/contexts/AppContext';
 import { X, Download, PartyPopper, PlayCircle, Trash2, AlertTriangle, FileText } from 'lucide-react';
 import { openExternalLink, getPendingJobs, resumePendingJobs, clearPendingJobs, openLogFolder } from '@/api/invoke';
@@ -14,22 +14,31 @@ export function Toast() {
     const [pendingCount, setPendingCount] = useState(0);
 
     const errorCount = Array.from(downloads.values()).filter(d => d.status === 'error').length;
+    const prevErrorCountRef = useRef(0);
 
     // Check for errors in real-time
     useEffect(() => {
-        if (errorCount > 0 && mode !== 'error') {
-             // Only switch to error mode if we aren't already viewing something critical
-             // But actually, update/resume usually happens on mount. Errors happen later.
-             // We can prioritize errors.
+        let timer: ReturnType<typeof setTimeout>;
+        if (errorCount > prevErrorCountRef.current) {
              setMode('error');
              setVisible(true);
-        } else if (errorCount === 0 && mode === 'error') {
-            setVisible(false);
-            setMode(null);
+             timer = setTimeout(() => setVisible(false), 10000);
+        } else if (errorCount === 0) {
+             setMode(prevMode => {
+                 if (prevMode === 'error') {
+                     setVisible(false);
+                     return null;
+                 }
+                 return prevMode;
+             });
         }
-    }, [errorCount, mode]);
+        prevErrorCountRef.current = errorCount;
+        return () => { if (timer) clearTimeout(timer); };
+    }, [errorCount]);
 
     useEffect(() => {
+        let timers: ReturnType<typeof setTimeout>[] = [];
+        
         // Check for Resume first
         const checkResume = async () => {
             try {
@@ -37,7 +46,7 @@ export function Toast() {
                 if (count > 0) {
                     setPendingCount(count);
                     setMode('resume');
-                    setTimeout(() => setVisible(true), 1000);
+                    timers.push(setTimeout(() => setVisible(true), 1000));
                     return true;
                 }
             } catch (e) {
@@ -50,10 +59,12 @@ export function Toast() {
             // If no resume needed, check for updates
             if (!hasResume && isUpdateAvailable) {
                 setMode('update');
-                const timer = setTimeout(() => setVisible(true), 2000);
-                return () => clearTimeout(timer);
+                timers.push(setTimeout(() => setVisible(true), 2000));
+                timers.push(setTimeout(() => setVisible(false), 17000));
             }
         });
+        
+        return () => timers.forEach(t => clearTimeout(t));
     }, [isUpdateAvailable]);
 
     if (!visible || !mode) return null;
