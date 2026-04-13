@@ -1,7 +1,7 @@
 import { useAppContext } from '@/contexts/AppContext';
-import { AlertCircle, Trash2, FileText, Check, Save, X, Loader2, Database, AlertTriangle, Search, ChevronDown, Rocket, Layers } from 'lucide-react';
+import { AlertCircle, Trash2, FileText, Check, Save, X, Loader2, Database, AlertTriangle, Search, ChevronDown, Rocket, Layers, FolderOpen } from 'lucide-react';
 import { Button } from '../ui/Button';
-import { clearDownloadHistory, getDownloadHistory, saveDownloadHistory } from '@/api/invoke';
+import { clearDownloadHistory, getDownloadHistory, saveDownloadHistory, openLogFolder } from '@/api/invoke';
 import { useState, useRef, useEffect } from 'react';
 import { twMerge } from 'tailwind-merge';
 
@@ -413,7 +413,16 @@ export function GeneralSettings() {
                 <div>
                     <h3 className="text-base font-medium text-zinc-100">Application Logging</h3>
                     <p className="text-sm text-zinc-500">
-                        Configure system verbosity for troubleshooting. Logs are saved to <code>.multiyt-dlp/logs</code>.
+                        Configure system verbosity for troubleshooting. Logs are saved to{' '}
+                        <span 
+                            className="group/logs relative inline-flex items-center gap-1 cursor-pointer"
+                            onClick={() => openLogFolder()}
+                        >
+                            <code className="bg-zinc-950 px-1 rounded border border-zinc-800 transition-colors group-hover/logs:text-theme-cyan group-hover/logs:border-theme-cyan/50">
+                                .multiyt-dlp/logs
+                            </code>
+                            <FolderOpen className="w-3.5 h-3.5 text-theme-cyan opacity-0 -translate-x-2 group-hover/logs:opacity-100 group-hover/logs:translate-x-0 transition-all duration-200" />
+                        </span>
                     </p>
                 </div>
                 <hr className="border-zinc-800" />
