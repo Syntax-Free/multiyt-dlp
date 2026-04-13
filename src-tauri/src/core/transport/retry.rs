@@ -1,5 +1,6 @@
 use thiserror::Error;
 use std::time::Duration;
+use tracing::debug;
 
 #[derive(Debug, Error)]
 pub enum TransportError {
@@ -38,6 +39,7 @@ impl RetryPolicy {
     /// Returns None if max retries have been exceeded.
     pub fn next_backoff(&mut self) -> Option<Duration> {
         if self.current_attempt >= self.max_retries {
+            debug!(target: "core::transport::retry", "RetryPolicy: Max retries ({}) exhausted.", self.max_retries);
             return None;
         }
 
@@ -46,6 +48,8 @@ impl RetryPolicy {
 
         // Cap delay at 10 seconds
         let capped_delay = std::cmp::min(delay, 10_000);
+        
+        debug!(target: "core::transport::retry", "RetryPolicy: Attempt {}/{}. Backing off for {}ms", self.current_attempt, self.max_retries, capped_delay);
         
         Some(Duration::from_millis(capped_delay))
     }

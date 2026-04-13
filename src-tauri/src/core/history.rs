@@ -4,7 +4,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::fs::{OpenOptions, File};
 use tokio::io::{AsyncWriteExt, BufWriter};
 use url::Url;
-use tracing::{error};
+use tracing::{debug, error, info, trace, warn};
 
 #[derive(Debug)]
 enum HistoryMessage {
@@ -22,11 +22,13 @@ pub struct HistoryManager {
 
 impl HistoryManager {
     pub fn new() -> Self {
+        info!(target: "core::history", "Initializing HistoryManager");
         let home = dirs::home_dir().expect("Could not find home directory");
         let file_path = home.join(".multiyt-dlp").join("downloads.txt");
 
         if let Some(parent) = file_path.parent() {
             if !parent.exists() {
+                trace!(target: "core::history", "Creating history directory at {:?}", parent);
                 let _ = std::fs::create_dir_all(parent);
             }
         }
@@ -34,18 +36,26 @@ impl HistoryManager {
         let cache = Arc::new(RwLock::new(HashSet::new()));
         
         if file_path.exists() {
+             debug!(target: "core::history", "Loading existing history from {:?}", file_path);
              if let Ok(file) = std::fs::File::open(&file_path) {
                 let reader = std::io::BufReader::new(file);
                 let mut c = cache.write().unwrap();
                 use std::io::BufRead;
+                let mut count = 0;
                 for line in reader.lines() {
                     if let Ok(l) = line {
                         if !l.trim().is_empty() {
                             c.insert(Self::normalize_url(&l));
+                            count += 1;
                         }
                     }
                 }
+                debug!(target: "core::history", "Loaded {} URLs into history cache", count);
+             } else {
+                 warn!(target: "core::history", "History file exists but could not be opened for read");
              }
+        } else {
+             trace!(target: "core::history", "No existing history file found");
         }
 
         let (tx, mut rx) = mpsc::channel(100);
@@ -53,6 +63,7 @@ impl HistoryManager {
         let actor_cache = cache.clone();
         
         tauri::async_runtime::spawn(async move {
+            debug!(target: "core::history", "History background actor started");
             let mut writer: Option<BufWriter<File>> = match OpenOptions::new()
                 .create(true)
                 .append(true)
@@ -67,6 +78,7 @@ impl HistoryManager {
             };
 
             while let Some(msg) = rx.recv().await {
+                trace!(target: "core::history", "Actor processing message: {:?}", msg);
                 match msg {
                     HistoryMessage::Add(url) => {
                         if let Some(ref mut w) = writer {
@@ -81,17 +93,20 @@ impl HistoryManager {
                                 }
                             }
                         } else {
+                            warn!(target: "core::history", "Writer not available, attempting to reopen file");
                             if let Ok(f) = OpenOptions::new().create(true).append(true).open(&actor_path).await {
                                 writer = Some(BufWriter::with_capacity(8192, f));
                             }
                         }
                     },
                     HistoryMessage::Replace(content, resp) => {
+                         debug!(target: "core::history", "Replacing entire history file");
                          drop(writer.take());
 
                          match File::create(&actor_path).await {
                              Ok(mut file) => {
                                  if let Err(e) = file.write_all(content.as_bytes()).await {
+                                     error!(target: "core::history", "Failed to overwrite history file: {}", e);
                                      let _ = resp.send(Err(e.to_string()));
                                  } else {
                                      let mut new_set = HashSet::new();
@@ -107,6 +122,7 @@ impl HistoryManager {
                                  }
                              },
                              Err(e) => {
+                                 error!(target: "core::history", "Failed to recreate history file: {}", e);
                                  let _ = resp.send(Err(e.to_string()));
                              }
                          }
@@ -116,6 +132,7 @@ impl HistoryManager {
                          }
                     },
                     HistoryMessage::Clear(resp) => {
+                        debug!(target: "core::history", "Clearing history file");
                         drop(writer.take());
                         match File::create(&actor_path).await {
                             Ok(_) => {
@@ -125,6 +142,7 @@ impl HistoryManager {
                                 let _ = resp.send(Ok(()));
                             },
                             Err(e) => {
+                                error!(target: "core::history", "Failed to clear history file: {}", e);
                                 let _ = resp.send(Err(e.to_string()));
                             }
                         }
@@ -133,10 +151,14 @@ impl HistoryManager {
                         }
                     },
                     HistoryMessage::Get(resp) => {
+                        trace!(target: "core::history", "Reading entire history file for Get request");
                         let content = if actor_path.exists() {
                             match tokio::fs::read_to_string(&actor_path).await {
                                 Ok(s) => s,
-                                Err(_) => String::new(),
+                                Err(e) => {
+                                    warn!(target: "core::history", "Failed to read history content: {}", e);
+                                    String::new()
+                                }
                             }
                         } else {
                             String::new()
@@ -145,6 +167,7 @@ impl HistoryManager {
                     }
                 }
             }
+            debug!(target: "core::history", "History background actor shut down");
         });
 
         Self {
@@ -155,6 +178,7 @@ impl HistoryManager {
 
     pub fn normalize_url(raw_url: &str) -> String {
         let Ok(mut url) = Url::parse(raw_url) else {
+            trace!(target: "core::history", "Failed to parse URL for normalization: {}", raw_url);
             return raw_url.trim().to_string();
         };
 
@@ -202,13 +226,18 @@ impl HistoryManager {
 
         let as_str = url.to_string();
         let no_scheme = as_str.split("://").last().unwrap_or(&as_str);
-        no_scheme.trim_end_matches('/').to_string()
+        let normalized = no_scheme.trim_end_matches('/').to_string();
+        
+        trace!(target: "core::history", "Normalized URL: {} -> {}", raw_url, normalized);
+        normalized
     }
 
     pub fn exists(&self, url: &str) -> bool {
         let normalized = Self::normalize_url(url);
         let cache = self.cache.read().unwrap();
-        cache.contains(&normalized)
+        let hit = cache.contains(&normalized);
+        trace!(target: "core::history", "Checked existence of {}: {}", normalized, hit);
+        hit
     }
 
     pub async fn add(&self, url: &str) -> Result<(), String> {
@@ -217,10 +246,12 @@ impl HistoryManager {
         {
             let cache = self.cache.read().unwrap();
             if cache.contains(&normalized) {
+                trace!(target: "core::history", "URL already in cache, ignoring Add: {}", normalized);
                 return Ok(());
             }
         }
 
+        debug!(target: "core::history", "Sending Add message to actor for {}", url);
         self.sender.send(HistoryMessage::Add(url.to_string())).await
             .map_err(|_| "History actor closed".to_string())
     }

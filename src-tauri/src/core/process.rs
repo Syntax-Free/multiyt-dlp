@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::fs;
 use serde::Deserialize;
 use std::time::Duration;
-use tracing::{debug, error, warn, trace};
+use tracing::{debug, error, warn, trace, info};
 use walkdir::WalkDir;
 use std::collections::VecDeque;
 
@@ -139,21 +139,28 @@ async fn robust_move_file(src: &Path, dest: &Path) -> Result<(), std::io::Error>
     let mut attempts = 0;
     loop {
         if dest.exists() {
+             warn!(target: "core::process", "Destination file already exists during robust move: {:?}", dest);
              return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "Destination file already exists"));
         }
 
         match fs::rename(src, dest) {
-            Ok(_) => return Ok(()),
+            Ok(_) => {
+                trace!(target: "core::process", "Successfully moved file {:?} -> {:?}", src, dest);
+                return Ok(())
+            },
             Err(e) => {
                 attempts += 1;
                 if e.kind() == std::io::ErrorKind::AlreadyExists {
                     return Err(e);
                 }
+                warn!(target: "core::process", "Rename failed (Attempt {}). Error: {}. Retrying...", attempts, e);
                 if attempts > 3 {
+                    warn!(target: "core::process", "Rename exhausted retries, falling back to copy+delete.");
                     if let Ok(_) = fs::copy(src, dest) {
                         let _ = fs::remove_file(src);
                         return Ok(());
                     }
+                    error!(target: "core::process", "Copy+delete fallback failed for {:?} -> {:?}", src, dest);
                     return Err(e);
                 }
                 tokio::time::sleep(Duration::from_millis(200)).await;
@@ -187,6 +194,7 @@ pub async fn run_download_process(
     let config_manager = app_handle.state::<Arc<ConfigManager>>();
 
     loop {
+        info!(target: "core::process", job_id = ?job_id, "Preparing execution environment for URL (Fallback Level {})", fallback_level);
         let general_config = config_manager.get_config().general;
         let bin_dir = crate::core::deps::get_common_bin_dir();
         
@@ -196,18 +204,25 @@ pub async fn run_download_process(
             match tauri::api::path::download_dir() {
                 Some(path) => path,
                 None => {
+                    error!(target: "core::process", job_id = ?job_id, "Failed to resolve system download directory");
                     let _ = tx_actor.send(construct_error(job_id, "Critical Error: Could not determine save directory.".into(), None, String::new(), VecDeque::new())).await;
                     return; 
                 }
             }
         };
         
-        if !target_dir.exists() { let _ = std::fs::create_dir_all(&target_dir); }
+        if !target_dir.exists() { 
+            trace!(target: "core::process", job_id = ?job_id, "Creating target directory: {:?}", target_dir);
+            let _ = std::fs::create_dir_all(&target_dir); 
+        }
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         let base_temp_dir = home.join(".multiyt-dlp").join("temp_downloads");
         let unique_temp_dir = base_temp_dir.join(job_id.to_string());
 
-        if unique_temp_dir.exists() { let _ = std::fs::remove_dir_all(&unique_temp_dir); }
+        if unique_temp_dir.exists() { 
+            trace!(target: "core::process", job_id = ?job_id, "Wiping existing unique temp directory");
+            let _ = std::fs::remove_dir_all(&unique_temp_dir); 
+        }
         let _ = std::fs::create_dir_all(&unique_temp_dir);
 
         let mut yt_dlp_cmd = "yt-dlp".to_string();
@@ -240,6 +255,7 @@ pub async fn run_download_process(
                 "bun" => "bun",
                 _ => &name
             };
+            debug!(target: "core::process", job_id = ?job_id, "Injecting JS Runtime: {}:{}", ytdlp_runtime_name, path);
             cmd.arg("--js-runtimes").arg(format!("{}:{}", ytdlp_runtime_name, path));
         }
 
@@ -315,11 +331,12 @@ pub async fn run_download_process(
         let args: Vec<String> = cmd.as_std().get_args().map(|s| s.to_string_lossy().to_string()).collect();
         let used_command = format!("{} {}", yt_dlp_cmd, args.join(" "));
 
-        debug!(target: "core::process", job_id = ?job_id, "Spawning process: {}", used_command);
+        info!(target: "core::process", job_id = ?job_id, "Spawning yt-dlp: {}", used_command);
 
         let mut child = match cmd.spawn() {
             Ok(child) => child,
             Err(e) => {
+                error!(target: "core::process", job_id = ?job_id, "Failed to spawn process: {}", e);
                 let _ = tx_actor.send(construct_error(job_id, format!("Failed to spawn process: {}", e), None, e.to_string(), VecDeque::new())).await;
                 let _ = std::fs::remove_dir_all(&unique_temp_dir);
                 return;
@@ -334,6 +351,7 @@ pub async fn run_download_process(
                 }
                 Some(job)
             } else {
+                warn!(target: "core::process", job_id = ?job_id, "Failed to create Windows Job Object for subprocess management");
                 None
             }
         };
@@ -349,6 +367,7 @@ pub async fn run_download_process(
             }).await;
         }
 
+        trace!(target: "core::process", job_id = ?job_id, "Connecting to subprocess stdout/stderr pipes");
         let stdout = child.stdout.take().expect("Failed to capture stdout");
         let stderr = child.stderr.take().expect("Failed to capture stderr");
         
@@ -377,21 +396,24 @@ pub async fn run_download_process(
         let mut captured_stderr = VecDeque::with_capacity(50);
         
         while let Some((line, is_stderr)) = rx.recv().await {
-            if line.len() > 2048 { continue; }
+            if line.len() > 2048 { 
+                trace!(target: "core::process", job_id = ?job_id, "Skipped extremely long line (>2048 chars)");
+                continue; 
+            }
             
             let trimmed = line.trim();
             if trimmed.is_empty() { continue; }
             
             captured_logs.push_back(trimmed.to_string());
             if captured_logs.len() > 100 { 
-                captured_logs.pop_front(); // O(1) removal
+                captured_logs.pop_front(); 
             }
             
             if is_stderr {
                 warn!(target: "core::process::stderr", job_id = ?job_id, "{}", trimmed);
                 captured_stderr.push_back(trimmed.to_string());
                 if captured_stderr.len() > 50 { 
-                    captured_stderr.pop_front(); // O(1) removal
+                    captured_stderr.pop_front(); 
                 }
             } else {
                 trace!(target: "core::process::stdout", job_id = ?job_id, "{}", trimmed);
@@ -400,6 +422,7 @@ pub async fn run_download_process(
             if !is_stderr {
                 let potential_path = PathBuf::from(trimmed);
                 if potential_path.is_absolute() && potential_path.starts_with(&unique_temp_dir) {
+                    debug!(target: "core::process", job_id = ?job_id, "Detected output path match: {}", trimmed);
                     detected_output_path = Some(trimmed.to_string());
                     if let Some(name) = potential_path.file_name() {
                         detected_filename_only = Some(name.to_string_lossy().to_string());
@@ -433,6 +456,9 @@ pub async fn run_download_process(
                     if !state_phase.contains("Merging") && !state_phase.contains("Extracting") 
                        && !state_phase.contains("Writing") && !state_phase.contains("Embedding") 
                        && !state_phase.contains("Fixing") && !state_phase.contains("Moving") {
+                        if state_phase != "Downloading" {
+                            trace!(target: "core::process", job_id = ?job_id, "Phase changed implicitly to Downloading via JSON telemetry");
+                        }
                         state_phase = "Downloading".to_string();
                     }
                     emit_update = true;
@@ -440,27 +466,32 @@ pub async fn run_download_process(
             } else {
                 if trimmed.starts_with("[download]") {
                      if DOWNLOAD_START_REGEX.is_match(trimmed) {
+                        trace!(target: "core::process", job_id = ?job_id, "Regex matched: DOWNLOAD_START_REGEX");
                         state_phase = "Starting Download".to_string();
                         emit_update = true;
                     }
                 }
                 else if trimmed.starts_with("[Metadata]") {
+                    trace!(target: "core::process", job_id = ?job_id, "Matched Metadata phase string");
                     state_phase = "Writing Metadata".to_string();
                     state_percentage = 99.0;
                     emit_update = true;
                 }
                 else if trimmed.starts_with("[Thumbnails]") || trimmed.starts_with("[EmbedThumbnail]") {
+                    trace!(target: "core::process", job_id = ?job_id, "Matched Thumbnail phase string");
                     state_phase = "Embedding Thumbnail".to_string();
                     state_percentage = 99.0;
                     emit_update = true;
                 }
                 else if trimmed.starts_with("[Merger]") {
+                    trace!(target: "core::process", job_id = ?job_id, "Matched Merger phase string");
                     state_phase = "Merging Formats".to_string();
                     state_percentage = 100.0;
                     eta_str = "Done".to_string();
                     emit_update = true;
                 }
                 else if trimmed.starts_with("[ExtractAudio]") {
+                    trace!(target: "core::process", job_id = ?job_id, "Matched ExtractAudio phase string");
                     state_phase = "Extracting Audio".to_string();
                     state_percentage = 100.0;
                     eta_str = "Done".to_string();
@@ -468,18 +499,21 @@ pub async fn run_download_process(
                 }
                 else if trimmed.starts_with("[Fixup") {
                     if FIXUP_REGEX.is_match(trimmed) {
+                        trace!(target: "core::process", job_id = ?job_id, "Regex matched: FIXUP_REGEX");
                         state_phase = "Fixing Container".to_string();
                         state_percentage = 100.0;
                         emit_update = true;
                     }
                 }
                 else if trimmed.starts_with("[MoveFiles]") {
+                    trace!(target: "core::process", job_id = ?job_id, "Matched MoveFiles phase string");
                     state_phase = "Finalizing".to_string();
                     state_percentage = 100.0;
                     emit_update = true;
                 }
                 else if trimmed.starts_with("[ffmpeg]") {
                      if !state_phase.contains("Merging") && !state_phase.contains("Extracting") {
+                         trace!(target: "core::process", job_id = ?job_id, "Matched generic ffmpeg phase string");
                          state_phase = "Processing (FFmpeg)".to_string();
                          emit_update = true;
                     }
@@ -501,29 +535,38 @@ pub async fn run_download_process(
         let status = child.wait().await.expect("Child process error");
 
         if status.success() {
+            debug!(target: "core::process", job_id = ?job_id, "Subprocess returned success exit code (0)");
             let mut final_src_path: Option<PathBuf> = None;
 
             if let Some(p) = detected_output_path {
                 let path = PathBuf::from(p);
                 if path.exists() {
+                    trace!(target: "core::process", job_id = ?job_id, "Validated explicitly detected output path: {:?}", path);
                     final_src_path = Some(path);
+                } else {
+                    warn!(target: "core::process", job_id = ?job_id, "Explicit output path was detected but file does not exist: {:?}", path);
                 }
             }
 
             if final_src_path.is_none() {
                  if let Some(ref fname) = detected_filename_only {
                      let path = unique_temp_dir.join(fname);
-                     if path.exists() { final_src_path = Some(path); }
+                     if path.exists() { 
+                         trace!(target: "core::process", job_id = ?job_id, "Validated fallback filename matching path: {:?}", path);
+                         final_src_path = Some(path); 
+                     }
                  }
             }
 
             if final_src_path.is_none() {
+                debug!(target: "core::process", job_id = ?job_id, "Initiating deep temp dir scan for valid media file...");
                 for entry in WalkDir::new(&unique_temp_dir).min_depth(1).max_depth(3) {
                     if let Ok(e) = entry {
                         if e.file_type().is_file() {
                              if let Some(ext) = e.path().extension() {
                                 let ext_str = ext.to_string_lossy();
                                 if ["mp4", "mkv", "webm", "mp3", "flac", "m4a", "wav"].contains(&ext_str.as_ref()) {
+                                    debug!(target: "core::process", job_id = ?job_id, "Scan matched valid media file: {:?}", e.path());
                                     final_src_path = Some(e.path().to_path_buf());
                                     break;
                                 }
@@ -554,6 +597,7 @@ pub async fn run_download_process(
 
                 match robust_move_file(&src_path, &dest_path).await {
                     Ok(_) => {
+                        info!(target: "core::process", job_id = ?job_id, "Successfully moved completed file to target directory: {:?}", dest_path);
                         let _ = tx_actor.send(JobMessage::JobCompleted { 
                             id: job_id, 
                             output_path: dest_path.to_string_lossy().to_string(),
@@ -564,6 +608,7 @@ pub async fn run_download_process(
                     },
                     Err(e) => {
                         if e.kind() == std::io::ErrorKind::AlreadyExists {
+                            warn!(target: "core::process", job_id = ?job_id, "Conflict block: File already exists at {:?}", dest_path);
                             let _ = tx_actor.send(JobMessage::FileConflict { 
                                 id: job_id, 
                                 temp_path: src_path.to_string_lossy().to_string(),
@@ -574,12 +619,14 @@ pub async fn run_download_process(
                             preserve_temp_file = true;
                             break;
                         } else {
+                            error!(target: "core::process", job_id = ?job_id, "Catastrophic file move failure: {}", e);
                             let _ = tx_actor.send(construct_error(job_id, format!("File move failed: {}", e), status.code(), e.to_string(), captured_logs)).await;
                             break;
                         }
                     }
                 }
             } else {
+                error!(target: "core::process", job_id = ?job_id, "Download claimed success, but no matching output file found in {:?}", unique_temp_dir);
                 let _ = tx_actor.send(construct_error(job_id, "Download succeeded but file not found".into(), status.code(), "Could not locate output file in temp dir".into(), captured_logs)).await;
                 break;
             }
@@ -587,11 +634,11 @@ pub async fn run_download_process(
             let log_blob = Vec::from(captured_logs.clone()).join("\n");
             let stderr_blob = Vec::from(captured_stderr.clone()).join("\n");
             
-            warn!(target: "core::process", job_id = ?job_id, exit_code = ?status.code(), "Process exited with error");
+            warn!(target: "core::process", job_id = ?job_id, exit_code = ?status.code(), "Process exited with error status");
             
             let is_filesystem_error = FILESYSTEM_ERROR_REGEX.is_match(&log_blob);
             if !job_data.restrict_filenames && is_filesystem_error {
-                warn!(target: "core::process", job_id = ?job_id, "Retrying with restricted filenames");
+                warn!(target: "core::process", job_id = ?job_id, "Filesystem error detected in logs. Enabling restrict_filenames and retrying.");
                 job_data.restrict_filenames = true;
                 continue; 
             }
@@ -602,7 +649,7 @@ pub async fn run_download_process(
 
             if !is_fatal_auth_js {
                 if fallback_level == 0 {
-                    warn!(target: "core::process", job_id = ?job_id, "Download failed, falling back to Level 1 (Loose Format)...");
+                    warn!(target: "core::process", job_id = ?job_id, "Download failed natively, escalating to Fallback Level 1 (Loose Format)");
                     fallback_level = 1;
                     job_data.video_resolution = "best".to_string();
                     job_data.embed_metadata = false;
@@ -615,7 +662,7 @@ pub async fn run_download_process(
                     }).await;
                     continue;
                 } else if fallback_level == 1 {
-                    warn!(target: "core::process", job_id = ?job_id, "Download failed again, falling back to Level 2 (Any Format)...");
+                    warn!(target: "core::process", job_id = ?job_id, "Download failed at Level 1, escalating to Fallback Level 2 (Any Format)");
                     fallback_level = 2;
                     job_data.format_preset = DownloadFormatPreset::Best;
                     
@@ -625,6 +672,8 @@ pub async fn run_download_process(
                     }).await;
                     continue;
                 }
+            } else {
+                error!(target: "core::process", job_id = ?job_id, "Fatal unrecoverable error detected in logs (Auth or Runtime requirement)");
             }
 
             let short_msg = if stderr_blob.contains("No supported JavaScript runtime") {
@@ -648,10 +697,14 @@ pub async fn run_download_process(
         async fn robust_remove_dir_internal(path: &Path) {
             for i in 0..5 {
                 match fs::remove_dir_all(path) {
-                    Ok(_) => return,
+                    Ok(_) => {
+                        trace!(target: "core::process", "Cleaned up unique temp dir: {:?}", path);
+                        return;
+                    },
                     Err(_) => { tokio::time::sleep(Duration::from_millis(100 * 2u64.pow(i))).await; }
                 }
             }
+            warn!(target: "core::process", "Failed to clean unique temp dir {:?} after retries", path);
             let _ = fs::remove_dir_all(path);
         }
 

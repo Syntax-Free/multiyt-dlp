@@ -4,7 +4,7 @@ use serde::{Serialize, Deserialize};
 use regex::Regex;
 use crate::core::deps::{self, DependencyProvider}; 
 use std::path::PathBuf;
-use tracing::{info, warn, error, debug};
+use tracing::{info, warn, error, debug, trace};
 use tokio::time::{timeout, Duration};
 use once_cell::sync::Lazy;
 use std::sync::Mutex;
@@ -68,12 +68,15 @@ fn new_silent_command(program: &str) -> Command {
 }
 
 pub fn resolve_binary_info(bin_name: &str, version_flag: &str, local_bin_path: &PathBuf) -> DependencyInfo {
+    trace!(target: "commands::system", "Resolving binary info for '{}'", bin_name);
     let local_path = local_bin_path.join(bin_name);
     let local_available = local_path.exists();
 
     let final_path = if local_available {
+        debug!(target: "commands::system", "Binary '{}' found locally at {:?}", bin_name, local_path);
         Some(local_path.to_string_lossy().to_string())
     } else {
+        trace!(target: "commands::system", "Binary '{}' not found locally, scanning system PATH", bin_name);
         let path_cmd = if cfg!(target_os = "windows") { "where" } else { "which" };
         new_silent_command(path_cmd)
             .arg(bin_name)
@@ -88,13 +91,18 @@ pub fn resolve_binary_info(bin_name: &str, version_flag: &str, local_bin_path: &
     let mut version = None;
 
     if let Some(ref p) = final_path {
+        trace!(target: "commands::system", "Querying version for '{}' using flag '{}'", p, version_flag);
         if let Ok(output) = new_silent_command(p).arg(version_flag).output() {
              if output.status.success() {
                  let out_str = String::from_utf8_lossy(&output.stdout).to_string();
                  let first_line = out_str.lines().next().unwrap_or("").trim().to_string();
                  version = Some(first_line);
+             } else {
+                 warn!(target: "commands::system", "Version command failed for '{}'", p);
              }
         }
+    } else {
+        debug!(target: "commands::system", "Binary '{}' not available on system", bin_name);
     }
 
     DependencyInfo {
@@ -121,6 +129,7 @@ pub fn get_js_runtime_info(bin_path: &PathBuf) -> Option<(String, String)> {
         let exec = if cfg!(windows) { format!("{}.exe", exec_base) } else { exec_base.to_string() };
         let local = bin_path.join(&exec);
         if local.exists() {
+            trace!(target: "commands::system", "Found local JS runtime: {} at {:?}", engine_name, local);
             return Some((engine_name.to_string(), local.to_string_lossy().to_string()));
         }
 
@@ -134,9 +143,12 @@ pub fn get_js_runtime_info(bin_path: &PathBuf) -> Option<(String, String)> {
             .map(|s| s.lines().next().unwrap_or("").trim().to_string());
 
         if let Some(p) = found {
+            trace!(target: "commands::system", "Found system JS runtime: {} at {}", engine_name, p);
             return Some((engine_name.to_string(), p));
         }
     }
+    
+    warn!(target: "commands::system", "No valid JavaScript runtime found on system");
     None
 }
 
@@ -167,6 +179,7 @@ pub async fn analyze_js_runtime(_app_handle: &AppHandle, bin_path: &PathBuf) -> 
 
         info.is_supported = supported;
         info.is_recommended = recommended;
+        debug!(target: "commands::system", "JS Runtime Selected: {} (v: {}, Supported: {})", label, version_str, supported);
         return info;
     }
 
@@ -181,10 +194,9 @@ pub async fn analyze_js_runtime(_app_handle: &AppHandle, bin_path: &PathBuf) -> 
     }
 }
 
-/// Optimized Splash Scan: Only checks local existence to be instant.
-/// Constructing LocalScanResult here satisfies construction requirement.
 #[tauri::command]
 pub async fn check_local_deps(_app_handle: AppHandle) -> LocalScanResult {
+    debug!(target: "commands::system", "Performing fast local dependency scan");
     let bin_dir = crate::core::deps::get_common_bin_dir();
     
     if !bin_dir.exists() {
@@ -212,6 +224,8 @@ pub async fn check_local_deps(_app_handle: AppHandle) -> LocalScanResult {
     
     let aria2_available = bin_dir.join(aria_exe).exists();
 
+    trace!(target: "commands::system", "Local scan missing: {:?}, Aria2 Available: {}", missing, aria2_available);
+
     LocalScanResult {
         missing,
         aria2_available,
@@ -220,6 +234,7 @@ pub async fn check_local_deps(_app_handle: AppHandle) -> LocalScanResult {
 
 #[tauri::command]
 pub async fn check_ytdlp_update(_app_handle: AppHandle) -> Result<bool, String> {
+    info!(target: "commands::system", "Checking for yt-dlp updates...");
     let bin_dir = crate::core::deps::get_common_bin_dir();
     let provider = deps::YtDlpProvider;
     provider.check_update_available(&bin_dir).await
@@ -227,6 +242,7 @@ pub async fn check_ytdlp_update(_app_handle: AppHandle) -> Result<bool, String> 
 
 #[tauri::command]
 pub async fn check_dependencies(app_handle: AppHandle) -> AppDependencies {
+    debug!(target: "commands::system", "Initiating comprehensive dependency check");
     let bin_dir = crate::core::deps::get_common_bin_dir();
 
     let (yt_res, ff_res, aria_res, js_res) = tokio::join!(
@@ -243,7 +259,6 @@ pub async fn check_dependencies(app_handle: AppHandle) -> AppDependencies {
             let mut info = resolve_binary_info(exec_name, "-version", &bin_dir);
             let fp_info = resolve_binary_info(fp_name, "-version", &bin_dir);
             
-            // If either component of the suite is missing, flag the entire FFmpeg suite as missing
             if !fp_info.available {
                 info.available = false;
             }
@@ -282,9 +297,11 @@ pub async fn check_dependencies(app_handle: AppHandle) -> AppDependencies {
 
 #[tauri::command]
 pub async fn install_dependency(app_handle: AppHandle, name: String) -> Result<(), String> {
+    info!(target: "commands::system", "Dependency installation requested: {}", name);
     {
         let mut locks = INSTALL_LOCKS.lock().unwrap();
         if locks.contains(&name) {
+            warn!(target: "commands::system", "Installation of {} rejected: already in progress", name);
             return Err(format!("Installation of {} is already in progress", name));
         }
         locks.insert(name.clone());
@@ -297,22 +314,34 @@ pub async fn install_dependency(app_handle: AppHandle, name: String) -> Result<(
         locks.remove(&name);
     }
     
+    if let Err(ref e) = result {
+        error!(target: "commands::system", "Installation of {} failed: {}", name, e);
+    } else {
+        info!(target: "commands::system", "Installation of {} succeeded", name);
+    }
+    
     result
 }
 
 #[tauri::command]
 pub async fn sync_dependencies(app_handle: AppHandle) -> Result<AppDependencies, String> {
+    trace!(target: "commands::system", "Frontend requested dependency sync");
     Ok(check_dependencies(app_handle).await)
 }
 
 #[tauri::command]
 pub fn open_external_link(app_handle: AppHandle, url: String) -> Result<(), String> {
+    info!(target: "commands::system", "Opening external link: {}", url);
     tauri::api::shell::open(&app_handle.shell_scope(), url, None)
-        .map_err(|e| format!("Failed to open URL: {}", e))
+        .map_err(|e| {
+            error!(target: "commands::system", "Failed to open external link: {}", e);
+            format!("Failed to open URL: {}", e)
+        })
 }
 
 #[tauri::command]
 pub fn close_splash(app_handle: AppHandle) {
+    info!(target: "commands::system", "Closing splash screen and focusing main window");
     if let Some(splash) = app_handle.get_window("splashscreen") {
         let _ = splash.close();
     }
@@ -324,14 +353,19 @@ pub fn close_splash(app_handle: AppHandle) {
 
 #[tauri::command]
 pub async fn get_latest_app_version() -> Result<String, String> {
+    debug!(target: "commands::system", "Fetching latest app version tag from GitHub");
     match timeout(Duration::from_secs(45), deps::get_latest_github_tag("zqily/multiyt-dlp")).await {
         Ok(res) => res,
-        Err(_) => Err("Request timed out".into())
+        Err(_) => {
+            warn!(target: "commands::system", "App version check timed out");
+            Err("Request timed out".into())
+        }
     }
 }
 
 #[tauri::command]
 pub fn request_attention(app_handle: AppHandle) {
+    trace!(target: "commands::system", "Requesting OS user attention (Flash taskbar)");
     if let Some(window) = app_handle.get_window("splashscreen") {
         let _ = window.request_user_attention(Some(tauri::UserAttentionType::Informational));
     }
@@ -339,8 +373,10 @@ pub fn request_attention(app_handle: AppHandle) {
 
 #[tauri::command]
 pub fn show_in_folder(path: String) -> Result<(), String> {
+    info!(target: "commands::system", "Opening folder for path: {}", path);
     let path_obj = std::path::Path::new(&path);
     if !path_obj.exists() {
+        warn!(target: "commands::system", "Cannot open folder, path does not exist: {}", path);
         return Err(format!("File not found: {}", path));
     }
 
@@ -370,11 +406,15 @@ pub fn show_in_folder(path: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn open_log_folder() -> Result<(), String> {
+    info!(target: "commands::system", "Opening log folder");
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
     let log_dir = home.join(".multiyt-dlp").join("logs");
 
     if !log_dir.exists() {
-        std::fs::create_dir_all(&log_dir).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(&log_dir).map_err(|e| {
+            error!(target: "commands::system", "Failed to create log dir: {}", e);
+            e.to_string()
+        })?;
     }
 
     let cmd = if cfg!(target_os = "windows") { "explorer" } else if cfg!(target_os = "macos") { "open" } else { "xdg-open" };

@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
-use std::path::{PathBuf};
+use std::path::PathBuf;
 use std::sync::Mutex;
+use tracing::{debug, error, info, trace, warn};
 
 // --- Configuration Structs ---
 
@@ -31,13 +32,23 @@ impl Default for WindowConfig {
 impl WindowConfig {
     /// Validates and fixes invalid coordinates (e.g. minimized state -32000)
     pub fn sanitize(&mut self) {
+        let original_x = self.x;
+        let original_y = self.y;
+        
         if self.x <= -10000.0 || self.y <= -10000.0 {
             self.x = 100.0;
             self.y = 100.0;
+            debug!(target: "config", "Sanitized window coordinates from ({}, {}) to (100, 100)", original_x, original_y);
         }
 
-        if self.width < 400.0 { self.width = 1200.0; }
-        if self.height < 300.0 { self.height = 800.0; }
+        if self.width < 400.0 { 
+            debug!(target: "config", "Sanitized window width from {} to 1200", self.width);
+            self.width = 1200.0; 
+        }
+        if self.height < 300.0 { 
+            debug!(target: "config", "Sanitized window height from {} to 800", self.height);
+            self.height = 800.0; 
+        }
     }
 }
 
@@ -134,20 +145,26 @@ pub struct ConfigManager {
 
 impl ConfigManager {
     pub fn new() -> Self {
+        info!(target: "config", "Initializing ConfigManager");
         let home = dirs::home_dir().expect("Could not find home directory");
         let config_dir = home.join(".multiyt-dlp");
         let file_path = config_dir.join("config.json");
 
         if !config_dir.exists() {
+            trace!(target: "config", "Creating config directory at {:?}", config_dir);
             let _ = fs::create_dir_all(&config_dir);
         }
 
         let mut config = Self::load_robustly(&file_path)
             .or_else(|| {
+                warn!(target: "config", "Failed to load primary config. Attempting backup load.");
                 let bak_path = file_path.with_extension("json.bak");
                 Self::load_robustly(&bak_path)
             })
-            .unwrap_or_else(AppConfig::default);
+            .unwrap_or_else(|| {
+                warn!(target: "config", "Failed to load config entirely. Falling back to defaults.");
+                AppConfig::default()
+            });
 
         config.window.sanitize();
 
@@ -156,23 +173,42 @@ impl ConfigManager {
             file_path,
         };
         
-        let _ = manager.save();
+        if let Err(e) = manager.save() {
+            error!(target: "config", "Failed to perform initial config save: {}", e);
+        } else {
+            debug!(target: "config", "Initial configuration saved successfully");
+        }
+        
         manager
     }
 
     fn load_robustly(path: &PathBuf) -> Option<AppConfig> {
-        if !path.exists() { return None; }
+        if !path.exists() {
+            debug!(target: "config", "Config file does not exist at {:?}", path);
+            return None;
+        }
 
         let content = fs::read_to_string(path).ok()?;
+        trace!(target: "config", "Read {} bytes from config file", content.len());
 
         match serde_json::from_str::<AppConfig>(&content) {
-            Ok(cfg) => Some(cfg),
-            Err(_) => {
+            Ok(cfg) => {
+                debug!(target: "config", "Config successfully parsed directly");
+                Some(cfg)
+            },
+            Err(e) => {
+                warn!(target: "config", "Direct config parse failed ({}). Attempting tolerant merge.", e);
                 let disk_json: Value = serde_json::from_str(&content).ok()?; 
                 let default_config = AppConfig::default();
                 let mut merged_json = serde_json::to_value(&default_config).unwrap();
                 Self::tolerant_merge(&mut merged_json, &disk_json);
-                serde_json::from_value(merged_json).ok()
+                let res = serde_json::from_value(merged_json).ok();
+                if res.is_some() {
+                    debug!(target: "config", "Tolerant merge successful");
+                } else {
+                    error!(target: "config", "Tolerant merge failed to produce valid config");
+                }
+                res
             }
         }
     }
@@ -203,43 +239,61 @@ impl ConfigManager {
     }
 
     pub fn save(&self) -> Result<(), String> {
+        trace!(target: "config", "Attempting to acquire config lock for saving");
         let config_guard = self.config.lock().unwrap();
         
         let json = serde_json::to_string_pretty(&*config_guard)
-            .map_err(|e| format!("Serialization error: {}", e))?;
+            .map_err(|e| {
+                error!(target: "config", "Serialization error during save: {}", e);
+                format!("Serialization error: {}", e)
+            })?;
 
         let main_path = &self.file_path;
         let tmp_path = main_path.with_extension("tmp");
         let bak_path = main_path.with_extension("json.bak");
 
+        trace!(target: "config", "Writing temporary config file to {:?}", tmp_path);
         fs::write(&tmp_path, json)
-            .map_err(|e| format!("Failed to write temp config: {}", e))?;
+            .map_err(|e| {
+                error!(target: "config", "Failed to write temp config: {}", e);
+                format!("Failed to write temp config: {}", e)
+            })?;
 
         if main_path.exists() {
+            trace!(target: "config", "Backing up current config to {:?}", bak_path);
             let _ = fs::copy(main_path, &bak_path); 
         }
 
+        trace!(target: "config", "Renaming temp config to main config path");
         fs::rename(&tmp_path, main_path)
-            .map_err(|e| format!("Failed to commit config file: {}", e))?;
+            .map_err(|e| {
+                error!(target: "config", "Failed to commit config file: {}", e);
+                format!("Failed to commit config file: {}", e)
+            })?;
 
+        debug!(target: "config", "Config successfully flushed to disk");
         Ok(())
     }
 
     pub fn get_config(&self) -> AppConfig {
+        trace!(target: "config", "Cloning config state for frontend");
         self.config.lock().unwrap().clone()
     }
 
     pub fn update_general(&self, general: GeneralConfig) {
+        debug!(target: "config", "Updating General Configuration");
         let mut cfg = self.config.lock().unwrap();
         cfg.general = general;
     }
 
     pub fn update_preferences(&self, prefs: PreferenceConfig) {
+        debug!(target: "config", "Updating Preference Configuration");
         let mut cfg = self.config.lock().unwrap();
         cfg.preferences = prefs;
     }
 
     pub fn update_window(&self, mut window: WindowConfig) {
+        trace!(target: "config", "Updating Window Configuration");
         window.sanitize(); 
         let mut cfg = self.config.lock().unwrap();
         cfg.window = window;

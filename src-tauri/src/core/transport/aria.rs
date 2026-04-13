@@ -3,6 +3,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use crate::core::transport::retry::TransportError;
 use regex::Regex;
+use tracing::{debug, error, info, trace};
 
 pub struct AriaEngine {
     url: String,
@@ -13,6 +14,7 @@ pub struct AriaEngine {
 
 impl AriaEngine {
     pub fn new(url: &str, target_path: std::path::PathBuf, aria_bin: std::path::PathBuf, fallback_size: Option<u64>) -> Self {
+        trace!(target: "core::transport::aria", "Initializing AriaEngine handler for target: {:?}", target_path);
         Self {
             url: url.to_string(),
             target_path,
@@ -48,6 +50,7 @@ impl AriaEngine {
     where
         F: Fn(u64, u64, f64) + Send + Sync + 'static,
     {
+        info!(target: "core::transport::aria", "Executing Aria2 binary downloader...");
         // Setup output directory and filename
         let dir = self.target_path.parent().ok_or(TransportError::Validation("Invalid path".into()))?;
         let filename = self.target_path.file_name().ok_or(TransportError::Validation("Invalid filename".into()))?;
@@ -56,7 +59,10 @@ impl AriaEngine {
         let tmp_path = dir.join(&tmp_filename);
         
         // Ensure no leftover tmp
-        let _ = tokio::fs::remove_file(&tmp_path).await;
+        if tmp_path.exists() {
+            debug!(target: "core::transport::aria", "Removing orphaned tmp file: {:?}", tmp_path);
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+        }
 
         let mut cmd = Command::new(&self.aria_bin);
         
@@ -79,6 +85,7 @@ impl AriaEngine {
            .stdout(Stdio::piped())
            .stderr(Stdio::piped());
 
+        debug!(target: "core::transport::aria", "Spawning Aria2 with args: {:?}", cmd);
         let mut child = cmd.spawn().map_err(TransportError::FileSystem)?;
         
         let stdout = child.stdout.take().expect("Failed to capture stdout");
@@ -93,6 +100,7 @@ impl AriaEngine {
         let re_fallback = Regex::new(r"\((?P<percent>[\d.]+)%\)").unwrap();
 
         while let Ok(Some(line)) = reader.next_line().await {
+            trace!(target: "core::transport::aria", "Raw line: {}", line);
             // Try full parsing first
             if let Some(caps) = re.captures(&line) {
                 let current_str = caps.name("current").map_or("", |m| m.as_str());
@@ -125,6 +133,7 @@ impl AriaEngine {
         let status = child.wait().await.map_err(TransportError::FileSystem)?;
         
         if status.success() {
+            debug!(target: "core::transport::aria", "Aria2 download completed successfully. Replacing local binary stub.");
             crate::core::deps::replace_dependency_robust_sync(&tmp_path, &self.target_path).map_err(TransportError::FileSystem)?;
             
             // Ensure 100% is reported on success
@@ -132,6 +141,7 @@ impl AriaEngine {
             on_progress(total, total, 0.0);
             Ok(())
         } else {
+            error!(target: "core::transport::aria", "Aria2 process failed with exit code: {:?}", status.code());
             // Cleanup partial tmp if failed
             let _ = tokio::fs::remove_file(&tmp_path).await;
             Err(TransportError::Validation(format!("Aria2 exited with code {:?}", status.code())))

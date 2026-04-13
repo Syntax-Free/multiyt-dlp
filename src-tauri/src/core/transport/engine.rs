@@ -8,6 +8,7 @@ use tokio::io::{AsyncWriteExt, BufWriter};
 use futures_util::StreamExt;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use tracing::{debug, error, info, trace, warn};
 use crate::core::transport::retry::{RetryPolicy, TransportError};
 
 // Constants
@@ -38,6 +39,7 @@ pub struct TransportEngine {
 
 impl TransportEngine {
     pub fn new(url: &str, target_path: PathBuf) -> Self {
+        trace!(target: "core::transport", "Building HTTP client for Native Transport Engine");
         let client = Client::builder()
             .user_agent("Multiyt-dlp/2.2 (Resumable-Engine)")
             .connect_timeout(Duration::from_secs(10))
@@ -56,6 +58,7 @@ impl TransportEngine {
     }
 
     pub fn with_fallback_size(mut self, size: u64) -> Self {
+        trace!(target: "core::transport", "Applying fallback total size constraint: {}", size);
         self.fallback_size = Some(size);
         self
     }
@@ -64,6 +67,7 @@ impl TransportEngine {
     where
         F: Fn(u64, u64, f64) + Send + Sync + 'static + Clone,
     {
+        info!(target: "core::transport", "Initiating Native Transport Engine execution for URL: {}", self.url);
         let (content_len, accepts_ranges) = self.probe().await?;
 
         let effective_len = content_len.or(self.fallback_size);
@@ -71,19 +75,26 @@ impl TransportEngine {
 
         if let Some(total_size) = validated_len {
             if accepts_ranges && total_size >= self.chunk_threshold {
+                info!(target: "core::transport", "Target supports ranges and size ({} bytes) meets threshold. Dispatching Concurrent Downloader.", total_size);
                 return self.download_concurrent(total_size, on_progress).await;
             }
         }
 
+        info!(target: "core::transport", "Target lacks range support or size is below threshold. Dispatching Linear Downloader.");
         self.download_linear(validated_len, on_progress).await
     }
 
     async fn probe(&self) -> Result<(Option<u64>, bool), TransportError> {
+        debug!(target: "core::transport", "Probing target server capabilities using HEAD request...");
         let head_resp = self.client.head(&self.url).send().await;
 
         let resp = match head_resp {
-            Ok(r) if r.status().is_success() => r,
+            Ok(r) if r.status().is_success() => {
+                trace!(target: "core::transport", "HEAD request succeeded");
+                r
+            },
             _ => {
+                debug!(target: "core::transport", "HEAD request failed or invalid, falling back to ranged GET request");
                 self.client.get(&self.url)
                     .header(header::RANGE, "bytes=0-0")
                     .send()
@@ -93,8 +104,10 @@ impl TransportEngine {
 
         if !resp.status().is_success() && resp.status() != reqwest::StatusCode::PARTIAL_CONTENT {
              if resp.status() == reqwest::StatusCode::NOT_FOUND {
+                 error!(target: "core::transport", "Probe encountered 404 NOT FOUND");
                  return Err(TransportError::HttpStatus(resp.status().as_u16()));
              }
+             warn!(target: "core::transport", "Probe received non-success HTTP status {}", resp.status());
              return Ok((Option::None, false));
         }
 
@@ -113,6 +126,7 @@ impl TransportEngine {
             resp.status() == reqwest::StatusCode::PARTIAL_CONTENT
         };
 
+        debug!(target: "core::transport", "Probe Result: Content Length = {:?}, Accepts Ranges = {}", len, accepts_ranges);
         Ok((len, accepts_ranges))
     }
 
@@ -128,12 +142,14 @@ impl TransportEngine {
     {
         let hash = self.calculate_deterministic_hash();
         let part_path = self.target_path.with_extension(format!("part.linear.{}", hash));
+        trace!(target: "core::transport", "Linear target scratch path: {:?}", part_path);
 
         let mut retry_policy = RetryPolicy::new(10); // Elevated linear retries
 
         loop {
             match self.attempt_linear(&part_path, total_size, &on_progress).await {
                 Ok(_) => {
+                    debug!(target: "core::transport", "Linear download successfully completed");
                     self.finalize(&part_path).await?;
                     if let Some(total) = total_size {
                         on_progress(total, total, 0.0);
@@ -141,11 +157,18 @@ impl TransportEngine {
                     return Ok(());
                 },
                 Err(e) => {
+                    error!(target: "core::transport", "Linear download chunk attempt failed: {}", e);
                     let _ = fs::remove_file(&part_path).await;
                     if let TransportError::HttpStatus(404) = e { return Err(e); }
                     match retry_policy.next_backoff() {
-                        Some(delay) => tokio::time::sleep(delay).await,
-                        Option::None => return Err(TransportError::MaxRetriesExceeded),
+                        Some(delay) => {
+                            warn!(target: "core::transport", "Retrying linear download after delay of {:?}", delay);
+                            tokio::time::sleep(delay).await;
+                        },
+                        Option::None => {
+                            error!(target: "core::transport", "Maximum linear retries exhausted");
+                            return Err(TransportError::MaxRetriesExceeded);
+                        }
                     }
                 }
             }
@@ -155,8 +178,10 @@ impl TransportEngine {
     async fn attempt_linear<F>(&self, path: &Path, total_size: Option<u64>, on_progress: &F) -> Result<(), TransportError>
     where F: Fn(u64, u64, f64) + Send + Sync
     {
+        trace!(target: "core::transport", "Executing HTTP GET for linear mode");
         let response = self.client.get(&self.url).send().await?;
         if !response.status().is_success() {
+             warn!(target: "core::transport", "HTTP status rejection: {}", response.status());
              return Err(TransportError::HttpStatus(response.status().as_u16()));
         }
 
@@ -175,6 +200,7 @@ impl TransportEngine {
             match chunk_result {
                 Some(Ok(chunk)) => {
                     let len = chunk.len() as u64;
+                    trace!(target: "core::transport", "Writing {} bytes to linear output buffer", len);
                     file.write_all(&chunk).await?;
                     downloaded += len;
                     bytes_since_update += len;
@@ -187,15 +213,20 @@ impl TransportEngine {
                          bytes_since_update = 0;
                     }
                 },
-                Some(Err(e)) => return Err(TransportError::Network(e)),
+                Some(Err(e)) => {
+                    error!(target: "core::transport", "Network stream error during linear read: {}", e);
+                    return Err(TransportError::Network(e))
+                },
                 Option::None => break,
             }
         }
 
+        trace!(target: "core::transport", "Flushing I/O buffer to disk");
         file.flush().await?;
 
         if let Some(total) = total_size {
             if total > 0 && downloaded != total {
+                error!(target: "core::transport", "Linear byte mismatch. Expected {}, got {}", total, downloaded);
                 return Err(TransportError::Validation(format!("Expected {}, got {}", total, downloaded)));
             }
         }
@@ -218,6 +249,7 @@ impl TransportEngine {
                 (i as u64 + 1) * chunk_size - 1
             };
             chunks.push(Chunk { index: i, start, end, len: end - start + 1 });
+            trace!(target: "core::transport", "Defined Chunk {}: Start={}, End={}, Length={}", i, start, end, end - start + 1);
         }
 
         let bytes_downloaded = Arc::new(AtomicU64::new(0));
@@ -228,6 +260,7 @@ impl TransportEngine {
             let p = self.target_path.with_extension(format!("part.{}.{}", hash, i));
             if let Ok(m) = fs::metadata(&p).await {
                 initial_progress += m.len();
+                debug!(target: "core::transport", "Resuming Chunk {} from offset {}", i, m.len());
             }
         }
         bytes_downloaded.store(initial_progress, Ordering::Relaxed);
@@ -272,11 +305,21 @@ impl TransportEngine {
                 let mut retry_policy = RetryPolicy::new(15); // Elevated chunk retries
                 loop {
                     match Self::download_chunk_resumable(&client, &url, &part_path, &chunk, &total_bytes_atomic).await {
-                        Ok(_) => return Ok(part_path),
+                        Ok(_) => {
+                            debug!(target: "core::transport", "Chunk {} completed successfully", chunk.index);
+                            return Ok(part_path)
+                        },
                         Err(e) => {
+                            error!(target: "core::transport", "Chunk {} failed with error: {}", chunk.index, e);
                             match retry_policy.next_backoff() {
-                                Some(delay) => tokio::time::sleep(delay).await,
-                                Option::None => return Err(e),
+                                Some(delay) => {
+                                    warn!(target: "core::transport", "Retrying Chunk {} after delay of {:?}", chunk.index, delay);
+                                    tokio::time::sleep(delay).await;
+                                },
+                                Option::None => {
+                                    error!(target: "core::transport", "Maximum retries exhausted for Chunk {}", chunk.index);
+                                    return Err(e);
+                                }
                             }
                         }
                     }
@@ -298,15 +341,21 @@ impl TransportEngine {
         }
 
         if failed {
+            error!(target: "core::transport", "Concurrent download aborted due to chunk failures");
             return Err(TransportError::Validation("One or more chunks failed".to_string()));
         }
 
+        info!(target: "core::transport", "All chunks complete. Merging parts.");
         match self.merge_parts_optimized(&part_paths).await {
             Ok(_) => {
+                debug!(target: "core::transport", "Merge complete");
                 on_progress(total_size, total_size, 0.0); 
                 Ok(())
             },
-            Err(e) => Err(e)
+            Err(e) => {
+                error!(target: "core::transport", "Merge failed: {}", e);
+                Err(e)
+            }
         }
     }
 
@@ -325,12 +374,14 @@ impl TransportEngine {
         }
 
         if current_len >= chunk.len {
+            trace!(target: "core::transport", "Chunk {} already strictly complete, skipping network.", chunk.index);
             return Ok(());
         }
 
         let range_start = chunk.start + current_len;
         let range_end = chunk.end;
 
+        trace!(target: "core::transport", "Chunk {} requesting HTTP RANGE bytes={}-{}", chunk.index, range_start, range_end);
         let req = client.get(url).header(header::RANGE, format!("bytes={}-{}", range_start, range_end));
         let response = req.send().await?;
         
@@ -357,8 +408,10 @@ impl TransportEngine {
                     let len = bytes.len() as u64;
                     if downloaded_in_this_session + len > remaining_for_chunk {
                         global_bytes.fetch_sub(downloaded_in_this_session, Ordering::Relaxed);
+                        error!(target: "core::transport", "Chunk {} received out-of-bounds bytes from server", chunk.index);
                         return Err(TransportError::Validation("Server exceeded requested byte range".into()));
                     }
+                    trace!(target: "core::transport", "Chunk {} writing {} bytes", chunk.index, len);
                     file.write_all(&bytes).await?;
                     downloaded_in_this_session += len;
                     global_bytes.fetch_add(len, Ordering::Relaxed);
@@ -373,7 +426,7 @@ impl TransportEngine {
         let final_len = current_len + downloaded_in_this_session;
         if final_len != chunk.len {
             global_bytes.fetch_sub(downloaded_in_this_session, Ordering::Relaxed);
-            return Err(TransportError::Validation(format!("Chunk incomplete. Got {}, expected {}", final_len, chunk.len)));
+            return Err(TransportError::Validation(format!("Chunk {} incomplete. Got {}, expected {}", chunk.index, final_len, chunk.len)));
         }
 
         Ok(())
@@ -399,6 +452,7 @@ impl TransportEngine {
         let mut target_file = BufWriter::with_capacity(IO_BUFFER_SIZE, raw_target_file);
 
         for part_path in parts.iter() {
+            trace!(target: "core::transport", "Merging data from chunk part {:?}", part_path);
             let mut part_file = fs::File::open(part_path).await?;
             tokio::io::copy(&mut part_file, &mut target_file).await?;
         }
@@ -413,6 +467,7 @@ impl TransportEngine {
     }
 
     async fn finalize(&self, source_path: &Path) -> Result<(), TransportError> {
+        debug!(target: "core::transport", "Finalizing TransportEngine payload to destination: {:?}", self.target_path);
         crate::core::deps::replace_dependency_robust_sync(source_path, &self.target_path).map_err(TransportError::FileSystem)?;
         Ok(())
     }

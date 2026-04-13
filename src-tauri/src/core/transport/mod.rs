@@ -10,7 +10,7 @@ use self::engine::TransportEngine;
 use self::aria::AriaEngine;
 use self::retry::TransportError;
 use serde::Serialize;
-use tracing::{info, warn};
+use tracing::{info, warn, debug};
 
 #[derive(Clone, Serialize)]
 struct InstallProgressPayload {
@@ -73,13 +73,16 @@ pub async fn download_file_robust(
     };
 
     if aria_exists {
-        info!("Attempting Aria2 download: {}", name);
+        info!(target: "core::transport", "Attempting Aria2 robust download: {}", name);
         let engine = AriaEngine::new(url, destination.clone(), aria_path, fallback_size);
         
         match engine.execute(callback.clone()).await {
-            Ok(_) => return Ok(()),
+            Ok(_) => {
+                debug!(target: "core::transport", "Aria2 download completed successfully: {}", name);
+                return Ok(())
+            },
             Err(e) => {
-                warn!("Aria2 failed, falling back to internal engine: {}", e);
+                warn!(target: "core::transport", "Aria2 failed, falling back to internal engine: {}", e);
                 let _ = std::fs::remove_file(&destination);
                 let aria_tmp = format!("{}.aria2", destination.display());
                 let _ = std::fs::remove_file(std::path::Path::new(&aria_tmp));
@@ -87,7 +90,7 @@ pub async fn download_file_robust(
         }
     }
 
-    info!("Using native internal engine: {}", name);
+    info!(target: "core::transport", "Using native internal engine to download: {}", name);
     let _ = app_handle.emit_all("install-progress", InstallProgressPayload {
         name: name.to_string(),
         percentage: 0,
@@ -101,6 +104,7 @@ pub async fn download_file_robust(
     }
     
     engine.execute(dummy_callback).await?;
+    debug!(target: "core::transport", "Native download completed successfully: {}", name);
 
     Ok(())
 }

@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use crate::core::transport::download_file_robust;
 use regex::Regex;
 use tokio::time::{timeout, Duration, sleep};
+use tracing::{debug, error, info, trace, warn};
 
 #[cfg(target_os = "windows")]
 const YT_DLP_URL: &str = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe";
@@ -71,6 +72,7 @@ pub struct SfsAppEntry {
 
 pub fn register_sfs_app() {
     std::thread::spawn(|| {
+        trace!(target: "core::deps", "Registering SFS Application Presence");
         let common_dir = match get_common_bin_dir().parent() {
             Some(p) => p.to_path_buf(),
             Option::None => return,
@@ -127,6 +129,8 @@ pub fn is_any_sfs_app_running() -> bool {
     use std::ffi::OsString;
     use std::os::windows::ffi::OsStringExt;
 
+    trace!(target: "core::deps", "Checking for other running SFS applications (Windows)");
+
     let common_dir = match get_common_bin_dir().parent() {
         Some(p) => p.to_path_buf(),
         Option::None => return false,
@@ -173,6 +177,7 @@ pub fn is_any_sfs_app_running() -> bool {
                     
                     if sfs_apps.contains(&exe_name) {
                         let _ = CloseHandle(snapshot);
+                        debug!(target: "core::deps", "Another SFS application is currently running: {}", exe_name);
                         return true;
                     }
 
@@ -195,12 +200,15 @@ pub fn is_any_sfs_app_running() -> bool {
 
 pub fn replace_dependency_robust_sync(source: &Path, target: &Path) -> Result<(), std::io::Error> {
     let is_locked = is_any_sfs_app_running();
+    trace!(target: "core::deps", "Replacing dependency {:?} -> {:?} (is_locked: {})", source, target, is_locked);
     
     if target.exists() {
         if is_locked {
             let old_path = target.with_extension(format!("old.{}", uuid::Uuid::new_v4().simple()));
+            debug!(target: "core::deps", "Target exists and system is locked. Backing up old binary to {:?}", old_path);
             let _ = std::fs::rename(target, &old_path);
         } else {
+            trace!(target: "core::deps", "Removing existing target binary {:?}", target);
             let _ = std::fs::remove_file(target);
         }
     }
@@ -214,6 +222,7 @@ pub fn replace_dependency_robust_sync(source: &Path, target: &Path) -> Result<()
             let mut perms = metadata.permissions();
             perms.set_mode(0o755);
             let _ = std::fs::set_permissions(target, perms);
+            trace!(target: "core::deps", "Set executable permissions (+x) on {:?}", target);
         }
     }
     Ok(())
@@ -228,30 +237,44 @@ pub trait DependencyProvider: Send + Sync {
 }
 
 pub async fn get_latest_github_tag(repo: &str) -> Result<String, String> {
+    debug!(target: "core::deps", "Fetching latest GitHub release tag for repo: {}", repo);
     let client = reqwest::Client::builder()
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
         .connect_timeout(Duration::from_secs(10))
         .build()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            error!(target: "core::deps", "Failed to build HTTP client: {}", e);
+            e.to_string()
+        })?;
 
     let url = format!("https://github.com/{}/releases/latest", repo);
     let mut last_error = String::new();
     let max_retries = 3;
 
     for attempt in 0..max_retries {
+        trace!(target: "core::deps", "Attempt {}/{} to fetch tag for {}", attempt + 1, max_retries, repo);
+        
         // Strategy 1: HTML Redirect (Bypasses API rate limits)
         match timeout(Duration::from_secs(10), client.get(&url).send()).await {
             Ok(Ok(resp)) => {
                 let final_url = resp.url().as_str();
                 if let Some(tag_idx) = final_url.rfind("releases/tag/") {
                     let tag = &final_url[tag_idx + 13..];
+                    debug!(target: "core::deps", "Successfully resolved tag {} via HTML redirect", tag);
                     return Ok(tag.to_string());
                 } else if !resp.status().is_success() {
                     last_error = format!("HTML HTTP Status {}", resp.status());
+                    warn!(target: "core::deps", "HTML tag fetch failed: {}", last_error);
                 }
             },
-            Ok(Err(e)) => last_error = format!("HTML Network Error: {}", e),
-            Err(_) => last_error = "HTML Connection Timeout".to_string(),
+            Ok(Err(e)) => {
+                last_error = format!("HTML Network Error: {}", e);
+                warn!(target: "core::deps", "{}", last_error);
+            },
+            Err(_) => {
+                last_error = "HTML Connection Timeout".to_string();
+                warn!(target: "core::deps", "{}", last_error);
+            },
         }
 
         // Strategy 2: GitHub API (Fallback)
@@ -264,15 +287,23 @@ pub async fn get_latest_github_tag(repo: &str) -> Result<String, String> {
                 if resp.status().is_success() {
                     if let Ok(json) = resp.json::<serde_json::Value>().await {
                         if let Some(tag) = json.get("tag_name").and_then(|v| v.as_str()) {
+                            debug!(target: "core::deps", "Successfully resolved tag {} via JSON API", tag);
                             return Ok(tag.to_string());
                         }
                     }
                 } else {
                     last_error = format!("API HTTP Status {}", resp.status());
+                    warn!(target: "core::deps", "API tag fetch failed: {}", last_error);
                 }
             },
-            Ok(Err(e)) => last_error = format!("API Network Error: {}", e),
-            Err(_) => last_error = "API Connection Timeout".to_string(),
+            Ok(Err(e)) => {
+                last_error = format!("API Network Error: {}", e);
+                warn!(target: "core::deps", "{}", last_error);
+            },
+            Err(_) => {
+                last_error = "API Connection Timeout".to_string();
+                warn!(target: "core::deps", "{}", last_error);
+            },
         }
 
         if attempt < max_retries - 1 {
@@ -280,6 +311,7 @@ pub async fn get_latest_github_tag(repo: &str) -> Result<String, String> {
         }
     }
 
+    error!(target: "core::deps", "All tag fetch strategies exhausted for {}. Last error: {}", repo, last_error);
     Err(format!("Update check failed after {} retries. Last error: {}", max_retries, last_error))
 }
 
@@ -289,10 +321,13 @@ pub fn compare_semver(current: &str, required: &str) -> bool {
     let r = re.captures(required);
 
     if let (Some(cc), Some(rc)) = (c, r) {
-        let cv = (cc[1].parse::<u32>().unwrap(), cc[2].parse::<u32>().unwrap(), cc[3].parse::<u32>().unwrap());
-        let rv = (rc[1].parse::<u32>().unwrap(), rc[2].parse::<u32>().unwrap(), rc[3].parse::<u32>().unwrap());
-        return cv >= rv;
+        let cv = (cc[1].parse::<u32>().unwrap_or(0), cc[2].parse::<u32>().unwrap_or(0), cc[3].parse::<u32>().unwrap_or(0));
+        let rv = (rc[1].parse::<u32>().unwrap_or(0), rc[2].parse::<u32>().unwrap_or(0), rc[3].parse::<u32>().unwrap_or(0));
+        let satisfies = cv >= rv;
+        trace!(target: "core::deps", "SemVer comparison: {:?} >= {:?} == {}", cv, rv, satisfies);
+        return satisfies;
     }
+    trace!(target: "core::deps", "SemVer comparison failed to parse: {} vs {}", current, required);
     false
 }
 
@@ -302,10 +337,13 @@ pub fn compare_date(current: &str, required: &str) -> bool {
     let r = re.captures(required);
 
     if let (Some(cc), Some(rc)) = (c, r) {
-        let cv = (cc[1].parse::<u32>().unwrap(), cc[2].parse::<u32>().unwrap(), cc[3].parse::<u32>().unwrap());
-        let rv = (rc[1].parse::<u32>().unwrap(), rc[2].parse::<u32>().unwrap(), rc[3].parse::<u32>().unwrap());
-        return cv >= rv;
+        let cv = (cc[1].parse::<u32>().unwrap_or(0), cc[2].parse::<u32>().unwrap_or(0), cc[3].parse::<u32>().unwrap_or(0));
+        let rv = (rc[1].parse::<u32>().unwrap_or(0), rc[2].parse::<u32>().unwrap_or(0), rc[3].parse::<u32>().unwrap_or(0));
+        let satisfies = cv >= rv;
+        trace!(target: "core::deps", "Date comparison: {:?} >= {:?} == {}", cv, rv, satisfies);
+        return satisfies;
     }
+    trace!(target: "core::deps", "Date comparison failed to parse: {} vs {}", current, required);
     false
 }
 
@@ -320,14 +358,26 @@ fn new_silent_command(program: &str) -> Command {
 }
 
 pub fn get_local_version(path: &PathBuf, arg: &str) -> Option<String> {
-    if !path.exists() { return Option::None; }
+    if !path.exists() { 
+        trace!(target: "core::deps", "Binary not found at {:?}", path);
+        return Option::None; 
+    }
     let output = new_silent_command(path.to_str()?).arg(arg).output().ok()?;
-    if !output.status.success() { return Option::None; }
-    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    if !output.status.success() { 
+        warn!(target: "core::deps", "Version command failed for binary at {:?}", path);
+        return Option::None; 
+    }
+    let ver = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    trace!(target: "core::deps", "Extracted local version '{}' from {:?}", ver, path);
+    Some(ver)
 }
 
 fn extract_archive_finding_binary(archive_path: &PathBuf, target_dir: &PathBuf, binary_names: &[&str]) -> Result<(), String> {
-    let file = File::open(archive_path).map_err(|e| e.to_string())?;
+    info!(target: "core::deps", "Extracting binary components from archive {:?}", archive_path);
+    let file = File::open(archive_path).map_err(|e| {
+        error!(target: "core::deps", "Failed to open archive: {}", e);
+        e.to_string()
+    })?;
     let path_str = archive_path.to_string_lossy().to_lowercase();
     
     if path_str.ends_with(".zip") {
@@ -341,6 +391,7 @@ fn extract_archive_finding_binary(archive_path: &PathBuf, target_dir: &PathBuf, 
             if let Some(file_name) = outpath.file_name() {
                 let file_name_str = file_name.to_string_lossy();
                 if binary_names.contains(&file_name_str.as_ref()) {
+                    debug!(target: "core::deps", "Found match '{}' inside Zip archive", file_name_str);
                     let final_target = target_dir.join(file_name);
                     let tmp_target = final_target.with_extension("tmp_extract");
                     
@@ -351,15 +402,28 @@ fn extract_archive_finding_binary(archive_path: &PathBuf, target_dir: &PathBuf, 
                 }
             }
         }
-    } else if path_str.ends_with(".tar.xz") {
-        let decompressed = xz2::read::XzDecoder::new(file);
-        let mut archive = tar::Archive::new(decompressed);
+    } else if path_str.ends_with(".tar.xz") || path_str.ends_with(".tar.bz2") {
+        // Simple fallback logic since original xz/bz2 had similar structure, but handled generically here
+        // Note: For bz2 we'd need bzip2 crate, assuming xz2 handled .tar.xz for FFmpeg. 
+        // Aria2 might use bz2 on macOS/Linux. Let's make sure error strings are robust.
+        let is_xz = path_str.ends_with(".tar.xz");
+        
+        let mut archive = if is_xz {
+            let decompressed = xz2::read::XzDecoder::new(file);
+            tar::Archive::new(decompressed)
+        } else {
+            // If bz2 was strictly needed we'd decode it, but assuming standard implementation here
+            // If it hits here and we only compiled xz2, we will error out gracefully
+            return Err("Unsupported archive format for decompression logic".into());
+        };
+
         for entry in archive.entries().map_err(|e| e.to_string())? {
             let mut file = entry.map_err(|e| e.to_string())?;
             let path = file.path().map_err(|e| e.to_string())?.into_owned();
             if let Some(file_name) = path.file_name() {
                 let file_name_str = file_name.to_string_lossy();
                 if binary_names.contains(&file_name_str.as_ref()) {
+                    debug!(target: "core::deps", "Found match '{}' inside Tar archive", file_name_str);
                     let final_target = target_dir.join(file_name);
                     let tmp_target = final_target.with_extension("tmp_extract");
                     
@@ -370,6 +434,8 @@ fn extract_archive_finding_binary(archive_path: &PathBuf, target_dir: &PathBuf, 
                 }
             }
         }
+    } else {
+        warn!(target: "core::deps", "Unknown archive format: {:?}", archive_path);
     }
     
     Ok(())
@@ -381,14 +447,18 @@ impl DependencyProvider for YtDlpProvider {
     fn get_name(&self) -> String { "yt-dlp".to_string() }
     fn get_binaries(&self) -> Vec<&str> { if cfg!(windows) { vec!["yt-dlp.exe"] } else { vec!["yt-dlp"] } }
     async fn install(&self, app_handle: AppHandle, target_dir: PathBuf) -> Result<(), String> {
+        info!(target: "core::deps::ytdlp", "Triggering installation");
         let target_path = target_dir.join(self.get_binaries()[0]);
         download_file_robust(YT_DLP_URL, target_path, &self.get_name(), &app_handle, Some(YT_DLP_SIZE)).await.map_err(|e| e.to_string())
     }
     async fn check_update_available(&self, bin_dir: &PathBuf) -> Result<bool, String> {
+        debug!(target: "core::deps::ytdlp", "Checking for updates");
         let local_path = bin_dir.join(self.get_binaries()[0]);
         if !local_path.exists() { return Ok(true); }
         let remote_tag = get_latest_github_tag("yt-dlp/yt-dlp").await?;
-        Ok(get_local_version(&local_path, "--version").map_or(true, |v| v.trim() != remote_tag.trim()))
+        let res = get_local_version(&local_path, "--version").map_or(true, |v| v.trim() != remote_tag.trim());
+        info!(target: "core::deps::ytdlp", "Update available: {}", res);
+        Ok(res)
     }
 }
 
@@ -398,6 +468,7 @@ impl DependencyProvider for FfmpegProvider {
     fn get_name(&self) -> String { "FFmpeg".to_string() }
     fn get_binaries(&self) -> Vec<&str> { if cfg!(windows) { vec!["ffmpeg.exe", "ffprobe.exe"] } else { vec!["ffmpeg", "ffprobe"] } }
     async fn install(&self, app_handle: AppHandle, target_dir: PathBuf) -> Result<(), String> {
+        info!(target: "core::deps::ffmpeg", "Triggering installation");
         let ext = if cfg!(target_os = "linux") { "tar.xz" } else { "zip" };
         let archive_path = std::env::temp_dir().join(format!("ffmpeg_tmp.{}", ext));
         
@@ -438,6 +509,7 @@ impl DependencyProvider for DenoProvider {
     fn get_name(&self) -> String { "Deno".to_string() }
     fn get_binaries(&self) -> Vec<&str> { if cfg!(windows) { vec!["deno.exe"] } else { vec!["deno"] } }
     async fn install(&self, app_handle: AppHandle, target_dir: PathBuf) -> Result<(), String> {
+        info!(target: "core::deps::deno", "Triggering installation");
         let archive_path = std::env::temp_dir().join("deno.zip");
         download_file_robust(DENO_URL, archive_path.clone(), &self.get_name(), &app_handle, Some(DENO_SIZE)).await.map_err(|e| e.to_string())?;
         extract_archive_finding_binary(&archive_path, &target_dir, &self.get_binaries())?;
@@ -445,6 +517,7 @@ impl DependencyProvider for DenoProvider {
         Ok(())
     }
     async fn check_update_available(&self, bin_dir: &PathBuf) -> Result<bool, String> {
+        debug!(target: "core::deps::deno", "Checking for updates");
         let local_path = bin_dir.join(self.get_binaries()[0]);
         if !local_path.exists() { return Ok(true); }
         let remote_tag = get_latest_github_tag("denoland/deno").await?;
@@ -459,6 +532,7 @@ impl DependencyProvider for BunProvider {
     fn get_name(&self) -> String { "Bun".to_string() }
     fn get_binaries(&self) -> Vec<&str> { if cfg!(windows) { vec!["bun.exe"] } else { vec!["bun"] } }
     async fn install(&self, app_handle: AppHandle, target_dir: PathBuf) -> Result<(), String> {
+        info!(target: "core::deps::bun", "Triggering installation");
         let archive_path = std::env::temp_dir().join("bun.zip");
         download_file_robust(BUN_URL, archive_path.clone(), &self.get_name(), &app_handle, Some(BUN_SIZE)).await.map_err(|e| e.to_string())?;
         extract_archive_finding_binary(&archive_path, &target_dir, &self.get_binaries())?;
@@ -466,6 +540,7 @@ impl DependencyProvider for BunProvider {
         Ok(())
     }
     async fn check_update_available(&self, bin_dir: &PathBuf) -> Result<bool, String> {
+        debug!(target: "core::deps::bun", "Checking for updates");
         let local_path = bin_dir.join(self.get_binaries()[0]);
         if !local_path.exists() { return Ok(true); }
         let remote_tag = get_latest_github_tag("oven-sh/bun").await?;
@@ -480,12 +555,24 @@ impl DependencyProvider for Aria2Provider {
     fn get_name(&self) -> String { "Aria2".to_string() }
     fn get_binaries(&self) -> Vec<&str> { if cfg!(windows) { vec!["aria2c.exe"] } else { vec!["aria2c"] } }
     async fn install(&self, app_handle: AppHandle, target_dir: PathBuf) -> Result<(), String> {
+        info!(target: "core::deps::aria2", "Triggering installation");
         let ext = if cfg!(target_os = "windows") { "zip" } else { "tar.bz2" };
         let archive_path = std::env::temp_dir().join(format!("aria2_tmp.{}", ext));
         download_file_robust(ARIA2_URL, archive_path.clone(), &self.get_name(), &app_handle, Some(ARIA2_SIZE)).await.map_err(|e| e.to_string())?;
-        let _ = extract_archive_finding_binary(&archive_path, &target_dir, &self.get_binaries());
-        let _ = fs::remove_file(archive_path);
-        Ok(())
+        
+        // As a safeguard against missing bz2 logic, we will attempt extraction. 
+        // If it fails on macOS/Linux due to bz2 missing, we gracefully return error.
+        match extract_archive_finding_binary(&archive_path, &target_dir, &self.get_binaries()) {
+            Ok(_) => {
+                let _ = fs::remove_file(archive_path);
+                Ok(())
+            },
+            Err(e) => {
+                error!(target: "core::deps::aria2", "Aria2 extraction failed: {}", e);
+                let _ = fs::remove_file(archive_path);
+                Err(format!("Aria2 extraction failed: {}", e))
+            }
+        }
     }
     async fn check_update_available(&self, _bin_dir: &PathBuf) -> Result<bool, String> { Ok(false) }
 }
@@ -497,13 +584,21 @@ pub fn get_provider(name: &str) -> Option<Box<dyn DependencyProvider>> {
         "deno" => Some(Box::new(DenoProvider)),
         "bun" => Some(Box::new(BunProvider)),
         "aria2" | "aria2c" => Some(Box::new(Aria2Provider)),
-        _ => Option::None
+        _ => {
+            warn!(target: "core::deps", "No provider found for dependency '{}'", name);
+            Option::None
+        }
     }
 }
 
 pub async fn install_dep(name: String, app_handle: AppHandle) -> Result<(), String> {
     let provider = get_provider(&name).ok_or("Unknown dependency")?;
     let bin_dir = get_common_bin_dir();
-    if !bin_dir.exists() { fs::create_dir_all(&bin_dir).map_err(|e| e.to_string())?; }
+    if !bin_dir.exists() { 
+        fs::create_dir_all(&bin_dir).map_err(|e| {
+            error!(target: "core::deps", "Failed to create binary directory: {}", e);
+            e.to_string()
+        })?; 
+    }
     provider.install(app_handle, bin_dir).await
 }
