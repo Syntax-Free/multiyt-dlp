@@ -2,6 +2,9 @@ use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use crate::core::transport::retry::TransportError;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 use regex::Regex;
 use tracing::{debug, error, info, trace};
 
@@ -10,16 +13,18 @@ pub struct AriaEngine {
     target_path: std::path::PathBuf,
     aria_bin: std::path::PathBuf,
     fallback_size: Option<u64>,
+    cancel_flag: Arc<AtomicBool>,
 }
 
 impl AriaEngine {
-    pub fn new(url: &str, target_path: std::path::PathBuf, aria_bin: std::path::PathBuf, fallback_size: Option<u64>) -> Self {
+    pub fn new(url: &str, target_path: std::path::PathBuf, aria_bin: std::path::PathBuf, fallback_size: Option<u64>, cancel_flag: Arc<AtomicBool>) -> Self {
         trace!(target: "core::transport::aria", "Initializing AriaEngine handler for target: {:?}", target_path);
         Self {
             url: url.to_string(),
             target_path,
             aria_bin,
             fallback_size,
+            cancel_flag,
         }
     }
 
@@ -99,35 +104,67 @@ impl AriaEngine {
         // Fallback Regex (Percentage only, if total size is unknown to aria2 initially)
         let re_fallback = Regex::new(r"\((?P<percent>[\d.]+)%\)").unwrap();
 
-        while let Ok(Some(line)) = reader.next_line().await {
-            trace!(target: "core::transport::aria", "Raw line: {}", line);
-            // Try full parsing first
-            if let Some(caps) = re.captures(&line) {
-                let current_str = caps.name("current").map_or("", |m| m.as_str());
-                let total_str = caps.name("total").map_or("", |m| m.as_str());
-                let speed_str = caps.name("speed").map_or("", |m| m.as_str());
+        loop {
+            if self.cancel_flag.load(Ordering::Relaxed) {
+                let _ = child.kill().await;
+                let _ = tokio::fs::remove_file(&tmp_path).await;
+                return Err(TransportError::Cancelled);
+            }
 
-                let current_bytes = Self::parse_aria_size(current_str).unwrap_or(0.0) as u64;
-                let total_bytes = Self::parse_aria_size(total_str).unwrap_or(0.0) as u64;
-                let speed_bytes_sec = Self::parse_aria_size(speed_str).unwrap_or(0.0);
+            let line_fut = reader.next_line();
+            let sleep_fut = tokio::time::sleep(Duration::from_millis(500));
 
-                // If aria2 reports 0 total (start up), use fallback
-                let effective_total = if total_bytes > 0 { total_bytes } else { self.fallback_size.unwrap_or(0) };
+            tokio::select! {
+                line_res = line_fut => {
+                    match line_res {
+                        Ok(Some(line)) => {
+                            trace!(target: "core::transport::aria", "Raw line: {}", line);
+                            // Try full parsing first
+                            if let Some(caps) = re.captures(&line) {
+                                let current_str = caps.name("current").map_or("", |m| m.as_str());
+                                let total_str = caps.name("total").map_or("", |m| m.as_str());
+                                let speed_str = caps.name("speed").map_or("", |m| m.as_str());
 
-                on_progress(current_bytes, effective_total, speed_bytes_sec);
-            } 
-            // Fallback parsing if formatting is different (e.g. unknown size)
-            else if let Some(caps) = re_fallback.captures(&line) {
-                if let Some(p_match) = caps.name("percent") {
-                    if let Ok(p_val) = p_match.as_str().parse::<f64>() {
-                        // We have percentage, but maybe not exact bytes.
-                        // We can estimate bytes if we have a fallback size.
-                        let total = self.fallback_size.unwrap_or(0);
-                        let current = ((p_val / 100.0) * (total as f64)) as u64;
-                        on_progress(current, total, 0.0);
+                                let current_bytes = Self::parse_aria_size(current_str).unwrap_or(0.0) as u64;
+                                let total_bytes = Self::parse_aria_size(total_str).unwrap_or(0.0) as u64;
+                                let speed_bytes_sec = Self::parse_aria_size(speed_str).unwrap_or(0.0);
+
+                                // If aria2 reports 0 total (start up), use fallback
+                                let effective_total = if total_bytes > 0 { total_bytes } else { self.fallback_size.unwrap_or(0) };
+
+                                on_progress(current_bytes, effective_total, speed_bytes_sec);
+                            } 
+                            // Fallback parsing if formatting is different (e.g. unknown size)
+                            else if let Some(caps) = re_fallback.captures(&line) {
+                                if let Some(p_match) = caps.name("percent") {
+                                    if let Ok(p_val) = p_match.as_str().parse::<f64>() {
+                                        // We have percentage, but maybe not exact bytes.
+                                        // We can estimate bytes if we have a fallback size.
+                                        let total = self.fallback_size.unwrap_or(0);
+                                        let current = ((p_val / 100.0) * (total as f64)) as u64;
+                                        on_progress(current, total, 0.0);
+                                    }
+                                }
+                            }
+                        },
+                        Ok(None) => break,
+                        Err(e) => {
+                            error!(target: "core::transport::aria", "Failed reading from aria2 stdout: {}", e);
+                            break;
+                        }
                     }
                 }
+                _ = sleep_fut => {
+                    // Unblock to recheck cancel_flag
+                }
             }
+        }
+
+        // Final cancellation check in case it exited fast right after flag was set
+        if self.cancel_flag.load(Ordering::Relaxed) {
+            let _ = child.kill().await;
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            return Err(TransportError::Cancelled);
         }
 
         let status = child.wait().await.map_err(TransportError::FileSystem)?;

@@ -18,6 +18,9 @@ pub enum TransportError {
 
     #[error("Max retries exceeded")]
     MaxRetriesExceeded,
+
+    #[error("Download cancelled by user")]
+    Cancelled,
 }
 
 pub struct RetryPolicy {

@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use reqwest::{Client, header};
 use tokio::fs::{self, OpenOptions};
 use tokio::io::{AsyncWriteExt, BufWriter}; 
@@ -35,10 +35,11 @@ pub struct TransportEngine {
     concurrency: usize,
     chunk_threshold: u64,
     fallback_size: Option<u64>,
+    cancel_flag: Arc<AtomicBool>,
 }
 
 impl TransportEngine {
-    pub fn new(url: &str, target_path: PathBuf) -> Self {
+    pub fn new(url: &str, target_path: PathBuf, cancel_flag: Arc<AtomicBool>) -> Self {
         trace!(target: "core::transport", "Building HTTP client for Native Transport Engine");
         let client = Client::builder()
             .user_agent("Multiyt-dlp/2.2 (Resumable-Engine)")
@@ -54,6 +55,7 @@ impl TransportEngine {
             concurrency: DEFAULT_CONCURRENCY,
             chunk_threshold: CHUNK_THRESHOLD,
             fallback_size: Option::None,
+            cancel_flag,
         }
     }
 
@@ -159,7 +161,10 @@ impl TransportEngine {
                 Err(e) => {
                     error!(target: "core::transport", "Linear download chunk attempt failed: {}", e);
                     let _ = fs::remove_file(&part_path).await;
+                    
+                    if let TransportError::Cancelled = e { return Err(e); }
                     if let TransportError::HttpStatus(404) = e { return Err(e); }
+                    
                     match retry_policy.next_backoff() {
                         Some(delay) => {
                             warn!(target: "core::transport", "Retrying linear download after delay of {:?}", delay);
@@ -196,28 +201,46 @@ impl TransportEngine {
         
         on_progress(0, total_size.unwrap_or(0), 0.0);
 
-        while let Some(chunk_result) = tokio::time::timeout(IO_TIMEOUT, stream.next()).await.ok() {
-            match chunk_result {
-                Some(Ok(chunk)) => {
-                    let len = chunk.len() as u64;
-                    trace!(target: "core::transport", "Writing {} bytes to linear output buffer", len);
-                    file.write_all(&chunk).await?;
-                    downloaded += len;
-                    bytes_since_update += len;
+        loop {
+            if self.cancel_flag.load(Ordering::Relaxed) {
+                return Err(TransportError::Cancelled);
+            }
 
-                    if last_update.elapsed().as_millis() >= PROGRESS_INTERVAL_MS {
-                         let secs = last_update.elapsed().as_secs_f64();
-                         let speed = if secs > 0.0 { (bytes_since_update as f64) / secs } else { 0.0 };
-                         on_progress(downloaded, total_size.unwrap_or(0), speed);
-                         last_update = Instant::now();
-                         bytes_since_update = 0;
+            let chunk_fut = tokio::time::timeout(IO_TIMEOUT, stream.next());
+            let sleep_fut = tokio::time::sleep(Duration::from_millis(500));
+
+            tokio::select! {
+                chunk_result = chunk_fut => {
+                    match chunk_result {
+                        Ok(Some(Ok(chunk))) => {
+                            let len = chunk.len() as u64;
+                            trace!(target: "core::transport", "Writing {} bytes to linear output buffer", len);
+                            file.write_all(&chunk).await?;
+                            downloaded += len;
+                            bytes_since_update += len;
+
+                            if last_update.elapsed().as_millis() >= PROGRESS_INTERVAL_MS {
+                                 let secs = last_update.elapsed().as_secs_f64();
+                                 let speed = if secs > 0.0 { (bytes_since_update as f64) / secs } else { 0.0 };
+                                 on_progress(downloaded, total_size.unwrap_or(0), speed);
+                                 last_update = Instant::now();
+                                 bytes_since_update = 0;
+                            }
+                        },
+                        Ok(Some(Err(e))) => {
+                            error!(target: "core::transport", "Network stream error during linear read: {}", e);
+                            return Err(TransportError::Network(e))
+                        },
+                        Ok(None) => break,
+                        Err(_) => {
+                            error!(target: "core::transport", "Network stream read timed out");
+                            return Err(TransportError::Validation("Connection timed out".into()));
+                        }
                     }
-                },
-                Some(Err(e)) => {
-                    error!(target: "core::transport", "Network stream error during linear read: {}", e);
-                    return Err(TransportError::Network(e))
-                },
-                Option::None => break,
+                }
+                _ = sleep_fut => {
+                    // Just unblocks to re-check cancel_flag loop condition
+                }
             }
         }
 
@@ -268,6 +291,7 @@ impl TransportEngine {
         let mut tasks = Vec::new();
         let bytes_downloaded_monitor = bytes_downloaded.clone();
         let on_progress_monitor = on_progress.clone();
+        let cancel_flag_monitor = self.cancel_flag.clone();
         
         on_progress(initial_progress, total_size, 0.0);
 
@@ -277,6 +301,8 @@ impl TransportEngine {
             
             loop {
                 tokio::time::sleep(Duration::from_millis(100)).await;
+                if cancel_flag_monitor.load(Ordering::Relaxed) { break; }
+
                 let current = bytes_downloaded_monitor.load(Ordering::Relaxed);
                 
                 let now = Instant::now();
@@ -300,17 +326,20 @@ impl TransportEngine {
             let url = self.url.clone();
             let total_bytes_atomic = bytes_downloaded.clone();
             let part_path = self.target_path.with_extension(format!("part.{}.{}", hash, chunk.index));
+            let cancel_flag_task = self.cancel_flag.clone();
             
             tasks.push(tokio::spawn(async move {
                 let mut retry_policy = RetryPolicy::new(15); // Elevated chunk retries
                 loop {
-                    match Self::download_chunk_resumable(&client, &url, &part_path, &chunk, &total_bytes_atomic).await {
+                    match Self::download_chunk_resumable(&client, &url, &part_path, &chunk, &total_bytes_atomic, &cancel_flag_task).await {
                         Ok(_) => {
                             debug!(target: "core::transport", "Chunk {} completed successfully", chunk.index);
                             return Ok(part_path)
                         },
                         Err(e) => {
                             error!(target: "core::transport", "Chunk {} failed with error: {}", chunk.index, e);
+                            if let TransportError::Cancelled = e { return Err(e); }
+                            
                             match retry_policy.next_backoff() {
                                 Some(delay) => {
                                     warn!(target: "core::transport", "Retrying Chunk {} after delay of {:?}", chunk.index, delay);
@@ -332,12 +361,26 @@ impl TransportEngine {
 
         let mut part_paths = Vec::new();
         let mut failed = false;
+        let mut cancelled = false;
 
         for res in results {
             match res {
                 Ok(Ok(path)) => part_paths.push(path),
+                Ok(Err(TransportError::Cancelled)) => cancelled = true,
                 _ => failed = true,
             }
+        }
+
+        if cancelled || self.cancel_flag.load(Ordering::Relaxed) {
+            error!(target: "core::transport", "Concurrent download aborted due to cancellation");
+            for p in &part_paths {
+                let _ = fs::remove_file(p).await;
+            }
+            for i in 0..self.concurrency {
+                let p = self.target_path.with_extension(format!("part.{}.{}", hash, i));
+                let _ = fs::remove_file(p).await;
+            }
+            return Err(TransportError::Cancelled);
         }
 
         if failed {
@@ -364,7 +407,8 @@ impl TransportEngine {
         url: &str,
         path: &Path,
         chunk: &Chunk,
-        global_bytes: &AtomicU64
+        global_bytes: &AtomicU64,
+        cancel_flag: &AtomicBool
     ) -> Result<(), TransportError> {
         let mut current_len = 0;
         if path.exists() {
@@ -402,22 +446,40 @@ impl TransportEngine {
         let mut downloaded_in_this_session = 0;
         let remaining_for_chunk = chunk.len.saturating_sub(current_len);
 
-        while let Some(chunk_res) = tokio::time::timeout(IO_TIMEOUT, stream.next()).await.ok() {
-            match chunk_res {
-                Some(Ok(bytes)) => {
-                    let len = bytes.len() as u64;
-                    if downloaded_in_this_session + len > remaining_for_chunk {
-                        global_bytes.fetch_sub(downloaded_in_this_session, Ordering::Relaxed);
-                        error!(target: "core::transport", "Chunk {} received out-of-bounds bytes from server", chunk.index);
-                        return Err(TransportError::Validation("Server exceeded requested byte range".into()));
+        loop {
+            if cancel_flag.load(Ordering::Relaxed) {
+                return Err(TransportError::Cancelled);
+            }
+
+            let chunk_fut = tokio::time::timeout(IO_TIMEOUT, stream.next());
+            let sleep_fut = tokio::time::sleep(Duration::from_millis(500));
+
+            tokio::select! {
+                chunk_res = chunk_fut => {
+                    match chunk_res {
+                        Ok(Some(Ok(bytes))) => {
+                            let len = bytes.len() as u64;
+                            if downloaded_in_this_session + len > remaining_for_chunk {
+                                global_bytes.fetch_sub(downloaded_in_this_session, Ordering::Relaxed);
+                                error!(target: "core::transport", "Chunk {} received out-of-bounds bytes from server", chunk.index);
+                                return Err(TransportError::Validation("Server exceeded requested byte range".into()));
+                            }
+                            trace!(target: "core::transport", "Chunk {} writing {} bytes", chunk.index, len);
+                            file.write_all(&bytes).await?;
+                            downloaded_in_this_session += len;
+                            global_bytes.fetch_add(len, Ordering::Relaxed);
+                        },
+                        Ok(Some(Err(e))) => return Err(TransportError::Network(e)),
+                        Ok(None) => break,
+                        Err(_) => {
+                            error!(target: "core::transport", "Chunk stream read timed out");
+                            return Err(TransportError::Validation("Connection timed out".into()));
+                        }
                     }
-                    trace!(target: "core::transport", "Chunk {} writing {} bytes", chunk.index, len);
-                    file.write_all(&bytes).await?;
-                    downloaded_in_this_session += len;
-                    global_bytes.fetch_add(len, Ordering::Relaxed);
-                },
-                Some(Err(e)) => return Err(TransportError::Network(e)),
-                Option::None => break,
+                }
+                _ = sleep_fut => {
+                    // Unblock to recheck cancel_flag
+                }
             }
         }
 

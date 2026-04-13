@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Manager};
 use serde::{Serialize, Deserialize};
 use std::process::Command;
@@ -232,7 +234,7 @@ pub fn replace_dependency_robust_sync(source: &Path, target: &Path) -> Result<()
 pub trait DependencyProvider: Send + Sync {
     fn get_name(&self) -> String;
     fn get_binaries(&self) -> Vec<&str>;
-    async fn install(&self, app_handle: AppHandle, target_dir: PathBuf) -> Result<(), String>;
+    async fn install(&self, app_handle: AppHandle, target_dir: PathBuf, cancel_flag: Arc<AtomicBool>) -> Result<(), String>;
     async fn check_update_available(&self, bin_dir: &PathBuf) -> Result<bool, String>;
 }
 
@@ -254,7 +256,6 @@ pub async fn get_latest_github_tag(repo: &str) -> Result<String, String> {
     for attempt in 0..max_retries {
         trace!(target: "core::deps", "Attempt {}/{} to fetch tag for {}", attempt + 1, max_retries, repo);
         
-        // Strategy 1: HTML Redirect (Bypasses API rate limits)
         match timeout(Duration::from_secs(10), client.get(&url).send()).await {
             Ok(Ok(resp)) => {
                 let final_url = resp.url().as_str();
@@ -277,7 +278,6 @@ pub async fn get_latest_github_tag(repo: &str) -> Result<String, String> {
             },
         }
 
-        // Strategy 2: GitHub API (Fallback)
         let api_url = format!("https://api.github.com/repos/{}/releases/latest", repo);
         match timeout(Duration::from_secs(10), client.get(&api_url)
             .header(reqwest::header::ACCEPT, "application/vnd.github.v3+json")
@@ -403,17 +403,12 @@ fn extract_archive_finding_binary(archive_path: &PathBuf, target_dir: &PathBuf, 
             }
         }
     } else if path_str.ends_with(".tar.xz") || path_str.ends_with(".tar.bz2") {
-        // Simple fallback logic since original xz/bz2 had similar structure, but handled generically here
-        // Note: For bz2 we'd need bzip2 crate, assuming xz2 handled .tar.xz for FFmpeg. 
-        // Aria2 might use bz2 on macOS/Linux. Let's make sure error strings are robust.
         let is_xz = path_str.ends_with(".tar.xz");
         
         let mut archive = if is_xz {
             let decompressed = xz2::read::XzDecoder::new(file);
             tar::Archive::new(decompressed)
         } else {
-            // If bz2 was strictly needed we'd decode it, but assuming standard implementation here
-            // If it hits here and we only compiled xz2, we will error out gracefully
             return Err("Unsupported archive format for decompression logic".into());
         };
 
@@ -446,10 +441,10 @@ pub struct YtDlpProvider;
 impl DependencyProvider for YtDlpProvider {
     fn get_name(&self) -> String { "yt-dlp".to_string() }
     fn get_binaries(&self) -> Vec<&str> { if cfg!(windows) { vec!["yt-dlp.exe"] } else { vec!["yt-dlp"] } }
-    async fn install(&self, app_handle: AppHandle, target_dir: PathBuf) -> Result<(), String> {
+    async fn install(&self, app_handle: AppHandle, target_dir: PathBuf, cancel_flag: Arc<AtomicBool>) -> Result<(), String> {
         info!(target: "core::deps::ytdlp", "Triggering installation");
         let target_path = target_dir.join(self.get_binaries()[0]);
-        download_file_robust(YT_DLP_URL, target_path, &self.get_name(), &app_handle, Some(YT_DLP_SIZE)).await.map_err(|e| e.to_string())
+        download_file_robust(YT_DLP_URL, target_path, &self.get_name(), &app_handle, Some(YT_DLP_SIZE), cancel_flag).await.map_err(|e| e.to_string())
     }
     async fn check_update_available(&self, bin_dir: &PathBuf) -> Result<bool, String> {
         debug!(target: "core::deps::ytdlp", "Checking for updates");
@@ -467,13 +462,14 @@ pub struct FfmpegProvider;
 impl DependencyProvider for FfmpegProvider {
     fn get_name(&self) -> String { "FFmpeg".to_string() }
     fn get_binaries(&self) -> Vec<&str> { if cfg!(windows) { vec!["ffmpeg.exe", "ffprobe.exe"] } else { vec!["ffmpeg", "ffprobe"] } }
-    async fn install(&self, app_handle: AppHandle, target_dir: PathBuf) -> Result<(), String> {
+    async fn install(&self, app_handle: AppHandle, target_dir: PathBuf, cancel_flag: Arc<AtomicBool>) -> Result<(), String> {
         info!(target: "core::deps::ffmpeg", "Triggering installation");
         let ext = if cfg!(target_os = "linux") { "tar.xz" } else { "zip" };
         let archive_path = std::env::temp_dir().join(format!("ffmpeg_tmp.{}", ext));
         
-        download_file_robust(FFMPEG_URL, archive_path.clone(), &self.get_name(), &app_handle, Some(FFMPEG_SIZE)).await.map_err(|e| e.to_string())?;
-        
+        download_file_robust(FFMPEG_URL, archive_path.clone(), &self.get_name(), &app_handle, Some(FFMPEG_SIZE), cancel_flag.clone()).await.map_err(|e| e.to_string())?;
+        if cancel_flag.load(Ordering::Relaxed) { return Err("Cancelled".to_string()); }
+
         let _ = app_handle.emit_all("install-progress", InstallProgressPayload {
             name: self.get_name(),
             percentage: 100,
@@ -485,6 +481,7 @@ impl DependencyProvider for FfmpegProvider {
 
         #[cfg(target_os = "macos")]
         {
+            if cancel_flag.load(Ordering::Relaxed) { return Err("Cancelled".to_string()); }
             let ffprobe_archive = std::env::temp_dir().join("ffprobe_tmp.zip");
             let ffprobe_url = "https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip";
             let _ = app_handle.emit_all("install-progress", InstallProgressPayload {
@@ -492,8 +489,10 @@ impl DependencyProvider for FfmpegProvider {
                 percentage: 50,
                 status: "Downloading FFprobe...".to_string()
             });
-            if download_file_robust(ffprobe_url, ffprobe_archive.clone(), "FFprobe", &app_handle, Option::None).await.is_ok() {
-                let _ = extract_archive_finding_binary(&ffprobe_archive, &target_dir, &self.get_binaries());
+            if download_file_robust(ffprobe_url, ffprobe_archive.clone(), "FFprobe", &app_handle, Option::None, cancel_flag.clone()).await.is_ok() {
+                if !cancel_flag.load(Ordering::Relaxed) {
+                    let _ = extract_archive_finding_binary(&ffprobe_archive, &target_dir, &self.get_binaries());
+                }
                 let _ = fs::remove_file(&ffprobe_archive);
             }
         }
@@ -508,10 +507,11 @@ pub struct DenoProvider;
 impl DependencyProvider for DenoProvider {
     fn get_name(&self) -> String { "Deno".to_string() }
     fn get_binaries(&self) -> Vec<&str> { if cfg!(windows) { vec!["deno.exe"] } else { vec!["deno"] } }
-    async fn install(&self, app_handle: AppHandle, target_dir: PathBuf) -> Result<(), String> {
+    async fn install(&self, app_handle: AppHandle, target_dir: PathBuf, cancel_flag: Arc<AtomicBool>) -> Result<(), String> {
         info!(target: "core::deps::deno", "Triggering installation");
         let archive_path = std::env::temp_dir().join("deno.zip");
-        download_file_robust(DENO_URL, archive_path.clone(), &self.get_name(), &app_handle, Some(DENO_SIZE)).await.map_err(|e| e.to_string())?;
+        download_file_robust(DENO_URL, archive_path.clone(), &self.get_name(), &app_handle, Some(DENO_SIZE), cancel_flag.clone()).await.map_err(|e| e.to_string())?;
+        if cancel_flag.load(Ordering::Relaxed) { return Err("Cancelled".to_string()); }
         extract_archive_finding_binary(&archive_path, &target_dir, &self.get_binaries())?;
         let _ = fs::remove_file(archive_path);
         Ok(())
@@ -531,10 +531,11 @@ pub struct BunProvider;
 impl DependencyProvider for BunProvider {
     fn get_name(&self) -> String { "Bun".to_string() }
     fn get_binaries(&self) -> Vec<&str> { if cfg!(windows) { vec!["bun.exe"] } else { vec!["bun"] } }
-    async fn install(&self, app_handle: AppHandle, target_dir: PathBuf) -> Result<(), String> {
+    async fn install(&self, app_handle: AppHandle, target_dir: PathBuf, cancel_flag: Arc<AtomicBool>) -> Result<(), String> {
         info!(target: "core::deps::bun", "Triggering installation");
         let archive_path = std::env::temp_dir().join("bun.zip");
-        download_file_robust(BUN_URL, archive_path.clone(), &self.get_name(), &app_handle, Some(BUN_SIZE)).await.map_err(|e| e.to_string())?;
+        download_file_robust(BUN_URL, archive_path.clone(), &self.get_name(), &app_handle, Some(BUN_SIZE), cancel_flag.clone()).await.map_err(|e| e.to_string())?;
+        if cancel_flag.load(Ordering::Relaxed) { return Err("Cancelled".to_string()); }
         extract_archive_finding_binary(&archive_path, &target_dir, &self.get_binaries())?;
         let _ = fs::remove_file(archive_path);
         Ok(())
@@ -554,14 +555,13 @@ pub struct Aria2Provider;
 impl DependencyProvider for Aria2Provider {
     fn get_name(&self) -> String { "Aria2".to_string() }
     fn get_binaries(&self) -> Vec<&str> { if cfg!(windows) { vec!["aria2c.exe"] } else { vec!["aria2c"] } }
-    async fn install(&self, app_handle: AppHandle, target_dir: PathBuf) -> Result<(), String> {
+    async fn install(&self, app_handle: AppHandle, target_dir: PathBuf, cancel_flag: Arc<AtomicBool>) -> Result<(), String> {
         info!(target: "core::deps::aria2", "Triggering installation");
         let ext = if cfg!(target_os = "windows") { "zip" } else { "tar.bz2" };
         let archive_path = std::env::temp_dir().join(format!("aria2_tmp.{}", ext));
-        download_file_robust(ARIA2_URL, archive_path.clone(), &self.get_name(), &app_handle, Some(ARIA2_SIZE)).await.map_err(|e| e.to_string())?;
+        download_file_robust(ARIA2_URL, archive_path.clone(), &self.get_name(), &app_handle, Some(ARIA2_SIZE), cancel_flag.clone()).await.map_err(|e| e.to_string())?;
+        if cancel_flag.load(Ordering::Relaxed) { return Err("Cancelled".to_string()); }
         
-        // As a safeguard against missing bz2 logic, we will attempt extraction. 
-        // If it fails on macOS/Linux due to bz2 missing, we gracefully return error.
         match extract_archive_finding_binary(&archive_path, &target_dir, &self.get_binaries()) {
             Ok(_) => {
                 let _ = fs::remove_file(archive_path);
@@ -591,7 +591,7 @@ pub fn get_provider(name: &str) -> Option<Box<dyn DependencyProvider>> {
     }
 }
 
-pub async fn install_dep(name: String, app_handle: AppHandle) -> Result<(), String> {
+pub async fn install_dep(name: String, app_handle: AppHandle, cancel_flag: Arc<AtomicBool>) -> Result<(), String> {
     let provider = get_provider(&name).ok_or("Unknown dependency")?;
     let bin_dir = get_common_bin_dir();
     if !bin_dir.exists() { 
@@ -600,5 +600,5 @@ pub async fn install_dep(name: String, app_handle: AppHandle) -> Result<(), Stri
             e.to_string()
         })?; 
     }
-    provider.install(app_handle, bin_dir).await
+    provider.install(app_handle, bin_dir, cancel_flag).await
 }

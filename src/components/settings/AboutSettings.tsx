@@ -1,14 +1,15 @@
 import { useEffect, useState } from 'react';
 import { getName } from '@tauri-apps/api/app';
 import { listen } from '@tauri-apps/api/event';
-import { checkDependencies, installDependency, openExternalLink } from '@/api/invoke';
+import { checkDependencies, installDependency, cancelDependencyInstall, openExternalLink } from '@/api/invoke';
 import { DependencyInfo } from '@/types';
-import { Copy, Check, Terminal, AlertCircle, Cpu, Download, Loader2, ArrowUpCircle, RefreshCw, Zap, Box, Lock, AlertTriangle } from 'lucide-react';
+import { Copy, Check, Terminal, AlertCircle, Cpu, Download, Loader2, ArrowUpCircle, RefreshCw, Zap, Box, Lock, AlertTriangle, Trash2 } from 'lucide-react';
 import icon from '@/assets/icon.webp';
 import { Button } from '../ui/Button';
 import { Progress } from '../ui/Progress';
 import { useAppContext } from '@/contexts/AppContext';
 import { useDownloadManager } from '@/hooks/useDownloadManager';
+import { twMerge } from 'tailwind-merge';
 
 interface InstallProgress {
     name: string;
@@ -19,13 +20,14 @@ interface InstallProgress {
 interface DependencyRowProps {
     info: DependencyInfo;
     onInstall?: () => void;
+    onCancel?: () => void;
     installingState?: InstallProgress | null;
     label?: string;
     description?: string;
     isQueueBusy: boolean;
 }
 
-const DependencyRow = ({ info, onInstall, installingState, label, description, isQueueBusy }: DependencyRowProps) => {
+const DependencyRow = ({ info, onInstall, onCancel, installingState, label, description, isQueueBusy }: DependencyRowProps) => {
     const [copied, setCopied] = useState(false);
     const [showDelayedText, setShowDelayedText] = useState(false);
     
@@ -97,14 +99,20 @@ const DependencyRow = ({ info, onInstall, installingState, label, description, i
                 {onInstall && (
                     <Button 
                         size="sm" 
-                        variant={isSystemOnly ? "neon" : "outline"}
-                        onClick={onInstall} 
-                        className="h-7 text-[10px] uppercase font-bold tracking-wider"
-                        disabled={!!installingState || isQueueBusy}
-                        title={isQueueBusy ? "Modifications locked during active downloads" : ""}
+                        variant={isUpdatingThis ? "ghost" : isSystemOnly ? "neon" : "outline"}
+                        onClick={isUpdatingThis ? onCancel : onInstall} 
+                        className={twMerge(
+                            "h-7 text-[10px] uppercase font-bold tracking-wider relative group/btn",
+                            isUpdatingThis ? "w-8 px-0 border-transparent hover:border-theme-red/50 hover:bg-theme-red/10" : ""
+                        )}
+                        disabled={(!!installingState && !isUpdatingThis) || isQueueBusy}
+                        title={isUpdatingThis ? "Cancel Update" : isQueueBusy ? "Modifications locked during active downloads" : ""}
                     >
                         {isUpdatingThis ? (
-                            <Loader2 className="h-3 w-3 animate-spin" />
+                            <>
+                                <Loader2 className="h-3.5 w-3.5 animate-spin text-theme-cyan group-hover/btn:opacity-0 transition-opacity absolute" />
+                                <Trash2 className="h-3.5 w-3.5 text-theme-red opacity-0 group-hover/btn:opacity-100 transition-opacity absolute" />
+                            </>
                         ) : isSystemOnly ? (
                             <>
                                 <Box className="h-3 w-3 mr-1" /> 
@@ -223,7 +231,11 @@ export function AboutSettings() {
         fetchData();
 
         const unlisten = listen<InstallProgress>('install-progress', (event) => {
-            setActiveInstall(event.payload);
+            if (!event.payload.name) {
+                setActiveInstall(null);
+            } else {
+                setActiveInstall(event.payload);
+            }
         });
 
         return () => {
@@ -241,9 +253,22 @@ export function AboutSettings() {
             await installDependency(name);
             await fetchData();
         } catch (e) {
-            console.error(`Installation failed: ${e}`);
+            if (String(e).toLowerCase().includes('cancel')) {
+                console.log(`Update for ${name} was successfully cancelled.`);
+            } else {
+                console.error(`Installation failed: ${e}`);
+            }
         } finally {
             setActiveInstall(null);
+        }
+    };
+
+    const handleCancelInstall = async (name: string) => {
+        setActiveInstall(null); // Optimistically remove the loader
+        try {
+            await cancelDependencyInstall(name);
+        } catch (e) {
+            console.error("Failed to send cancellation signal", e);
         }
     };
 
@@ -342,6 +367,7 @@ export function AboutSettings() {
                         <DependencyRow 
                             info={deps.yt_dlp} 
                             onInstall={() => handleInstall('yt-dlp')}
+                            onCancel={() => handleCancelInstall('yt-dlp')}
                             installingState={activeInstall}
                             label="yt-dlp"
                             isQueueBusy={isQueueBusy}
@@ -351,6 +377,7 @@ export function AboutSettings() {
                         <DependencyRow 
                             info={deps.ffmpeg} 
                             onInstall={() => handleInstall('ffmpeg')}
+                            onCancel={() => handleCancelInstall('ffmpeg')}
                             installingState={activeInstall}
                             label="FFmpeg"
                             isQueueBusy={isQueueBusy}
@@ -360,6 +387,7 @@ export function AboutSettings() {
                         <DependencyRow 
                             info={deps.aria2} 
                             onInstall={() => handleInstall('aria2')}
+                            onCancel={() => handleCancelInstall('aria2')}
                             installingState={activeInstall}
                             label="Aria2c (Accelerator)"
                             description="Optional high-speed downloader. Improves update speed for dependencies by using multiple concurrent connections."
@@ -374,6 +402,11 @@ export function AboutSettings() {
                                  // Force Deno if Node is detected for localization, as we don't provider Node installers
                                  if (name.includes('node') || !name) handleInstall('deno');
                                  else handleInstall(name);
+                            }}
+                            onCancel={() => {
+                                 const name = deps.js_runtime?.name?.toLowerCase() || '';
+                                 if (name.includes('node') || !name) handleCancelInstall('deno');
+                                 else handleCancelInstall(name);
                             }}
                             installingState={activeInstall}
                             label={`JS Runtime (${deps.js_runtime.name})`}

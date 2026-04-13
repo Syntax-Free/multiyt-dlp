@@ -179,6 +179,7 @@ fn main() {
             commands::system::check_ytdlp_update,
             commands::system::check_dependencies,
             commands::system::install_dependency,
+            commands::system::cancel_dependency_install,
             commands::system::sync_dependencies,
             commands::system::open_external_link,
             commands::system::close_splash,

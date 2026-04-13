@@ -26,6 +26,10 @@ export async function installDependency(name: string): Promise<void> {
     return await invoke("install_dependency", { name });
 }
 
+export async function cancelDependencyInstall(name: string): Promise<void> {
+    return await invoke("cancel_dependency_install", { name });
+}
+
 export async function syncDependencies(): Promise<AppDependencies> {
     // Legacy mapping for compatibility
     return await invoke("sync_dependencies");

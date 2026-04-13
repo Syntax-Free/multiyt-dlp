@@ -8,10 +8,13 @@ use tracing::{info, warn, error, debug, trace};
 use tokio::time::{timeout, Duration};
 use once_cell::sync::Lazy;
 use std::sync::Mutex;
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
-// GLOBAL LOCK to prevent concurrent dependency installs
+// GLOBAL LOCKS to prevent concurrent dependency installs and handle cancellation
 static INSTALL_LOCKS: Lazy<Mutex<HashSet<String>>> = Lazy::new(|| Mutex::new(HashSet::new()));
+static CANCEL_FLAGS: Lazy<Mutex<HashMap<String, Arc<AtomicBool>>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
 #[derive(Serialize, Clone, Debug)]
 pub struct DependencyInfo {
@@ -298,6 +301,9 @@ pub async fn check_dependencies(app_handle: AppHandle) -> AppDependencies {
 #[tauri::command]
 pub async fn install_dependency(app_handle: AppHandle, name: String) -> Result<(), String> {
     info!(target: "commands::system", "Dependency installation requested: {}", name);
+    
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+
     {
         let mut locks = INSTALL_LOCKS.lock().unwrap();
         if locks.contains(&name) {
@@ -305,22 +311,41 @@ pub async fn install_dependency(app_handle: AppHandle, name: String) -> Result<(
             return Err(format!("Installation of {} is already in progress", name));
         }
         locks.insert(name.clone());
+        CANCEL_FLAGS.lock().unwrap().insert(name.clone(), cancel_flag.clone());
     }
 
-    let result = deps::install_dep(name.clone(), app_handle).await;
+    let result = deps::install_dep(name.clone(), app_handle.clone(), cancel_flag).await;
 
     {
-        let mut locks = INSTALL_LOCKS.lock().unwrap();
-        locks.remove(&name);
+        INSTALL_LOCKS.lock().unwrap().remove(&name);
+        CANCEL_FLAGS.lock().unwrap().remove(&name);
     }
     
     if let Err(ref e) = result {
-        error!(target: "commands::system", "Installation of {} failed: {}", name, e);
+        if e.contains("Cancelled") || e.contains("cancelled") {
+            info!(target: "commands::system", "Installation of {} was successfully cancelled", name);
+            let _ = app_handle.emit_all("install-progress", deps::InstallProgressPayload {
+                name: String::new(),
+                percentage: 0,
+                status: String::new(),
+            });
+        } else {
+            error!(target: "commands::system", "Installation of {} failed: {}", name, e);
+        }
     } else {
         info!(target: "commands::system", "Installation of {} succeeded", name);
     }
     
     result
+}
+
+#[tauri::command]
+pub async fn cancel_dependency_install(name: String) -> Result<(), String> {
+    if let Some(flag) = CANCEL_FLAGS.lock().unwrap().get(&name) {
+        info!(target: "commands::system", "Cancellation signal dispatched for dependency: {}", name);
+        flag.store(true, Ordering::Relaxed);
+    }
+    Ok(())
 }
 
 #[tauri::command]

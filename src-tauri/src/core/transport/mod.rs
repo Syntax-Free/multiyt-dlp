@@ -4,7 +4,7 @@ pub mod aria;
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tauri::{AppHandle, Manager};
 use self::engine::TransportEngine;
 use self::aria::AriaEngine;
@@ -24,7 +24,8 @@ pub async fn download_file_robust(
     destination: PathBuf,
     name: &str,
     app_handle: &AppHandle,
-    fallback_size: Option<u64>
+    fallback_size: Option<u64>,
+    cancel_flag: Arc<AtomicBool>
 ) -> Result<(), TransportError> {
     
     let name_arc = Arc::new(name.to_string());
@@ -46,8 +47,13 @@ pub async fn download_file_robust(
 
     // Shared state for the progress closure
     let last_percentage = Arc::new(AtomicU64::new(0));
+    let cancel_flag_clone = cancel_flag.clone();
     
     let callback = move |downloaded: u64, total: u64, speed: f64| {
+        if cancel_flag_clone.load(Ordering::Relaxed) {
+            return;
+        }
+
         let effective_total = if total == 0 { fallback_size.unwrap_or(0) } else { total };
         let percentage = if effective_total > 0 { (downloaded * 100) / effective_total } else { 0 };
         let previous = last_percentage.load(Ordering::Relaxed);
@@ -74,7 +80,7 @@ pub async fn download_file_robust(
 
     if aria_exists {
         info!(target: "core::transport", "Attempting Aria2 robust download: {}", name);
-        let engine = AriaEngine::new(url, destination.clone(), aria_path, fallback_size);
+        let engine = AriaEngine::new(url, destination.clone(), aria_path, fallback_size, cancel_flag.clone());
         
         match engine.execute(callback.clone()).await {
             Ok(_) => {
@@ -82,12 +88,19 @@ pub async fn download_file_robust(
                 return Ok(())
             },
             Err(e) => {
+                if matches!(e, TransportError::Cancelled) {
+                    return Err(e);
+                }
                 warn!(target: "core::transport", "Aria2 failed, falling back to internal engine: {}", e);
-                let _ = std::fs::remove_file(&destination);
+                let _ = tokio::fs::remove_file(&destination).await;
                 let aria_tmp = format!("{}.aria2", destination.display());
-                let _ = std::fs::remove_file(std::path::Path::new(&aria_tmp));
+                let _ = tokio::fs::remove_file(std::path::Path::new(&aria_tmp)).await;
             }
         }
+    }
+
+    if cancel_flag.load(Ordering::Relaxed) {
+        return Err(TransportError::Cancelled);
     }
 
     info!(target: "core::transport", "Using native internal engine to download: {}", name);
@@ -98,7 +111,7 @@ pub async fn download_file_robust(
     });
 
     let dummy_callback = |_: u64, _: u64, _: f64| {};
-    let mut engine = TransportEngine::new(url, destination);
+    let mut engine = TransportEngine::new(url, destination, cancel_flag.clone());
     if let Some(s) = fallback_size {
         engine = engine.with_fallback_size(s);
     }
