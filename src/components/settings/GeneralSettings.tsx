@@ -1,6 +1,7 @@
 import { useAppContext } from '@/contexts/AppContext';
 import { AlertCircle, Trash2, FileText, Check, Save, X, Loader2, Database, AlertTriangle, Search, ChevronDown, Rocket, Layers, FolderOpen } from 'lucide-react';
 import { Button } from '../ui/Button';
+import { Tooltip } from '../ui/Tooltip';
 import { clearDownloadHistory, getDownloadHistory, saveDownloadHistory, openLogFolder } from '@/api/invoke';
 import { useState, useRef, useEffect } from 'react';
 import { twMerge } from 'tailwind-merge';
@@ -32,7 +33,7 @@ export function GeneralSettings() {
     // Search State
     const [isSearchOpen, setIsSearchOpen] = useState(false);
     const [searchTerm, setSearchTerm] = useState('');
-    const [lastMatchIndex, setLastMatchIndex] = useState(-1);
+    const[lastMatchIndex, setLastMatchIndex] = useState(-1);
     const searchInputRef = useRef<HTMLInputElement>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -244,10 +245,8 @@ export function GeneralSettings() {
                 <div>
                     <h3 className="text-base font-medium text-zinc-100 flex items-center gap-2">
                         Execution Strategy
+                        <Tooltip content="Select how the engine processes your download queue." />
                     </h3>
-                    <p className="text-sm text-zinc-500">
-                        Select how the engine processes your download queue.
-                    </p>
                 </div>
                 <hr className="border-zinc-800" />
 
@@ -266,7 +265,9 @@ export function GeneralSettings() {
                         >
                             <Layers className={twMerge("h-5 w-5", !useConcurrentFragments && "text-theme-cyan")} />
                             <div className="text-left">
-                                <div className="text-sm font-bold">Fleet Mode</div>
+                                <div className="text-sm font-bold flex items-center gap-1.5">
+                                    Fleet Mode
+                                </div>
                                 <div className="text-[10px] opacity-70">Parallel Files</div>
                             </div>
                         </button>
@@ -282,7 +283,9 @@ export function GeneralSettings() {
                         >
                             <Rocket className={twMerge("h-5 w-5", useConcurrentFragments && "text-amber-500")} />
                             <div className="text-left">
-                                <div className="text-sm font-bold">Blitz Mode</div>
+                                <div className="text-sm font-bold flex items-center gap-1.5">
+                                    Blitz Mode
+                                </div>
                                 <div className="text-[10px] opacity-70">Single File Turbo</div>
                             </div>
                         </button>
@@ -295,7 +298,10 @@ export function GeneralSettings() {
                             <div className="space-y-6">
                                 <div className="space-y-4">
                                     <div className="flex justify-between items-center">
-                                        <label className="text-sm font-medium text-zinc-300">Active Downloads</label>
+                                        <label className="text-sm font-medium text-zinc-300 flex items-center gap-2">
+                                            Active Downloads
+                                            <Tooltip content="Maximum number of files downloading from the internet simultaneously." />
+                                        </label>
                                         <span className="text-theme-cyan font-mono font-bold bg-theme-cyan/10 px-2 py-1 rounded border border-theme-cyan/20">
                                             {maxConcurrentDownloads}
                                         </span>
@@ -308,14 +314,14 @@ export function GeneralSettings() {
                                         onChange={(e) => handleChangeConcurrency('max_concurrent_downloads', parseInt(e.target.value))}
                                         className="w-full h-2 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-theme-cyan hover:accent-theme-cyan/80 transition-all"
                                     />
-                                    <p className="text-xs text-zinc-500">
-                                        Maximum number of files downloading from the internet simultaneously.
-                                    </p>
                                 </div>
 
                                 <div className="space-y-4">
                                     <div className="flex justify-between items-center">
-                                        <label className="text-sm font-medium text-zinc-300">Total Concurrent Instances</label>
+                                        <label className="text-sm font-medium text-zinc-300 flex items-center gap-2">
+                                            Total Concurrent Instances
+                                            <Tooltip content="Includes active downloads AND videos that are currently merging/processing." />
+                                        </label>
                                         <span className={`font-mono font-bold px-2 py-1 rounded border ${maxTotalInstances > 10 ? 'text-theme-red bg-theme-red/10 border-theme-red/20' : 'text-theme-cyan bg-theme-cyan/10 border-theme-cyan/20'}`}>
                                             {maxTotalInstances}
                                         </span>
@@ -336,10 +342,6 @@ export function GeneralSettings() {
                                             <span>High resource usage warning: Running more than 10 concurrent instances may cause system instability.</span>
                                         </div>
                                     )}
-
-                                    <p className="text-xs text-zinc-500">
-                                        Includes active downloads AND videos that are currently merging/processing.
-                                    </p>
                                 </div>
                             </div>
                         ) : (
@@ -348,7 +350,10 @@ export function GeneralSettings() {
 
                                 <div className="space-y-4">
                                     <div className="flex justify-between items-center">
-                                        <label className="text-sm font-medium text-zinc-300">Concurrent Fragments</label>
+                                        <label className="text-sm font-medium text-zinc-300 flex items-center gap-2">
+                                            Concurrent Fragments
+                                            <Tooltip content={<>Number of parallel threads for the active download (passed as <code>-N</code>). Higher values utilize more bandwidth but may trigger server throttling.</>} />
+                                        </label>
                                         <span className="text-amber-500 font-mono font-bold bg-amber-500/10 px-2 py-1 rounded border border-amber-500/20">
                                             {concurrentFragments}
                                         </span>
@@ -361,9 +366,6 @@ export function GeneralSettings() {
                                         onChange={(e) => setFragmentSettings(true, parseInt(e.target.value))}
                                         className="w-full h-2 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-amber-500 hover:accent-amber-500/80 transition-all"
                                     />
-                                    <p className="text-xs text-zinc-500">
-                                        Number of parallel threads for the active download (passed as <code>-N</code>). Higher values utilize more bandwidth but may trigger server throttling.
-                                    </p>
                                 </div>
                             </div>
                         )}
@@ -374,10 +376,10 @@ export function GeneralSettings() {
             {/* History Management Section */}
             <div id="section-history" className="space-y-4 scroll-mt-6">
                 <div>
-                    <h3 className="text-base font-medium text-zinc-100">Download History</h3>
-                    <p className="text-sm text-zinc-500">
-                        Manage the database of previously downloaded URLs to prevent duplicates.
-                    </p>
+                    <h3 className="text-base font-medium text-zinc-100 flex items-center gap-2">
+                        Download History
+                        <Tooltip content="Manage the database of previously downloaded URLs to prevent duplicates." />
+                    </h3>
                 </div>
                 <hr className="border-zinc-800" />
 
@@ -386,9 +388,9 @@ export function GeneralSettings() {
                         <div className="p-2.5 bg-zinc-800 rounded-md text-zinc-400">
                             <Database className="h-5 w-5" />
                         </div>
-                        <div>
+                        <div className="flex items-center gap-2">
                             <div className="text-sm font-medium text-zinc-200">Archive File</div>
-                            <div className="text-xs text-zinc-500">Tracks downloaded URLs</div>
+                            <Tooltip content="Tracks downloaded URLs" />
                         </div>
                     </div>
 
@@ -411,27 +413,25 @@ export function GeneralSettings() {
             {/* Debugging Section */}
             <div id="section-logging" className="space-y-4 scroll-mt-6">
                 <div>
-                    <h3 className="text-base font-medium text-zinc-100">Application Logging</h3>
-                    <p className="text-sm text-zinc-500">
-                        Configure system verbosity for troubleshooting. Logs are saved to{' '}
+                    <h3 className="text-base font-medium text-zinc-100 flex items-center gap-2">
+                        Application Logging
+                        <Tooltip content={<>Configure system verbosity for troubleshooting. Logs are saved to <code>.multiyt-dlp/logs</code></>} />
                         <span 
-                            className="group/logs relative inline-flex items-center gap-1 cursor-pointer"
+                            className="group/logs relative inline-flex items-center gap-1 cursor-pointer ml-1"
                             onClick={() => openLogFolder()}
+                            title="Open Logs Folder"
                         >
-                            <code className="bg-zinc-950 px-1 rounded border border-zinc-800 transition-colors group-hover/logs:text-theme-cyan group-hover/logs:border-theme-cyan/50">
-                                .multiyt-dlp/logs
-                            </code>
-                            <FolderOpen className="w-3.5 h-3.5 text-theme-cyan opacity-0 -translate-x-2 group-hover/logs:opacity-100 group-hover/logs:translate-x-0 transition-all duration-200" />
+                            <FolderOpen className="w-4 h-4 text-zinc-500 group-hover/logs:text-theme-cyan transition-colors" />
                         </span>
-                    </p>
+                    </h3>
                 </div>
                 <hr className="border-zinc-800" />
                 <div className="bg-zinc-900/30 p-5 rounded-lg border border-zinc-800/50 space-y-4">
-                    <div className="flex items-start justify-between gap-4">
-                        <div className="space-y-1">
-                            <label className="text-sm font-medium text-zinc-300">Log Verbosity</label>
-                            <div className="text-xs text-zinc-500 max-w-xs">Controls how much detail is written to the log files.</div>
-                        </div>
+                    <div className="flex items-center justify-between gap-4">
+                        <label className="text-sm font-medium text-zinc-300 flex items-center gap-2">
+                            Log Verbosity
+                            <Tooltip content="Controls how much detail is written to the log files." />
+                        </label>
                         <select value={logLevel} onChange={(e) => setLogLevel(e.target.value)} className="bg-zinc-900 border border-zinc-800 rounded-md px-3 py-1.5 text-sm text-zinc-200 focus:outline-none focus:border-theme-cyan/50 focus:ring-1 focus:ring-theme-cyan/50 transition-all">
                             <option value="off">Off</option>
                             <option value="error">Error</option>

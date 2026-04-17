@@ -2,9 +2,10 @@ import { useAppContext } from '@/contexts/AppContext';
 import { FileKey, FolderOpen, Lock, ListChecks, X } from 'lucide-react';
 import { open } from '@tauri-apps/api/dialog';
 import { Button } from '../ui/Button';
+import { Tooltip } from '../ui/Tooltip';
 import { TemplateEditor } from './TemplateEditor';
 
-const BROWSERS = [
+const BROWSERS =[
     { label: 'None', value: 'none' },
     { label: 'Chrome', value: 'chrome' },
     { label: 'Firefox', value: 'firefox' },
@@ -31,7 +32,7 @@ export function YtdlpSettings() {
         try {
             const selected = await open({
                 multiple: false,
-                filters: [{ name: 'Text Files', extensions: ['txt'] }]
+                filters:[{ name: 'Text Files', extensions: ['txt'] }]
             });
             if (selected && typeof selected === 'string') {
                 setCookiesPath(selected);
@@ -47,10 +48,10 @@ export function YtdlpSettings() {
             {/* Playlist Behavior */}
             <div id="section-playlist" className="space-y-4 scroll-mt-6">
                  <div>
-                    <h3 className="text-base font-medium text-zinc-100">Playlist Behavior</h3>
-                    <p className="text-sm text-zinc-500">
-                        Configure how the app handles links containing multiple videos.
-                    </p>
+                    <h3 className="text-base font-medium text-zinc-100 flex items-center gap-2">
+                        Playlist Behavior
+                        <Tooltip content="Configure how the app handles links containing multiple videos." />
+                    </h3>
                 </div>
                 <hr className="border-zinc-800" />
 
@@ -63,9 +64,11 @@ export function YtdlpSettings() {
                             <div className={`p-2 rounded-md transition-colors ${preferences.enable_playlist_selection ? 'bg-theme-cyan/10 text-theme-cyan' : 'bg-zinc-800 text-zinc-500'}`}>
                                 <ListChecks className="h-5 w-5" />
                             </div>
-                            <div className="text-left">
-                                <div className="text-sm font-medium text-zinc-200 group-hover:text-white transition-colors">Manual Playlist Selection</div>
-                                <div className="text-xs text-zinc-500">Show a selection screen for playlists and channels.</div>
+                            <div className="text-left flex items-center gap-2">
+                                <div className="text-sm font-medium text-zinc-200 group-hover:text-white transition-colors">
+                                    Manual Playlist Selection
+                                </div>
+                                <Tooltip content="Show a selection screen for playlists and channels." />
                             </div>
                         </div>
                         <div className={`w-10 h-5 rounded-full relative transition-colors ${preferences.enable_playlist_selection ? 'bg-theme-cyan' : 'bg-zinc-700'}`}>
@@ -78,10 +81,10 @@ export function YtdlpSettings() {
             {/* Filename Formatting */}
             <div id="section-formatting" className="space-y-4 scroll-mt-6">
                  <div>
-                    <h3 className="text-base font-medium text-zinc-100">Filename Formatting</h3>
-                    <p className="text-sm text-zinc-500">
-                        Drag and drop blocks to customize how your downloaded files are named.
-                    </p>
+                    <h3 className="text-base font-medium text-zinc-100 flex items-center gap-2">
+                        Filename Formatting
+                        <Tooltip content="Drag and drop blocks to customize how your downloaded files are named." />
+                    </h3>
                 </div>
                 <hr className="border-zinc-800" />
                 
@@ -94,10 +97,10 @@ export function YtdlpSettings() {
             {/* Cookies & Auth Section */}
             <div id="section-cookies" className="space-y-4 scroll-mt-6">
                 <div>
-                    <h3 className="text-base font-medium text-zinc-100">Cookies & Authentication</h3>
-                    <p className="text-sm text-zinc-500">
-                        Load cookies to access age-restricted content or premium subscriptions.
-                    </p>
+                    <h3 className="text-base font-medium text-zinc-100 flex items-center gap-2">
+                        Cookies & Authentication
+                        <Tooltip content="Load cookies to access age-restricted content or premium subscriptions." />
+                    </h3>
                 </div>
                 <hr className="border-zinc-800" />
                 
@@ -108,6 +111,7 @@ export function YtdlpSettings() {
                             <label className="text-sm font-medium text-zinc-300 flex items-center gap-2">
                                 <FileKey className="h-4 w-4 text-theme-cyan" />
                                 Load from File (cookies.txt)
+                                <Tooltip content="Select a cookies.txt file exported from your browser." />
                             </label>
                             {cookiesPath && (
                                 <button onClick={() => setCookiesPath(null)} className="text-xs text-red-400 hover:text-red-300 flex items-center gap-1 transition-colors">
@@ -145,6 +149,7 @@ export function YtdlpSettings() {
                          <label className="text-sm font-medium text-zinc-300 flex items-center gap-2">
                             <Lock className="h-4 w-4 text-amber-500" />
                             Extract from Browser
+                            <Tooltip content={<>Uses <code>--cookies-from-browser</code>. Ensure the browser is closed before starting downloads if you experience issues.</>} />
                          </label>
                          <select 
                              value={cookiesBrowser || 'none'}
@@ -155,9 +160,6 @@ export function YtdlpSettings() {
                                  <option key={b.value} value={b.value}>{b.label}</option>
                              ))}
                          </select>
-                         <p className="text-xs text-zinc-500">
-                            Uses <code>--cookies-from-browser</code>. Ensure the browser is closed before starting downloads if you experience issues.
-                         </p>
                     </div>
                 </div>
             </div>

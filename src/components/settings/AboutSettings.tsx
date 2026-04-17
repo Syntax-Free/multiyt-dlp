@@ -7,6 +7,7 @@ import { Copy, Check, Terminal, AlertCircle, Cpu, Download, Loader2, ArrowUpCirc
 import icon from '@/assets/icon.webp';
 import { Button } from '../ui/Button';
 import { Progress } from '../ui/Progress';
+import { Tooltip } from '../ui/Tooltip';
 import { useAppContext } from '@/contexts/AppContext';
 import { useDownloadManager } from '@/hooks/useDownloadManager';
 import { twMerge } from 'tailwind-merge';
@@ -76,10 +77,11 @@ const DependencyRow = ({ info, onInstall, onCancel, installingState, label, desc
                         {label?.includes('Aria2') ? <Zap className="h-4 w-4 text-theme-cyan" /> : <Terminal className="h-4 w-4" />}
                     </div>
                     <div>
-                        <div className="font-semibold text-zinc-200 text-sm">
+                        <div className="font-semibold text-zinc-200 text-sm flex items-center gap-2">
                             {label || info.name}
+                            {description && <Tooltip content={description} />}
                             {isSystemOnly && (
-                                <span className="ml-2 text-[9px] bg-zinc-800 text-zinc-500 px-1.5 py-0.5 rounded border border-zinc-700 uppercase">System Path</span>
+                                <span className="text-[9px] bg-zinc-800 text-zinc-500 px-1.5 py-0.5 rounded border border-zinc-700 uppercase">System Path</span>
                             )}
                         </div>
                         {isAvailable ? (
@@ -140,13 +142,6 @@ const DependencyRow = ({ info, onInstall, onCancel, installingState, label, desc
                 </div>
             )}
 
-            {/* Description for Optional/Indeterminate Deps */}
-            {description && !isAvailable && !isUpdatingThis && (
-                <div className="text-[10px] text-zinc-500 leading-relaxed bg-zinc-950/50 p-2 rounded border border-zinc-800/50">
-                    {description}
-                </div>
-            )}
-
             {/* Installation Progress Bar / Spinner */}
             {isUpdatingThis && (
                 <div className="space-y-1.5 animate-fade-in">
@@ -201,10 +196,10 @@ const DependencyRow = ({ info, onInstall, onCancel, installingState, label, desc
 
 export function AboutSettings() {
     const [appName, setAppName] = useState("Loading...");
-    const [deps, setDeps] = useState<{ yt_dlp?: DependencyInfo, ffmpeg?: DependencyInfo, js_runtime?: DependencyInfo, aria2?: DependencyInfo }>({});
+    const[deps, setDeps] = useState<{ yt_dlp?: DependencyInfo, ffmpeg?: DependencyInfo, js_runtime?: DependencyInfo, aria2?: DependencyInfo }>({});
     const [loading, setLoading] = useState(true);
     const [activeInstall, setActiveInstall] = useState<InstallProgress | null>(null);
-    const [checkingUpdate, setCheckingUpdate] = useState(false);
+    const[checkingUpdate, setCheckingUpdate] = useState(false);
 
     const { currentVersion, latestVersion, isUpdateAvailable, checkAppUpdate } = useAppContext();
     const { downloads } = useDownloadManager();
@@ -241,7 +236,7 @@ export function AboutSettings() {
         return () => {
             unlisten.then(f => f());
         };
-    }, []);
+    },[]);
 
     const handleInstall = async (name: string) => {
         if (activeInstall || isQueueBusy) return;
