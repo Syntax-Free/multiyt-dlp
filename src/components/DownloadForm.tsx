@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Button } from './ui/Button';
 import { Card, CardContent } from './ui/Card';
 import { Download, FolderOpen, Link2, MonitorPlay, Headphones, FileText, Image as ImageIcon, AlertTriangle, Loader2, ChevronDown, Radio, ClipboardPaste } from 'lucide-react';
@@ -105,7 +105,7 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
   const dropdownRef = useRef<HTMLDivElement>(null);
   const [errorDetails, setErrorDetails] = useState<{ message: string, stderr?: string } | null>(null);
 
-  // Auto-Paste Logic
+  // Auto-Paste & Auto-Download Logic
   const [autoPaste, setAutoPaste] = useState(false);
   const lastClipboardText = useRef<string>('');
 
@@ -124,32 +124,7 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [dropdownRef]);
 
-  // Clipboard Listener Effect
-  useEffect(() => {
-    let interval: ReturnType<typeof setInterval>;
-    if (autoPaste) {
-      interval = setInterval(async () => {
-        try {
-          const text = await readText();
-          if (text && text !== lastClipboardText.current) {
-            lastClipboardText.current = text;
-            const trimmed = text.trim();
-            if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
-              setUrl(trimmed);
-              setErrorDetails(null);
-            }
-          }
-        } catch (err) {
-          console.error("Clipboard access failed", err);
-        }
-      }, 1000);
-    } else {
-        lastClipboardText.current = '';
-    }
-    return () => clearInterval(interval);
-  }, [autoPaste]);
-
-  const triggerDownload = async (targetUrl: string, force: boolean = false, whitelist?: string[]) => {
+  const triggerDownload = useCallback(async (targetUrl: string, force: boolean = false, whitelist?: string[]) => {
       setIsProcessing(true);
       try {
           const template = getTemplateString();
@@ -186,45 +161,82 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
       } finally {
           setIsProcessing(false);
       }
-  };
+  }, [onDownload, defaultDownloadPath, preferences, getTemplateString, setSkipNotice]);
+
+  const processUrl = useCallback(async (targetUrl: string, force: boolean = false) => {
+      const isYoutube = targetUrl.includes('youtube.com') || targetUrl.includes('youtu.be');
+      if (isYoutube && isJsRuntimeMissing) {
+          const confirmed = window.confirm(
+              "JavaScript Runtime Missing\n\nYouTube downloads rely heavily on a JS runtime for extraction. Proceed anyway?"
+          );
+          if (!confirmed) return;
+      }
+
+      setIsProcessing(true);
+      setErrorDetails(null);
+      setSkipNotice(null);
+      setShowForceOptions(false);
+      setPendingForce(force); 
+
+      try {
+          if (preferences.enable_playlist_selection) {
+              const result = await expandPlaylist(targetUrl);
+              if (result.entries.length > 1) {
+                  setPlaylistEntries(result.entries);
+                  setIsPlaylistModalOpen(true);
+                  return;
+              }
+          }
+
+          await triggerDownload(targetUrl, force);
+      } catch (err: any) {
+          console.error("Failed to process URL", err);
+          const extracted = extractErrorDetails(err);
+          setErrorDetails(extracted);
+          setIsProcessing(false);
+      }
+  }, [isJsRuntimeMissing, preferences.enable_playlist_selection, triggerDownload]);
+
+  const processUrlRef = useRef(processUrl);
+  useEffect(() => { processUrlRef.current = processUrl; }, [processUrl]);
+
+  const isProcessingRef = useRef(isProcessing);
+  useEffect(() => { isProcessingRef.current = isProcessing; }, [isProcessing]);
+
+  // Clipboard Listener Effect
+  useEffect(() => {
+    let interval: ReturnType<typeof setInterval>;
+    if (autoPaste) {
+      interval = setInterval(async () => {
+        try {
+          const text = await readText();
+          if (text && text !== lastClipboardText.current) {
+            lastClipboardText.current = text;
+            const trimmed = text.trim();
+            if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+              setUrl(trimmed);
+              setErrorDetails(null);
+
+              // Automatically start the download sequence
+              if (!isProcessingRef.current) {
+                  processUrlRef.current(trimmed, false);
+              }
+            }
+          }
+        } catch (err) {
+          console.error("Clipboard access failed", err);
+        }
+      }, 1000);
+    } else {
+        lastClipboardText.current = '';
+    }
+    return () => clearInterval(interval);
+  }, [autoPaste]);
 
   const handleSubmit = async (e: React.FormEvent | React.MouseEvent, force: boolean = false) => {
     if (e) e.preventDefault();
     if (!url.trim()) return;
-
-    const isYoutube = url.includes('youtube.com') || url.includes('youtu.be');
-    if (isYoutube && isJsRuntimeMissing) {
-        const confirmed = window.confirm(
-            "JavaScript Runtime Missing\n\nYouTube downloads rely heavily on a JS runtime for extraction. Proceed anyway?"
-        );
-        if (!confirmed) return;
-    }
-
-    const currentUrl = url;
-
-    setIsProcessing(true);
-    setErrorDetails(null);
-    setSkipNotice(null);
-    setShowForceOptions(false);
-    setPendingForce(force); 
-
-    try {
-        if (preferences.enable_playlist_selection) {
-            const result = await expandPlaylist(currentUrl);
-            if (result.entries.length > 1) {
-                setPlaylistEntries(result.entries);
-                setIsPlaylistModalOpen(true);
-                return;
-            }
-        }
-
-        await triggerDownload(currentUrl, force);
-    } catch (err: any) {
-        console.error("Failed to expand playlist", err);
-        const extracted = extractErrorDetails(err);
-        setErrorDetails(extracted);
-        setIsProcessing(false);
-    }
+    await processUrl(url.trim(), force);
   };
 
   const handlePlaylistConfirm = async (selectedUrls: string[]) => {
@@ -308,7 +320,7 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
                 
                 {/* Fixed Centering for Icon Button */}
                 <div className="absolute left-2 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center">
-                    <Tooltip content={autoPaste ? "Auto-Paste is active. Copy any URL to update this field" : "Enable Auto-Paste from clipboard"}>
+                    <Tooltip content={autoPaste ? "Auto-Paste is active. Copy any URL to instantly download it." : "Enable Auto-Paste & Download"}>
                         <button 
                             type="button"
                             onClick={() => setAutoPaste(!autoPaste)}
