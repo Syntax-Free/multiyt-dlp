@@ -408,6 +408,7 @@ impl JobManagerActor {
             },
             JobMessage::ProcessStarted { id, pid } => {
                 debug!(target: "core::manager", job_id = ?id, pid = pid, "Subprocess successfully spawned");
+                let mut started = false;
                 if let Some(job) = self.jobs.get_mut(&id) {
                     if job.status == JobStatus::Cancelled {
                         warn!(target: "core::manager", job_id = ?id, pid = pid, "Job was cancelled before process ID was recorded. Terminating.");
@@ -416,8 +417,11 @@ impl JobManagerActor {
                         job.pid = Some(pid);
                         job.status = JobStatus::Downloading;
                         job.sequence_id += 1;
-                        self.mark_dirty();
+                        started = true;
                     }
+                }
+                if started {
+                    self.mark_dirty();
                 }
             },
             JobMessage::UpdateProgress { id, percentage, speed, eta, filename, phase } => {
@@ -460,6 +464,8 @@ impl JobManagerActor {
                 
                 self.pending_updates.remove(&id);
 
+                let mut payload = None;
+
                 if let Some(job) = self.jobs.get_mut(&id) {
                     job.status = JobStatus::FileConflict;
                     job.temp_path = Some(temp_path.clone());
@@ -469,19 +475,24 @@ impl JobManagerActor {
                     job.used_command = Some(used_command.clone());
                     job.sequence_id += 1;
 
-                    self.mark_dirty();
+                    // Capture data for the event while we have the borrow
+                    payload = Some(DownloadProgressPayload {
+                        job_id: id,
+                        percentage: job.progress,
+                        sequence_id: job.sequence_id,
+                        speed: job.speed.clone().unwrap_or_default(),
+                        eta: job.eta.clone().unwrap_or_default(),
+                        filename: job.filename.clone(),
+                        phase: job.phase.clone(),
+                        status: Some(JobStatus::FileConflict),
+                    });
+                }
 
+                // Now that the borrow of 'job' is dropped, we can safely mutate 'self'
+                if let Some(p) = payload {
+                    self.mark_dirty();
                     let _ = self.app_handle.emit_all("download-progress-batch", BatchProgressPayload { 
-                        updates: vec![DownloadProgressPayload {
-                            job_id: id,
-                            percentage: job.progress,
-                            sequence_id: job.sequence_id,
-                            speed: job.speed.clone().unwrap_or_default(),
-                            eta: job.eta.clone().unwrap_or_default(),
-                            filename: job.filename.clone(),
-                            phase: job.phase.clone(),
-                            status: Some(JobStatus::FileConflict),
-                        }]
+                        updates: vec![p]
                     });
                 }
             },
