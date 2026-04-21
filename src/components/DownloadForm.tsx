@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Button } from './ui/Button';
 import { Card, CardContent } from './ui/Card';
-import { Download, FolderOpen, Link2, MonitorPlay, Headphones, FileText, Image as ImageIcon, AlertTriangle, Loader2, ChevronDown, Radio } from 'lucide-react';
+import { Download, FolderOpen, Link2, MonitorPlay, Headphones, FileText, Image as ImageIcon, AlertTriangle, Loader2, ChevronDown, Radio, ClipboardPaste } from 'lucide-react';
 import { selectDirectory, expandPlaylist } from '@/api/invoke';
 import { DownloadFormatPreset, PreferenceConfig, StartDownloadResponse, PlaylistEntry } from '@/types';
 import { useAppContext } from '@/contexts/AppContext';
@@ -9,6 +9,8 @@ import { twMerge } from 'tailwind-merge';
 import { SmartError } from './ui/SmartError';
 import { extractErrorDetails } from '@/utils/errorRegistry';
 import { PlaylistSelectionModal } from './PlaylistSelectionModal';
+import { Tooltip } from './ui/Tooltip';
+import { readText } from '@tauri-apps/api/clipboard';
 
 interface DownloadFormProps {
   onDownload: (
@@ -103,10 +105,14 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
   const dropdownRef = useRef<HTMLDivElement>(null);
   const [errorDetails, setErrorDetails] = useState<{ message: string, stderr?: string } | null>(null);
 
+  // Auto-Paste Logic
+  const [autoPaste, setAutoPaste] = useState(false);
+  const lastClipboardText = useRef<string>('');
+
   // Playlist state
   const [playlistEntries, setPlaylistEntries] = useState<PlaylistEntry[]>([]);
   const [isPlaylistModalOpen, setIsPlaylistModalOpen] = useState(false);
-  const [pendingForce, setPendingForce] = useState(false); // Defect Fix #1: Preserves force state through modal
+  const [pendingForce, setPendingForce] = useState(false); 
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -118,10 +124,31 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [dropdownRef]);
 
-  /**
-   * Finalizes the download process by invoking the manager.
-   * Note: This function manages its own isProcessing state but is wrapped by callers.
-   */
+  // Clipboard Listener Effect
+  useEffect(() => {
+    let interval: ReturnType<typeof setInterval>;
+    if (autoPaste) {
+      interval = setInterval(async () => {
+        try {
+          const text = await readText();
+          if (text && text !== lastClipboardText.current) {
+            lastClipboardText.current = text;
+            const trimmed = text.trim();
+            if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+              setUrl(trimmed);
+              setErrorDetails(null);
+            }
+          }
+        } catch (err) {
+          console.error("Clipboard access failed", err);
+        }
+      }, 1000);
+    } else {
+        lastClipboardText.current = '';
+    }
+    return () => clearInterval(interval);
+  }, [autoPaste]);
+
   const triggerDownload = async (targetUrl: string, force: boolean = false, whitelist?: string[]) => {
       setIsProcessing(true);
       try {
@@ -161,9 +188,6 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
       }
   };
 
-  /**
-   * Primary form submission handler
-   */
   const handleSubmit = async (e: React.FormEvent | React.MouseEvent, force: boolean = false) => {
     if (e) e.preventDefault();
     if (!url.trim()) return;
@@ -182,22 +206,18 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
     setErrorDetails(null);
     setSkipNotice(null);
     setShowForceOptions(false);
-    setPendingForce(force); // Store intent for potential playlist confirmation
+    setPendingForce(force); 
 
     try {
-        // If selection modal is enabled, probe for contents first.
-        // Defect Fix #1: We expand regardless of 'force' flag so user can still choose items.
         if (preferences.enable_playlist_selection) {
             const result = await expandPlaylist(currentUrl);
             if (result.entries.length > 1) {
                 setPlaylistEntries(result.entries);
                 setIsPlaylistModalOpen(true);
-                // We leave isProcessing true so the background button stays "Analyzing"
                 return;
             }
         }
 
-        // Standard flow for single video or disabled selection
         await triggerDownload(currentUrl, force);
     } catch (err: any) {
         console.error("Failed to expand playlist", err);
@@ -207,18 +227,11 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
     }
   };
 
-  /**
-   * Handler for when user confirms selection in the playlist modal.
-   * Defect Fix #2: Modal is closed, but isProcessing remains true until triggerDownload resolves.
-   */
   const handlePlaylistConfirm = async (selectedUrls: string[]) => {
       setIsPlaylistModalOpen(false);
       await triggerDownload(url, pendingForce, selectedUrls);
   };
 
-  /**
-   * Handler for when the user closes the playlist modal without selecting
-   */
   const handlePlaylistCancel = () => {
       setIsPlaylistModalOpen(false);
       setIsProcessing(false);
@@ -280,7 +293,6 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
 
         <form onSubmit={(e) => handleSubmit(e, false)} className="flex flex-col gap-6">
           
-          {/* URL Input */}
           <div className="space-y-2">
             <div className="flex justify-between">
                 <label className="text-[11px] uppercase tracking-wider font-bold text-zinc-500 ml-1">Target URL</label>
@@ -291,9 +303,27 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
                      </span>
                 )}
             </div>
-            <div className="relative group">
+            <div className="relative group flex items-center">
                 <div className="absolute inset-0 bg-theme-cyan/20 blur-md rounded-lg opacity-0 group-focus-within:opacity-100 transition-opacity duration-500"></div>
-                <Link2 className="absolute left-3 top-3 h-4 w-4 text-zinc-500 group-focus-within:text-theme-cyan transition-colors" />
+                
+                {/* Fixed Centering for Icon Button */}
+                <div className="absolute left-2 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center">
+                    <Tooltip content={autoPaste ? "Auto-Paste is active. Copy any URL to update this field" : "Enable Auto-Paste from clipboard"}>
+                        <button 
+                            type="button"
+                            onClick={() => setAutoPaste(!autoPaste)}
+                            className={twMerge(
+                                "p-1.5 rounded-md transition-all duration-300 flex items-center justify-center",
+                                autoPaste 
+                                    ? "bg-theme-cyan/15 text-theme-cyan shadow-glow-cyan" 
+                                    : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800"
+                            )}
+                        >
+                            {autoPaste ? <ClipboardPaste className="h-4 w-4" /> : <Link2 className="h-4 w-4" />}
+                        </button>
+                    </Tooltip>
+                </div>
+
                 <input
                     type="text"
                     value={url}
@@ -302,9 +332,9 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
                         setErrorDetails(null); 
                     }}
                     disabled={isProcessing}
-                    placeholder="https://youtube.com/watch?v=... or Playlist URL"
+                    placeholder="https://youtube.com/watch?v=..."
                     className={twMerge(
-                        "relative w-full bg-surfaceHighlight border rounded-md pl-10 pr-4 py-2.5 text-sm text-zinc-100 placeholder-zinc-700 focus:outline-none focus:ring-1 transition-all",
+                        "relative w-full bg-surfaceHighlight border rounded-md pl-12 pr-4 py-2.5 text-sm text-zinc-100 placeholder-zinc-700 focus:outline-none focus:ring-1 transition-all",
                         errorDetails
                             ? "border-theme-red focus:ring-theme-red focus:border-theme-red"
                             : isYoutube && isJsRuntimeMissing 
@@ -326,7 +356,6 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
           
           <div className="grid grid-cols-1 gap-5">
               
-              {/* Mode & Format */}
               <div className="space-y-2">
                  <label className="text-[11px] uppercase tracking-wider font-bold text-zinc-500 ml-1">Configuration</label>
                  <div className="flex gap-2 mb-3">
@@ -432,7 +461,6 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
                  </div>
               </div>
 
-              {/* Directory */}
               <div className="space-y-2">
                   <label className="text-[11px] uppercase tracking-wider font-bold text-zinc-500 ml-1">Save Location</label>
                   <div className="flex gap-2">
@@ -459,9 +487,7 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
           <div className="pt-2 relative" ref={dropdownRef}>
             <div className={twMerge(
                 "flex w-full h-12 rounded-md overflow-hidden transition-shadow",
-                isSubmitDisabled 
-                    ? "shadow-none" 
-                    : "shadow-lg shadow-theme-cyan/20 hover:shadow-theme-cyan/40"
+                isSubmitDisabled ? "shadow-none" : "shadow-lg shadow-theme-cyan/20 hover:shadow-theme-cyan/40"
             )}>
                 <Button 
                     type="submit" 
@@ -469,22 +495,10 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
                     disabled={isSubmitDisabled} 
                     className={twMerge(
                         "flex-grow h-full text-base uppercase tracking-wide font-black rounded-r-none border-r border-black/20",
-                        isProcessing 
-                            ? "cursor-wait opacity-80" 
-                            : ""
+                        isProcessing ? "cursor-wait opacity-80" : ""
                     )}
                 >
-                    {isProcessing ? (
-                        <>
-                            <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                            Analyzing...
-                        </>
-                    ) : (
-                        <>
-                            <Download className="mr-2 h-5 w-5" />
-                            Initialize Download
-                        </>
-                    )}
+                    {isProcessing ? <><Loader2 className="mr-2 h-5 w-5 animate-spin" />Analyzing...</> : <><Download className="mr-2 h-5 w-5" />Initialize Download</>}
                 </Button>
                 <Button
                     type="button"
@@ -509,15 +523,12 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
                         </div>
                         <div>
                             <div className="text-sm font-bold text-zinc-200">Force Download</div>
-                            <div className="text-xs text-zinc-500 mt-0.5">
-                                Bypass history check and download immediately.
-                            </div>
+                            <div className="text-xs text-zinc-500 mt-0.5">Bypass history check and download immediately.</div>
                         </div>
                     </button>
                 </div>
             )}
           </div>
-
         </form>
       </CardContent>
     </Card>

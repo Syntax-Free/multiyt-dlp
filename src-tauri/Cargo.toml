@@ -11,7 +11,7 @@ edition = "2021"
 tauri-build = { version = "1.5", features = [] }
 
 [dependencies]
-tauri = { version = "1.5", features = [ "window-all", "dialog-open", "process-exit", "process-relaunch", "shell-open", "process-command-api", "notification-all"] }
+tauri = { version = "1.5", features = [ "clipboard-all", "window-all", "dialog-open", "process-exit", "process-relaunch", "shell-open", "process-command-api", "notification-all"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.28", features = ["full"] }
