@@ -82,8 +82,13 @@ function App() {
   // --- ACTIONS ---
 
   const handleClearCompleted = () => {
-    const completedJobs = Array.from(downloads.values()).filter(d => d.status === 'completed');
+    const completedJobs = Array.from(downloads.values()).filter(d => d.status === 'completed' || d.status === 'modified');
     completedJobs.forEach(job => removeDownload(job.jobId));
+  };
+
+  const handleClearCancelled = () => {
+    const cancelledJobs = Array.from(downloads.values()).filter(d => d.status === 'cancelled');
+    cancelledJobs.forEach(job => removeDownload(job.jobId));
   };
 
   const handleRetryFailed = () => {
@@ -150,8 +155,9 @@ function App() {
   const total = downloads.size;
   const active = Array.from(downloads.values()).filter(d => d.status === 'downloading').length;
   const queued = Array.from(downloads.values()).filter(d => d.status === 'pending').length;
-  const completed = Array.from(downloads.values()).filter(d => d.status === 'completed').length;
+  const completed = Array.from(downloads.values()).filter(d => d.status === 'completed' || d.status === 'modified').length;
   const failed = Array.from(downloads.values()).filter(d => d.status === 'error').length;
+  const cancelledCount = Array.from(downloads.values()).filter(d => d.status === 'cancelled').length;
   const hasActiveJobs = active > 0 || queued > 0;
 
   return (
@@ -259,6 +265,7 @@ function App() {
                         
                         <div className="w-px h-8 bg-zinc-800 flex-shrink-0" />
                         
+                        {/* DONE COUNTER */}
                         <div className={twMerge("relative flex flex-col items-end min-w-[40px] flex-shrink-0", completed > 0 ? "group cursor-pointer" : "")}>
                             <div className={twMerge("flex flex-col items-end transition-opacity duration-200", completed > 0 && "group-hover:opacity-0")}>
                                 <span className="text-[10px] text-zinc-600 uppercase tracking-wider font-bold">Done</span>
@@ -281,6 +288,7 @@ function App() {
                         
                         <div className="w-px h-8 bg-zinc-800 flex-shrink-0" />
                         
+                        {/* FAILED COUNTER */}
                         <div className={twMerge("relative flex flex-col items-end min-w-[40px] flex-shrink-0", failed > 0 ? "group cursor-pointer" : "")}>
                             <div className={twMerge("flex flex-col items-end transition-opacity duration-200", failed > 0 && "group-hover:opacity-0")}>
                                 <span className="text-[10px] text-zinc-600 uppercase tracking-wider font-bold">Failed</span>
@@ -300,6 +308,29 @@ function App() {
                                 </button>
                             )}
                         </div>
+
+                        {/* CANCELLED COUNTER */}
+                        {cancelledCount > 0 && (
+                            <>
+                                <div className="w-px h-8 bg-zinc-800 flex-shrink-0" />
+                                <div className="relative flex flex-col items-end min-w-[40px] flex-shrink-0 group cursor-pointer">
+                                    <div className="flex flex-col items-end transition-opacity duration-200 group-hover:opacity-0">
+                                        <span className="text-[10px] text-zinc-600 uppercase tracking-wider font-bold">Dropped</span>
+                                        <div className="flex items-center gap-1.5 text-zinc-200 font-mono">
+                                            <Ban className="h-3 w-3 text-zinc-500" />
+                                            {cancelledCount}
+                                        </div>
+                                    </div>
+                                    <button 
+                                        onClick={handleClearCancelled}
+                                        className="absolute inset-0 hidden group-hover:flex items-center justify-center bg-zinc-900/90 backdrop-blur-sm border border-zinc-800 rounded shadow-lg animate-fade-in hover:border-zinc-500 hover:bg-zinc-800"
+                                        title="Clear Cancelled"
+                                    >
+                                        <Trash2 className="h-4 w-4 text-zinc-400" />
+                                    </button>
+                                </div>
+                            </>
+                        )}
                     </div>
                 </div>
             </div>
