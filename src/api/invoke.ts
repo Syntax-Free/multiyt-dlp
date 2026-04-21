@@ -90,7 +90,8 @@ export async function startDownload(
   restrictFilenames: boolean = false,
   forceDownload: boolean = false,
   urlWhitelist: string[] | undefined,
-  liveFromStart: boolean = false
+  liveFromStart: boolean = false,
+  downloadSections?: string
 ): Promise<StartDownloadResponse> { 
   return await invoke("start_download", { 
     url, 
@@ -103,7 +104,8 @@ export async function startDownload(
     restrictFilenames,
     forceDownload,
     urlWhitelist,
-    liveFromStart
+    liveFromStart,
+    downloadSections
   });
 }
 

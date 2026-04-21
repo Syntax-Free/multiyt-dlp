@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Button } from './ui/Button';
 import { Card, CardContent } from './ui/Card';
-import { Download, FolderOpen, Link2, MonitorPlay, Headphones, FileText, Image as ImageIcon, AlertTriangle, Loader2, ChevronDown, Radio, ClipboardPaste } from 'lucide-react';
+import { Download, FolderOpen, Link2, MonitorPlay, Headphones, FileText, Image as ImageIcon, AlertTriangle, Loader2, ChevronDown, Radio, ClipboardPaste, Clock } from 'lucide-react';
 import { selectDirectory, expandPlaylist } from '@/api/invoke';
 import { DownloadFormatPreset, PreferenceConfig, StartDownloadResponse, PlaylistEntry } from '@/types';
 import { useAppContext } from '@/contexts/AppContext';
@@ -24,7 +24,8 @@ interface DownloadFormProps {
       restrictFilenames: boolean,
       forceDownload: boolean,
       urlWhitelist?: string[],
-      liveFromStart?: boolean
+      liveFromStart?: boolean,
+      downloadSections?: string
     ) => Promise<StartDownloadResponse>; 
 }
 
@@ -105,7 +106,11 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
   const dropdownRef = useRef<HTMLDivElement>(null);
   const [errorDetails, setErrorDetails] = useState<{ message: string, stderr?: string } | null>(null);
 
-  // Auto-Paste & Auto-Download Logic
+  // Specific Section State (Instance-based, not persisted in global config)
+  const [liveStartTime, setLiveStartTime] = useState('');
+  const [liveEndTime, setLiveEndTime] = useState('');
+
+  // Auto-Paste Logic
   const [autoPaste, setAutoPaste] = useState(false);
   const lastClipboardText = useRef<string>('');
 
@@ -127,6 +132,14 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
   const triggerDownload = useCallback(async (targetUrl: string, force: boolean = false, whitelist?: string[]) => {
       setIsProcessing(true);
       try {
+          // Construct Section String for Live/Segment downloads
+          let downloadSections: string | undefined = undefined;
+          if (preferences.live_from_start && (liveStartTime.trim() || liveEndTime.trim())) {
+              const start = liveStartTime.trim() || '0';
+              const end = liveEndTime.trim() || 'inf';
+              downloadSections = `*${start}-${end}`;
+          }
+
           const template = getTemplateString();
           const response = await onDownload(
               targetUrl, 
@@ -139,7 +152,8 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
               false, 
               force, 
               whitelist, 
-              preferences.live_from_start 
+              preferences.live_from_start,
+              downloadSections
           );
 
           if (response.skipped_count > 0) {
@@ -153,6 +167,8 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
 
           if (response.job_ids.length > 0 || response.skipped_count === response.total_found) {
               setUrl('');
+              setLiveStartTime('');
+              setLiveEndTime('');
           }
       } catch (err: any) {
           console.error("Failed to start download", err);
@@ -161,7 +177,7 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
       } finally {
           setIsProcessing(false);
       }
-  }, [onDownload, defaultDownloadPath, preferences, getTemplateString, setSkipNotice]);
+  }, [onDownload, defaultDownloadPath, preferences, getTemplateString, setSkipNotice, liveStartTime, liveEndTime]);
 
   const processUrl = useCallback(async (targetUrl: string, force: boolean = false) => {
       const isYoutube = targetUrl.includes('youtube.com') || targetUrl.includes('youtu.be');
@@ -197,6 +213,7 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
       }
   }, [isJsRuntimeMissing, preferences.enable_playlist_selection, triggerDownload]);
 
+  // Refs for stability in effects
   const processUrlRef = useRef(processUrl);
   useEffect(() => { processUrlRef.current = processUrl; }, [processUrl]);
 
@@ -287,8 +304,7 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
 
   const isValidUrl = url.startsWith('http://') || url.startsWith('https://');
   const isYoutube = url.includes('youtube.com') || url.includes('youtu.be');
-  const currentMode = preferences.mode as DownloadMode;
-  
+  const currentMode = preferences.mode as DownloadMode;  
   const filteredPresets = formatPresets.filter(p => p.mode === currentMode);
   const isSubmitDisabled = !isValidUrl || isProcessing;
 
@@ -318,7 +334,6 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
             <div className="relative group flex items-center">
                 <div className="absolute inset-0 bg-theme-cyan/20 blur-md rounded-lg opacity-0 group-focus-within:opacity-100 transition-opacity duration-500"></div>
                 
-                {/* Fixed Centering for Icon Button */}
                 <div className="absolute left-2 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center">
                     <Tooltip content={autoPaste ? "Auto-Paste is active. Copy any URL to instantly download it." : "Enable Auto-Paste & Download"}>
                         <button 
@@ -471,6 +486,37 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
                          </button>
                      </div>
                  </div>
+
+                 {/* Segment UI (Live/Section) */}
+                 {preferences.live_from_start && (
+                     <div className="flex flex-col gap-3 mt-2 p-3 rounded-md border border-theme-red/20 bg-theme-red/5 animate-fade-in">
+                          <div className="flex items-center gap-2 text-[10px] font-black text-theme-red uppercase tracking-widest">
+                               <Clock className="h-3 w-3" />
+                               Download Section
+                          </div>
+                          <div className="flex gap-2">
+                            <div className="flex-1">
+                                <input 
+                                    type="text" 
+                                    placeholder="Start (0)" 
+                                    value={liveStartTime} 
+                                    onChange={(e) => setLiveStartTime(e.target.value)}
+                                    className="w-full bg-zinc-950 border border-zinc-800 rounded px-2 py-1.5 text-xs text-zinc-300 focus:outline-none focus:border-theme-red/30"
+                                />
+                            </div>
+                            <div className="flex-1">
+                                <input 
+                                    type="text" 
+                                    placeholder="End (inf)" 
+                                    value={liveEndTime} 
+                                    onChange={(e) => setLiveEndTime(e.target.value)}
+                                    className="w-full bg-zinc-950 border border-zinc-800 rounded px-2 py-1.5 text-xs text-zinc-300 focus:outline-none focus:border-theme-red/30"
+                                />
+                            </div>
+                          </div>
+                          <div className="text-[9px] text-zinc-500 font-medium">Format: <code>HH:MM:SS</code> or <code>seconds</code></div>
+                     </div>
+                 )}
               </div>
 
               <div className="space-y-2">

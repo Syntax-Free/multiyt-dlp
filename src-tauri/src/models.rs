@@ -70,6 +70,9 @@ pub struct Job {
     #[serde(rename = "liveFromStart")]
     pub live_from_start: Option<bool>,
 
+    #[serde(rename = "downloadSections")]
+    pub download_sections: Option<String>,
+
     pub is_modified: bool,
     pub used_command: Option<String>,
 }
@@ -101,6 +104,7 @@ impl Job {
             embed_thumbnail: None,
             restrict_filenames: None,
             live_from_start: None,
+            download_sections: None,
             is_modified: false,
             used_command: None,
         }
@@ -148,6 +152,9 @@ pub struct Download {
     #[serde(rename = "liveFromStart")]
     pub live_from_start: Option<bool>,
 
+    #[serde(rename = "downloadSections")]
+    pub download_sections: Option<String>,
+
     #[serde(rename = "usedCommand")]
     pub used_command: Option<String>,
 }
@@ -164,6 +171,7 @@ pub struct QueuedJob {
     pub filename_template: String,
     pub restrict_filenames: bool,
     pub live_from_start: bool,
+    pub download_sections: Option<String>,
     
     pub status: Option<String>,
     pub error: Option<String>,

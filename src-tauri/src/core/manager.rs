@@ -253,6 +253,7 @@ impl JobManagerActor {
                         j.embed_thumbnail = Some(job.embed_thumbnail);
                         j.restrict_filenames = Some(job.restrict_filenames);
                         j.live_from_start = Some(job.live_from_start);
+                        j.download_sections = job.download_sections.clone();
 
                         self.jobs.insert(job.id, j);
                         self.persistence_registry.insert(job.id, job.clone());
@@ -568,6 +569,7 @@ impl JobManagerActor {
                                     j.embed_thumbnail = Some(job.embed_thumbnail);
                                     j.restrict_filenames = Some(job.restrict_filenames);
                                     j.live_from_start = Some(job.live_from_start);
+                                    j.download_sections = job.download_sections.clone();
                                     
                                     if let Some(st) = &job.status {
                                         if st == "error" {
@@ -628,6 +630,7 @@ impl JobManagerActor {
                         embed_thumbnail: job.embed_thumbnail,
                         restrict_filenames: job.restrict_filenames,
                         live_from_start: job.live_from_start,
+                        download_sections: job.download_sections.clone(),
                         used_command: job.used_command.clone(),
                     });
                 }

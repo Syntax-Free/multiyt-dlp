@@ -98,8 +98,11 @@ function App() {
             job.embedMetadata || false,
             job.embedThumbnail || false,
             job.filenameTemplate || "%(title)s.%(ext)s",
-            true, 
-            true  
+            job.restrictFilenames || true, 
+            true,
+            undefined,
+            job.liveFromStart || false,
+            job.downloadSections
         );
     });
   };

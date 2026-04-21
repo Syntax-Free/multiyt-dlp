@@ -146,7 +146,8 @@ export function useDownloadManager() {
     restrictFilenames: boolean = false,
     forceDownload: boolean = false,
     urlWhitelist?: string[],
-    liveFromStart: boolean = false
+    liveFromStart: boolean = false,
+    downloadSections?: string
   ): Promise<StartDownloadResponse> => {
     try {
       const response = await apiStartDownload(
@@ -160,7 +161,8 @@ export function useDownloadManager() {
           restrictFilenames,
           forceDownload,
           urlWhitelist,
-          liveFromStart
+          liveFromStart,
+          downloadSections
       ); 
       
       setDownloads((prev) => {
@@ -181,6 +183,7 @@ export function useDownloadManager() {
                     embedThumbnail,
                     restrictFilenames,
                     liveFromStart,
+                    downloadSections,
                 });
             } else {
                 newMap.set(jobId, {
@@ -197,7 +200,8 @@ export function useDownloadManager() {
                     embedMetadata,
                     embedThumbnail,
                     restrictFilenames,
-                    liveFromStart
+                    liveFromStart,
+                    downloadSections,
                 });
             }
         });
@@ -240,7 +244,8 @@ export function useDownloadManager() {
                   embedMetadata: job.embed_metadata,
                   embedThumbnail: job.embed_thumbnail,
                   restrictFilenames: job.restrict_filenames,
-                  liveFromStart: job.live_from_start
+                  liveFromStart: job.live_from_start,
+                  downloadSections: job.download_sections
               });
           });
           return newMap;

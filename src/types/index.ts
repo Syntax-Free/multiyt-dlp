@@ -143,7 +143,7 @@ export interface Download {
   embedThumbnail?: boolean;
   restrictFilenames?: boolean;
   liveFromStart?: boolean;
-  
+  downloadSections?: string;
   usedCommand?: string;
 }
 
@@ -158,7 +158,7 @@ export interface QueuedJob {
   filename_template: string;
   restrict_filenames: boolean;
   live_from_start: boolean;
-  
+  download_sections?: string;
   status?: string;
   error?: string;
   stderr?: string;

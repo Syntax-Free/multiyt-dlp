@@ -301,6 +301,12 @@ pub async fn run_download_process(
             cmd.arg("--live-from-start");
         }
 
+        if let Some(ref sections) = job_data.download_sections {
+            if !sections.trim().is_empty() {
+                cmd.arg("--download-sections").arg(sections);
+            }
+        }
+
         let height_filter = if job_data.video_resolution != "best" {
             let number_part: String = job_data.video_resolution.chars().filter(|c| c.is_numeric()).collect();
             if !number_part.is_empty() { format!("[height<={}]", number_part) } else { String::new() }
