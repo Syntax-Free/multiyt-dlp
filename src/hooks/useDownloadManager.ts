@@ -352,15 +352,20 @@ export function useDownloadManager() {
           d.status === 'downloading' || d.status === 'pending'
       );
       
-      for (const job of targets) {
-          try {
-              updateDownload(job.jobId, { status: 'cancelled', phase: 'Cancelling...' });
-              await apiCancelDownload(job.jobId);
-          } catch (e) {
-              console.error(`Bulk cancel failed for ${job.jobId}`, e);
-          }
-      }
-  }, [downloads, updateDownload]);
+      // Batch immediate UI updates
+      const updates = targets.map(job => ({
+          jobId: job.jobId,
+          data: { status: 'cancelled' as DownloadStatus, phase: 'Cancelling...' }
+      }));
+      updateDownloadsBatch(updates);
+
+      // Execute non-blocking concurrent cancellation requests
+      const promises = targets.map(job => 
+          apiCancelDownload(job.jobId).catch(e => console.error(`Bulk cancel failed for ${job.jobId}`, e))
+      );
+      
+      await Promise.all(promises);
+  }, [downloads, updateDownloadsBatch]);
 
   const resolveConflict = useCallback(async (jobId: string, resolution: 'overwrite' | 'discard') => {
       try {

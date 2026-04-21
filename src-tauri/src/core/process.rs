@@ -1,5 +1,6 @@
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use tauri::{AppHandle, Manager};
@@ -173,6 +174,7 @@ pub async fn run_download_process(
     mut job_data: QueuedJob,
     app_handle: AppHandle,
     tx_actor: mpsc::Sender<JobMessage>,
+    cancel_flag: Arc<AtomicBool>,
 ) {
     let _guard = WorkerGuard { tx: tx_actor.clone() };
 
@@ -194,6 +196,11 @@ pub async fn run_download_process(
     let config_manager = app_handle.state::<Arc<ConfigManager>>();
 
     loop {
+        if cancel_flag.load(Ordering::Relaxed) {
+            debug!(target: "core::process", job_id = ?job_id, "Job cancellation detected. Aborting outer process loop.");
+            break;
+        }
+
         info!(target: "core::process", job_id = ?job_id, "Preparing execution environment for URL (Fallback Level {})", fallback_level);
         let general_config = config_manager.get_config().general;
         let bin_dir = crate::core::deps::get_common_bin_dir();
@@ -554,6 +561,12 @@ pub async fn run_download_process(
         }
 
         let status = child.wait().await.expect("Child process error");
+
+        // Fast-path exit if cancellation occurred during processing or waiting
+        if cancel_flag.load(Ordering::Relaxed) {
+            debug!(target: "core::process", job_id = ?job_id, "Job cancellation detected. Aborting outer process loop.");
+            break;
+        }
 
         if status.success() {
             debug!(target: "core::process", job_id = ?job_id, "Subprocess returned success exit code (0)");

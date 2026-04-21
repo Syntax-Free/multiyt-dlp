@@ -1,5 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{self, Duration};
 use tauri::{AppHandle, Manager};
@@ -90,6 +91,7 @@ struct JobManagerActor {
 
     jobs: HashMap<Uuid, Job>,
     queue: VecDeque<QueuedJob>,
+    cancel_flags: HashMap<Uuid, Arc<AtomicBool>>,
     persistence_registry: HashMap<Uuid, QueuedJob>,
     persistence_tx: mpsc::Sender<PersistenceMsg>,
     
@@ -137,6 +139,7 @@ impl JobManagerActor {
             self_sender,
             jobs: HashMap::new(),
             queue: VecDeque::new(),
+            cancel_flags: HashMap::new(),
             persistence_registry: HashMap::new(),
             persistence_tx: ptx,
             dirty_persistence: false,
@@ -275,6 +278,7 @@ impl JobManagerActor {
                         j.live_from_start = Some(job.live_from_start);
                         j.download_sections = job.download_sections.clone();
 
+                        self.cancel_flags.insert(job.id, Arc::new(AtomicBool::new(false)));
                         self.jobs.insert(job.id, j);
                         self.persistence_registry.insert(job.id, job.clone());
                         self.queue.push_back(job);
@@ -289,20 +293,28 @@ impl JobManagerActor {
                 
                 self.pending_updates.remove(&id);
 
+                if let Some(flag) = self.cancel_flags.get(&id) {
+                    flag.store(true, Ordering::Relaxed);
+                }
+                // Safe to remove here as Arc keeps the reference alive inside process loops
+                self.cancel_flags.remove(&id);
+
                 if let Some(job) = self.jobs.get_mut(&id) {
                     if let Some(pid) = job.pid {
                         debug!(target: "core::manager", job_id = ?id, "Killing underlying process PID: {}", pid);
                         kill_process(pid);
                     }
-                    if let Some(temp) = &job.temp_path {
-                        let path = PathBuf::from(temp);
-                        if path.exists() { 
-                            trace!(target: "core::manager", job_id = ?id, "Cleaning up temp file: {:?}", path);
-                            let _ = tokio::fs::remove_file(&path).await; 
-                        }
-                        if let Some(parent) = path.parent() {
-                            let _ = tokio::fs::remove_dir(parent).await;
-                        }
+                    if let Some(temp) = job.temp_path.clone() {
+                        // Offload blocking disk I/O to a background task
+                        tauri::async_runtime::spawn(async move {
+                            let path = PathBuf::from(temp);
+                            if path.exists() { 
+                                let _ = tokio::fs::remove_file(&path).await; 
+                            }
+                            if let Some(parent) = path.parent() {
+                                let _ = tokio::fs::remove_dir(parent).await;
+                            }
+                        });
                     }
                     job.status = JobStatus::Cancelled;
                     job.sequence_id += 1;
@@ -322,6 +334,8 @@ impl JobManagerActor {
                 let mut status_to_emit = None;
                 let mut cmd_to_emit = None;
                 let mut path_to_emit = None;
+
+                self.cancel_flags.remove(&id);
 
                 if let Some(job) = self.jobs.get_mut(&id) {
                     if job.status != JobStatus::FileConflict {
@@ -411,7 +425,7 @@ impl JobManagerActor {
                 let mut started = false;
                 if let Some(job) = self.jobs.get_mut(&id) {
                     if job.status == JobStatus::Cancelled {
-                        warn!(target: "core::manager", job_id = ?id, pid = pid, "Job was cancelled before process ID was recorded. Terminating.");
+                        trace!(target: "core::manager", job_id = ?id, pid = pid, "Job was cancelled before process ID was recorded. Terminating.");
                         kill_process(pid);
                     } else {
                         job.pid = Some(pid);
@@ -500,6 +514,7 @@ impl JobManagerActor {
                 info!(target: "core::manager", job_id = ?id, path = %output_path, modified = is_modified, "Job successfully completed");
                 
                 self.pending_updates.remove(&id);
+                self.cancel_flags.remove(&id);
 
                 let status = if is_modified { JobStatus::Modified } else { JobStatus::Completed };
 
@@ -528,6 +543,7 @@ impl JobManagerActor {
                 error!(target: "core::manager", job_id = ?id, exit_code = ?payload.exit_code, "Job failed: {}", payload.error);
                 
                 self.pending_updates.remove(&id);
+                self.cancel_flags.remove(&id);
 
                 if let Some(job) = self.jobs.get_mut(&id) {
                     if job.status == JobStatus::Cancelled { return; }
@@ -614,6 +630,7 @@ impl JobManagerActor {
                                         }
                                     }
 
+                                    self.cancel_flags.insert(job.id, Arc::new(AtomicBool::new(false)));
                                     self.jobs.insert(job.id, j.clone());
                                     self.persistence_registry.insert(job.id, job.clone());
                                     
@@ -712,9 +729,12 @@ impl JobManagerActor {
                  
                  let tx = self.self_sender.clone();
                  let app = self.app_handle.clone();
+                 let cancel_flag = self.cancel_flags.get(&next_job.id)
+                     .cloned()
+                     .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
                  
                  tauri::async_runtime::spawn(async move {
-                    run_download_process(next_job, app, tx).await;
+                    run_download_process(next_job, app, tx, cancel_flag).await;
                  });
             } else {
                 break;
