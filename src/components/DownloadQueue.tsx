@@ -1,6 +1,8 @@
 import { Download } from '@/types';
 import { DownloadItem } from './DownloadItem';
 import { DownloadGridItem } from './DownloadGridItem';
+import { useVirtualizer } from '@tanstack/react-virtual';
+import { useEffect, useState } from 'react';
 
 interface DownloadQueueProps {
   downloads: Map<string, Download>;
@@ -10,6 +12,19 @@ interface DownloadQueueProps {
 
 export function DownloadQueue({ downloads, onCancel, viewMode }: DownloadQueueProps) {
   const downloadArray = Array.from(downloads.values());
+  const [scrollEl, setScrollEl] = useState<Element | null>(null);
+
+  useEffect(() => {
+      // Find the scroll container established in Layout.tsx
+      setScrollEl(document.getElementById('scroll-container'));
+  }, []);
+
+  const rowVirtualizer = useVirtualizer({
+      count: viewMode === 'list' && scrollEl ? downloadArray.length : 0,
+      getScrollElement: () => scrollEl,
+      estimateSize: () => 140, // Height of list item + spacing
+      overscan: 5,
+  });
 
   if (downloadArray.length === 0) {
     return (
@@ -21,6 +36,7 @@ export function DownloadQueue({ downloads, onCancel, viewMode }: DownloadQueuePr
   }
 
   if (viewMode === 'grid') {
+      // Grid view utilizes decoupled state, rendering 300+ items is lightweight since they never re-render
       return (
         <div className="grid grid-cols-4 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-8 gap-3 animate-fade-in">
             {downloadArray.map((download) => (
@@ -34,16 +50,30 @@ export function DownloadQueue({ downloads, onCancel, viewMode }: DownloadQueuePr
       );
   }
 
-  // Default List View
+  // Virtualized List View
   return (
-    <div className="space-y-2 animate-fade-in">
-      {downloadArray.map((download) => (
-        <DownloadItem
-          key={download.jobId}
-          download={download}
-          onCancel={onCancel}
-        />
-      ))}
+    <div 
+        className="relative w-full"
+        style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
+    >
+      {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+          const download = downloadArray[virtualRow.index];
+          return (
+              <div
+                  key={download.jobId}
+                  className="absolute top-0 left-0 w-full"
+                  style={{
+                      height: `${virtualRow.size}px`,
+                      transform: `translateY(${virtualRow.start}px)`,
+                  }}
+              >
+                  {/* Padding bottom replaces gap-2 */}
+                  <div className="pb-2">
+                      <DownloadItem download={download} onCancel={onCancel} />
+                  </div>
+              </div>
+          );
+      })}
     </div>
   );
 }

@@ -4,9 +4,9 @@ import { Button } from './ui/Button';
 import { X, MonitorPlay, Clock, CheckCircle2, AlertTriangle, Headphones, Activity, FileOutput, Tags, FileText, Image as ImageIcon, Hourglass, FolderSearch, Copy, Trash2, ChevronDown, ChevronUp, FileWarning, RefreshCw, HelpCircle } from 'lucide-react';
 import { twMerge } from 'tailwind-merge';
 import { showInFolder, openLogFolder } from '@/api/invoke';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { SmartError } from './ui/SmartError';
-import { useDownloadManager } from '@/hooks/useDownloadManager';
+import { useDownloadManager, progressEmitter, ProgressData } from '@/hooks/useDownloadManager';
 
 interface DownloadItemProps {
   download: Download;
@@ -16,22 +16,40 @@ interface DownloadItemProps {
 export function DownloadItem({ download, onCancel }: DownloadItemProps) {
   const { resolveConflict } = useDownloadManager();
   const { 
-    jobId, url, status, progress, speed, eta, 
-    error, filename, phase, preset, embedMetadata, 
+    jobId, url, error, filename, preset, embedMetadata, 
     embedThumbnail, outputPath, stderr, logs, usedCommand 
   } = download;
+
+  // Localized Subscribed State
+  const [localProgress, setLocalProgress] = useState(progressEmitter.get(jobId)?.progress ?? download.progress);
+  const [localSpeed, setLocalSpeed] = useState(progressEmitter.get(jobId)?.speed ?? download.speed);
+  const [localEta, setLocalEta] = useState(progressEmitter.get(jobId)?.eta ?? download.eta);
+  const [localPhase, setLocalPhase] = useState(progressEmitter.get(jobId)?.phase ?? download.phase);
+  const [localStatus, setLocalStatus] = useState(progressEmitter.get(jobId)?.status ?? download.status);
+
+  useEffect(() => {
+      const handleProgress = (data: ProgressData) => {
+          if (data.progress !== undefined) setLocalProgress(data.progress);
+          if (data.speed !== undefined) setLocalSpeed(data.speed);
+          if (data.eta !== undefined) setLocalEta(data.eta);
+          if (data.phase !== undefined) setLocalPhase(data.phase);
+          if (data.status !== undefined) setLocalStatus(data.status);
+      };
+      progressEmitter.subscribe(jobId, handleProgress);
+      return () => progressEmitter.unsubscribe(jobId, handleProgress);
+  }, [jobId]);
 
   const [showLogs, setShowLogs] = useState(false);
   const displayTitle = filename || url;
   const isAudio = preset?.startsWith('audio');
 
-  const isQueued = status === 'pending';
-  const isActive = status === 'downloading'; 
-  const isError = status === 'error';
-  const isCompleted = status === 'completed';
-  const isModified = status === 'modified';
-  const isCancelled = status === 'cancelled';
-  const isConflict = status === 'file_conflict';
+  const isQueued = localStatus === 'pending';
+  const isActive = localStatus === 'downloading'; 
+  const isError = localStatus === 'error';
+  const isCompleted = localStatus === 'completed';
+  const isModified = localStatus === 'modified';
+  const isCancelled = localStatus === 'cancelled';
+  const isConflict = localStatus === 'file_conflict';
 
   const formatStat = (text?: string) => {
       if (!text || text === 'Unknown' || text === 'N/A') return <span className="animate-pulse text-zinc-600">--</span>;
@@ -39,17 +57,17 @@ export function DownloadItem({ download, onCancel }: DownloadItemProps) {
   };
 
   const isProcessingPhase = isActive && (
-       phase?.includes('Merging') 
-    || phase?.includes('Extracting') 
-    || phase?.includes('Fixing')
-    || phase?.includes('Moving')
-    || phase?.includes('Finalizing')
-    || phase?.includes('Processing')
+       localPhase?.includes('Merging') 
+    || localPhase?.includes('Extracting') 
+    || localPhase?.includes('Fixing')
+    || localPhase?.includes('Moving')
+    || localPhase?.includes('Finalizing')
+    || localPhase?.includes('Processing')
   );
 
   const isMetaPhase = isActive && (
-       phase?.includes('Metadata') 
-    || phase?.includes('Thumbnail')
+       localPhase?.includes('Metadata') 
+    || localPhase?.includes('Thumbnail')
   );
 
   const getStatusColor = () => {
@@ -92,7 +110,7 @@ export function DownloadItem({ download, onCancel }: DownloadItemProps) {
 
   return (
     <div className={twMerge(
-        "group animate-fade-in relative bg-zinc-900/40 border rounded-lg p-4 transition-all duration-300 hover:bg-zinc-900/60",
+        "group relative bg-zinc-900/40 border rounded-lg p-4 transition-all duration-300 hover:bg-zinc-900/60",
         isError ? "border-red-900/30 hover:border-red-900/50" : 
         isConflict ? "border-amber-500/40 bg-amber-950/10 hover:border-amber-500/60" :
         isModified ? "border-fuchsia-900/40 bg-fuchsia-950/10 hover:border-fuchsia-500/50" :
@@ -144,7 +162,7 @@ export function DownloadItem({ download, onCancel }: DownloadItemProps) {
                             getStatusColor()
                         )}>
                             {isActive && <Activity className={twMerge("h-3 w-3", (isProcessingPhase || isMetaPhase) && "animate-spin")} />}
-                            {isConflict ? "File Exists" : isModified ? "Modified" : (phase || (isQueued ? "Waiting" : status))}
+                            {isConflict ? "File Exists" : isModified ? "Modified" : (localPhase || (isQueued ? "Waiting" : localStatus))}
                         </span>
 
                         {/* Modified Help Icon */}
@@ -179,7 +197,7 @@ export function DownloadItem({ download, onCancel }: DownloadItemProps) {
                  <div className="text-right flex-shrink-0">
                     {isActive ? (
                          <span className="text-xl font-black text-zinc-100 tabular-nums tracking-tight">
-                            {progress.toFixed(0)}<span className="text-xs font-medium text-zinc-600 ml-0.5">%</span>
+                            {localProgress.toFixed(0)}<span className="text-xs font-medium text-zinc-600 ml-0.5">%</span>
                          </span>
                     ) : (
                         <div className="h-6" /> // spacer
@@ -192,7 +210,7 @@ export function DownloadItem({ download, onCancel }: DownloadItemProps) {
                 {isActive && (
                      <div className={twMerge("relative", (isProcessingPhase || isMetaPhase) && "opacity-80")}>
                         <Progress 
-                            value={progress} 
+                            value={localProgress} 
                             variant={isError ? 'error' : (isCompleted || isModified) ? 'success' : 'default'} 
                             className="h-1.5"
                         />
@@ -217,9 +235,9 @@ export function DownloadItem({ download, onCancel }: DownloadItemProps) {
                 {/* Active Stats Footer */}
                 {isActive && !isProcessingPhase && !isMetaPhase && (
                     <div className="flex items-center justify-between text-[10px] text-zinc-500 font-mono mt-1.5 px-0.5">
-                        <span title="Download Speed">{formatStat(speed)}</span>
+                        <span title="Download Speed">{formatStat(localSpeed)}</span>
                         <span title="ETA" className="flex items-center gap-1">
-                            <Clock className="h-3 w-3" /> {formatStat(eta)}
+                            <Clock className="h-3 w-3" /> {formatStat(localEta)}
                         </span>
                     </div>
                 )}

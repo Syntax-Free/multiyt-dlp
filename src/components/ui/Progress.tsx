@@ -24,7 +24,7 @@ const Progress = React.forwardRef<HTMLDivElement, ProgressProps>(
       >
         <div 
             className={twMerge(
-                "h-full transition-all duration-300 ease-out rounded-full",
+                "h-full transition-all duration-500 ease-linear rounded-full",
                 colors[variant] || colors.default
             )}
             style={{ width: `${value}%` }}

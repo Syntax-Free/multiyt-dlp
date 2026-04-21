@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use std::path::{Path, PathBuf};
 use std::fs;
 use serde::Deserialize;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::{debug, error, warn, trace, info};
 use walkdir::WalkDir;
 use std::collections::VecDeque;
@@ -397,7 +397,11 @@ pub async fn run_download_process(
         let mut detected_output_path: Option<String> = None;
         let mut detected_filename_only: Option<String> = None;
         
-        // OPTIMIZED: VecDeque for O(1) sliding window management
+        // DEBOUNCE TRACKING
+        let mut last_ipc_update = Instant::now();
+        let mut last_emitted_phase = state_phase.clone();
+        
+        // VecDeque for O(1) sliding window management
         let mut captured_logs = VecDeque::with_capacity(100);
         let mut captured_stderr = VecDeque::with_capacity(50);
         
@@ -416,7 +420,8 @@ pub async fn run_download_process(
             }
             
             if is_stderr {
-                warn!(target: "core::process::stderr", job_id = ?job_id, "{}", trimmed);
+                // LOG SHEDDING: Downgraded from warn! to trace! to prevent blocking I/O layer
+                trace!(target: "core::process::stderr", job_id = ?job_id, "{}", trimmed);
                 captured_stderr.push_back(trimmed.to_string());
                 if captured_stderr.len() > 50 { 
                     captured_stderr.pop_front(); 
@@ -526,15 +531,25 @@ pub async fn run_download_process(
                 }
             }
 
+            // IPC DEBOUNCE LOGIC 
             if emit_update {
-                 let _ = tx_actor.send(JobMessage::UpdateProgress {
-                    id: job_id,
-                    percentage: state_percentage,
-                    speed: speed_str,
-                    eta: eta_str,
-                    filename: detected_filename_only.clone(),
-                    phase: state_phase.clone()
-                }).await;
+                 let phase_changed = state_phase != last_emitted_phase;
+                 let time_elapsed = last_ipc_update.elapsed().as_millis() >= 500;
+                 let is_terminal = state_percentage >= 100.0;
+                 
+                 if time_elapsed || phase_changed || is_terminal {
+                     let _ = tx_actor.send(JobMessage::UpdateProgress {
+                        id: job_id,
+                        percentage: state_percentage,
+                        speed: speed_str,
+                        eta: eta_str,
+                        filename: detected_filename_only.clone(),
+                        phase: state_phase.clone()
+                     }).await;
+                     
+                     last_ipc_update = Instant::now();
+                     last_emitted_phase = state_phase.clone();
+                 }
             }
         }
 

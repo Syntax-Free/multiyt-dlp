@@ -67,8 +67,8 @@ export function Layout({ SidebarContent, MainContent }: LayoutProps) {
         {SidebarContent}
       </aside>
       
-      {/* Main Content */}
-      <main className="flex-grow p-8 overflow-y-auto bg-zinc-950">
+      {/* Main Content with Virtualization Target ID */}
+      <main id="scroll-container" className="flex-grow p-8 overflow-y-auto bg-zinc-950">
         <div className="max-w-4xl mx-auto">
             {MainContent}
         </div>

@@ -1,15 +1,61 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { Download, DownloadCompletePayload, DownloadErrorPayload, BatchProgressPayload, DownloadFormatPreset, QueuedJob, DownloadCancelledPayload, StartDownloadResponse } from '@/types';
+import { Download, DownloadCompletePayload, DownloadErrorPayload, BatchProgressPayload, DownloadFormatPreset, QueuedJob, DownloadCancelledPayload, StartDownloadResponse, DownloadStatus } from '@/types';
 import { startDownload as apiStartDownload, cancelDownload as apiCancelDownload, resolveFileConflict as apiResolveConflict, syncDownloadState } from '@/api/invoke';
 import { useAppContext } from '@/contexts/AppContext';
+
+// --- DECOUPLED PROGRESS PUB/SUB ---
+export type ProgressData = {
+    progress?: number;
+    speed?: string;
+    eta?: string;
+    phase?: string;
+    status?: DownloadStatus;
+};
+
+class ProgressEmitter {
+    private store = new Map<string, ProgressData>();
+    private listeners = new Map<string, Set<(data: ProgressData) => void>>();
+
+    emit(jobId: string, data: ProgressData) {
+        const current = this.store.get(jobId) || {};
+        const next = { ...current, ...data };
+        this.store.set(jobId, next);
+        this.listeners.get(jobId)?.forEach(cb => cb(next));
+    }
+
+    subscribe(jobId: string, cb: (data: ProgressData) => void) {
+        if (!this.listeners.has(jobId)) this.listeners.set(jobId, new Set());
+        this.listeners.get(jobId)!.add(cb);
+        if (this.store.has(jobId)) {
+            cb(this.store.get(jobId)!);
+        }
+    }
+
+    unsubscribe(jobId: string, cb: (data: ProgressData) => void) {
+        this.listeners.get(jobId)?.delete(cb);
+    }
+
+    get(jobId: string) {
+        return this.store.get(jobId);
+    }
+}
+
+export const progressEmitter = new ProgressEmitter();
+// -----------------------------------
 
 export function useDownloadManager() {
   const { maxConcurrentDownloads } = useAppContext();
   const [downloads, setDownloads] = useState<Map<string, Download>>(new Map());
   const hasSynced = useRef(false);
+  const downloadsRef = useRef(downloads);
 
-  const updateDownloadsBatch = (updates: { jobId: string, data: Partial<Download> }[]) => {
+  // Keep ref in sync for O(1) state diffing without triggering re-renders in the effect
+  useEffect(() => {
+      downloadsRef.current = downloads;
+  }, [downloads]);
+
+  const updateDownloadsBatch = useCallback((updates: { jobId: string, data: Partial<Download> }[]) => {
     setDownloads((prev) => {
         const newMap = new Map(prev);
         updates.forEach(update => {
@@ -19,9 +65,7 @@ export function useDownloadManager() {
                 if (update.data.sequence_id !== undefined && existing.sequence_id > update.data.sequence_id) {
                     return;
                 }
-
                 const mergedFilename = update.data.filename || existing.filename;
-
                 newMap.set(update.jobId, { 
                     ...existing, 
                     ...update.data,
@@ -40,9 +84,9 @@ export function useDownloadManager() {
         });
         return newMap;
     });
-  };
+  }, []);
 
-  const updateDownload = (jobId: string, newProps: Partial<Download>) => {
+  const updateDownload = useCallback((jobId: string, newProps: Partial<Download>) => {
       setDownloads((prev) => {
           const newMap = new Map(prev);
           const existing = newMap.get(jobId);
@@ -58,7 +102,7 @@ export function useDownloadManager() {
           }
           return newMap;
       });
-  };
+  }, []);
 
   useEffect(() => {
     if (!hasSynced.current) {
@@ -69,11 +113,9 @@ export function useDownloadManager() {
                     const newMap = new Map(prev);
                     recovered.forEach(remoteJob => {
                         const localJob = newMap.get(remoteJob.jobId);
-                        
                         if (localJob && localJob.sequence_id > remoteJob.sequence_id) {
                             return;
                         }
-                        
                         newMap.set(remoteJob.jobId, remoteJob);
                     });
                     return newMap;
@@ -83,22 +125,48 @@ export function useDownloadManager() {
     }
 
     const unlistenProgress = listen<BatchProgressPayload>('download-progress-batch', (event) => {
-        const updates = event.payload.updates.map(u => ({
-            jobId: u.jobId,
-            data: {
-                status: u.status || 'downloading', 
+        let needsGlobalUpdate = false;
+        const globalUpdates: { jobId: string, data: Partial<Download> }[] = [];
+
+        event.payload.updates.forEach(u => {
+            const currentGlobal = downloadsRef.current.get(u.jobId);
+            
+            // 1. Emit locally (Zero React Overhead)
+            progressEmitter.emit(u.jobId, {
                 progress: u.percentage,
-                sequence_id: u.sequence_id,
                 speed: u.speed,
                 eta: u.eta,
-                filename: u.filename,
-                phase: u.phase
+                phase: u.phase || undefined,
+                status: u.status || undefined,
+            });
+
+            // 2. Diff for Global State (Only trigger React if structural status changes)
+            if (currentGlobal) {
+                const statusChanged = u.status && u.status !== currentGlobal.status;
+                const filenameChanged = u.filename && u.filename !== currentGlobal.filename;
+                
+                if (statusChanged || filenameChanged) {
+                    needsGlobalUpdate = true;
+                    globalUpdates.push({
+                        jobId: u.jobId,
+                        data: {
+                            status: u.status || currentGlobal.status,
+                            filename: u.filename || currentGlobal.filename,
+                            phase: u.phase || currentGlobal.phase,
+                            sequence_id: u.sequence_id
+                        }
+                    });
+                }
             }
-        }));
-        updateDownloadsBatch(updates);
+        });
+
+        if (needsGlobalUpdate && globalUpdates.length > 0) {
+            updateDownloadsBatch(globalUpdates);
+        }
     });
 
     const unlistenComplete = listen<DownloadCompletePayload>('download-complete', (event) => {
+      progressEmitter.emit(event.payload.jobId, { status: event.payload.status || 'completed', progress: 100, phase: 'Done' });
       updateDownload(event.payload.jobId, {
         status: event.payload.status || 'completed',
         progress: 100,
@@ -109,6 +177,7 @@ export function useDownloadManager() {
     });
 
     const unlistenError = listen<DownloadErrorPayload>('download-error', (event) => {
+      progressEmitter.emit(event.payload.jobId, { status: 'error' });
       updateDownload(event.payload.jobId, {
         status: 'error',
         error: event.payload.error,
@@ -119,6 +188,7 @@ export function useDownloadManager() {
     });
 
     const unlistenCancelled = listen<DownloadCancelledPayload>('download-cancelled', (event) => {
+        progressEmitter.emit(event.payload.jobId, { status: 'cancelled', phase: 'Cancelled by user', eta: '--', speed: '--' });
         updateDownload(event.payload.jobId, {
             status: 'cancelled',
             phase: 'Cancelled by user',
@@ -133,7 +203,7 @@ export function useDownloadManager() {
       unlistenError.then((f) => f());
       unlistenCancelled.then((f) => f());
     };
-  },[]);
+  }, [updateDownloadsBatch, updateDownload]);
 
   const startDownload = useCallback(async (
     url: string, 
@@ -275,7 +345,7 @@ export function useDownloadManager() {
     } else {
         removeDownload(jobId);
     }
-  }, [downloads, removeDownload]);
+  }, [downloads, removeDownload, updateDownload]);
 
   const cancelAllDownloads = useCallback(async () => {
       const targets = Array.from(downloads.values()).filter(d => 
@@ -290,7 +360,7 @@ export function useDownloadManager() {
               console.error(`Bulk cancel failed for ${job.jobId}`, e);
           }
       }
-  }, [downloads]);
+  }, [downloads, updateDownload]);
 
   const resolveConflict = useCallback(async (jobId: string, resolution: 'overwrite' | 'discard') => {
       try {
@@ -300,7 +370,7 @@ export function useDownloadManager() {
           console.error("Failed to resolve conflict", err);
           updateDownload(jobId, { status: 'error', error: 'Failed to resolve conflict' });
       }
-  },[]);
+  }, [updateDownload]);
 
   return { downloads, startDownload, cancelDownload, removeDownload, importResumedJobs, cancelAllDownloads, resolveConflict };
 }

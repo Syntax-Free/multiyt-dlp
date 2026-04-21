@@ -3,7 +3,8 @@ import { X, CheckCircle2, AlertTriangle, Hourglass, MonitorPlay, Headphones, Tag
 import { twMerge } from 'tailwind-merge';
 import { showInFolder } from '@/api/invoke';
 import { parseError } from '@/utils/errorRegistry';
-import { useDownloadManager } from '@/hooks/useDownloadManager';
+import { useState, useEffect } from 'react';
+import { useDownloadManager, progressEmitter, ProgressData } from '@/hooks/useDownloadManager';
 
 interface DownloadGridItemProps {
   download: Download;
@@ -18,33 +19,48 @@ function middleTruncate(str: string, maxLength: number) {
 
 export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) {
   const { resolveConflict } = useDownloadManager();
-  const { jobId, status, progress, error, phase, preset, embedThumbnail, filename, url, outputPath, stderr, usedCommand } = download;
+  const { jobId, error, preset, embedThumbnail, filename, url, outputPath, stderr, usedCommand } = download;
+
+  // Localized Subscribed State
+  const [localProgress, setLocalProgress] = useState(progressEmitter.get(jobId)?.progress ?? download.progress);
+  const [localPhase, setLocalPhase] = useState(progressEmitter.get(jobId)?.phase ?? download.phase);
+  const [localStatus, setLocalStatus] = useState(progressEmitter.get(jobId)?.status ?? download.status);
+
+  useEffect(() => {
+      const handleProgress = (data: ProgressData) => {
+          if (data.progress !== undefined) setLocalProgress(data.progress);
+          if (data.phase !== undefined) setLocalPhase(data.phase);
+          if (data.status !== undefined) setLocalStatus(data.status);
+      };
+      progressEmitter.subscribe(jobId, handleProgress);
+      return () => progressEmitter.unsubscribe(jobId, handleProgress);
+  }, [jobId]);
 
   const isAudio = preset?.startsWith('audio');
   const rawTitle = filename || url;
   const displayTitle = middleTruncate(rawTitle, 40);
   
   // State Flags
-  const isQueued = status === 'pending';
-  const isActive = status === 'downloading'; 
-  const isError = status === 'error';
-  const isCompleted = status === 'completed';
-  const isModified = status === 'modified';
-  const isCancelled = status === 'cancelled';
-  const isConflict = status === 'file_conflict';
+  const isQueued = localStatus === 'pending';
+  const isActive = localStatus === 'downloading'; 
+  const isError = localStatus === 'error';
+  const isCompleted = localStatus === 'completed';
+  const isModified = localStatus === 'modified';
+  const isCancelled = localStatus === 'cancelled';
+  const isConflict = localStatus === 'file_conflict';
 
   const isProcessingPhase = isActive && (
-       phase?.includes('Merging') 
-    || phase?.includes('Extracting') 
-    || phase?.includes('Fixing')
-    || phase?.includes('Moving')
-    || phase?.includes('Finalizing')
-    || phase?.includes('Processing')
+       localPhase?.includes('Merging') 
+    || localPhase?.includes('Extracting') 
+    || localPhase?.includes('Fixing')
+    || localPhase?.includes('Moving')
+    || localPhase?.includes('Finalizing')
+    || localPhase?.includes('Processing')
   );
 
   const isMetaPhase = isActive && (
-       phase?.includes('Metadata') 
-    || phase?.includes('Thumbnail')
+       localPhase?.includes('Metadata') 
+    || localPhase?.includes('Thumbnail')
   );
 
   // Parse error for tooltip
@@ -77,7 +93,7 @@ export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) 
     
     if (isMetaPhase) return <Tags className="h-7 w-7 text-amber-400 animate-pulse" />;
     if (isProcessingPhase) return <FileOutput className="h-7 w-7 text-amber-400 animate-pulse" />;
-    if (embedThumbnail && phase?.includes('Thumbnail')) return <ImageIcon className="h-7 w-7 text-amber-400 animate-pulse" />;
+    if (embedThumbnail && localPhase?.includes('Thumbnail')) return <ImageIcon className="h-7 w-7 text-amber-400 animate-pulse" />;
 
     return isAudio 
         ? <Headphones className="h-7 w-7 text-theme-red" /> 
@@ -128,7 +144,7 @@ export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) 
         {isActive && !isProcessingPhase && !isMetaPhase && (
             <div 
                 className="absolute bottom-0 left-0 right-0 bg-theme-cyan/10 transition-all duration-300 ease-out z-0"
-                style={{ height: `${progress}%` }}
+                style={{ height: `${localProgress}%` }}
             >
                 <div className="w-full h-[1px] bg-theme-cyan/50 shadow-[0_0_10px_rgba(6,182,212,0.8)]" />
             </div>
@@ -146,7 +162,7 @@ export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) 
             {isActive && !isProcessingPhase && !isMetaPhase ? (
                 <div className="flex flex-col items-center animate-fade-in">
                     <span className="text-2xl font-black tracking-tighter text-zinc-100 tabular-nums">
-                        {progress.toFixed(0)}<span className="text-[10px] font-medium text-zinc-500 align-top ml-0.5">%</span>
+                        {localProgress.toFixed(0)}<span className="text-[10px] font-medium text-zinc-500 align-top ml-0.5">%</span>
                     </span>
                     <div className="mt-1 flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-theme-cyan/10 border border-theme-cyan/20">
                          <Activity className="h-2.5 w-2.5 text-theme-cyan animate-pulse" />
@@ -165,7 +181,7 @@ export function DownloadGridItem({ download, onCancel }: DownloadGridItemProps) 
                     "mt-2 text-[8px] font-black uppercase tracking-[0.2em]",
                     isConflict ? "text-amber-400" : "text-zinc-500"
                 )}>
-                    {isConflict ? 'CONFLICT' : (phase || (isQueued ? 'Queued' : 'Init'))}
+                    {isConflict ? 'CONFLICT' : (localPhase || (isQueued ? 'Queued' : 'Init'))}
                 </div>
             )}
         </div>
