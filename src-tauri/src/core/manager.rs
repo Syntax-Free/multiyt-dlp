@@ -163,11 +163,8 @@ impl JobManagerActor {
         info!(target: "core::manager", "JobManagerActor core loop started");
         
         // DECOUPLED TIMERS (Optimization Vectors 2 & 3)
-        // IPC Updates to Frontend
         let mut ui_flush_interval = time::interval(Duration::from_millis(100));
-        // Native Taskbar/Dock OS Interop (Highly expensive COM call)
         let mut native_ui_interval = time::interval(Duration::from_millis(1000));
-        // Disk I/O Throttling
         let mut persistence_interval = time::interval(Duration::from_secs(5));
 
         loop {
@@ -177,7 +174,6 @@ impl JobManagerActor {
                         info!(target: "core::manager", "Shutdown sequence initiated");
                         self.handle_shutdown().await;
                         
-                        // Final guaranteed persistence flush on shutdown
                         if self.dirty_persistence {
                             let jobs: Vec<QueuedJob> = self.persistence_registry.values().cloned().collect();
                             let _ = self.persistence_tx.send(PersistenceMsg::Save(jobs)).await;
@@ -189,15 +185,12 @@ impl JobManagerActor {
                     self.handle_message(msg).await;
                 }
                 _ = ui_flush_interval.tick() => {
-                    // Fast flush of memory-only IPC payloads
                     self.flush_updates();
                 }
                 _ = native_ui_interval.tick() => {
-                    // Throttled OS UI integration
                     self.update_native_ui();
                 }
                 _ = persistence_interval.tick() => {
-                    // Throttled Disk I/O
                     if self.dirty_persistence {
                         let jobs: Vec<QueuedJob> = self.persistence_registry.values().cloned().collect();
                         if let Ok(_) = self.persistence_tx.try_send(PersistenceMsg::Save(jobs)) {
@@ -296,7 +289,6 @@ impl JobManagerActor {
                 if let Some(flag) = self.cancel_flags.get(&id) {
                     flag.store(true, Ordering::Relaxed);
                 }
-                // Safe to remove here as Arc keeps the reference alive inside process loops
                 self.cancel_flags.remove(&id);
 
                 if let Some(job) = self.jobs.get_mut(&id) {
@@ -305,7 +297,6 @@ impl JobManagerActor {
                         kill_process(pid);
                     }
                     if let Some(temp) = job.temp_path.clone() {
-                        // Offload blocking disk I/O to a background task
                         tauri::async_runtime::spawn(async move {
                             let path = PathBuf::from(temp);
                             if path.exists() { 
@@ -446,7 +437,6 @@ impl JobManagerActor {
                         return;
                     }
 
-                    // Log phase transitions
                     if let Some(ref current_phase) = job.phase {
                         if current_phase != &phase {
                             debug!(target: "core::manager", job_id = ?id, "Phase transitioned: '{}' -> '{}'", current_phase, phase);
@@ -460,7 +450,6 @@ impl JobManagerActor {
                     job.phase = Some(phase.clone());
                     job.sequence_id += 1;
 
-                    // Do not mark dirty persistence on simple progress ticks to save disk I/O
                     self.pending_updates.insert(id, DownloadProgressPayload {
                         job_id: id,
                         percentage,
@@ -489,7 +478,6 @@ impl JobManagerActor {
                     job.used_command = Some(used_command.clone());
                     job.sequence_id += 1;
 
-                    // Capture data for the event while we have the borrow
                     payload = Some(DownloadProgressPayload {
                         job_id: id,
                         percentage: job.progress,
@@ -502,7 +490,6 @@ impl JobManagerActor {
                     });
                 }
 
-                // Now that the borrow of 'job' is dropped, we can safely mutate 'self'
                 if let Some(p) = payload {
                     self.mark_dirty();
                     let _ = self.app_handle.emit_all("download-progress-batch", BatchProgressPayload { 
@@ -703,7 +690,7 @@ impl JobManagerActor {
 
     fn process_queue(&mut self) {
         let config_manager = self.app_handle.state::<Arc<ConfigManager>>();
-        let config = config_manager.get_config().general;
+        let config = config_manager.get_config().general.clone();
 
         let effective_concurrent_limit = if config.use_concurrent_fragments {
             1
@@ -821,7 +808,6 @@ impl JobManagerActor {
     }
 }
 
-/// Helper function to terminate processes that does not require a borrow of the JobManagerActor.
 fn kill_process(pid: u32) {
     debug!(target: "core::manager", pid = pid, "Terminating process via OS signals");
     #[cfg(not(target_os = "windows"))]

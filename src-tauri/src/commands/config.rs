@@ -7,7 +7,9 @@ use tracing::{debug, error, info, trace};
 #[tauri::command]
 pub fn get_app_config(config_manager: State<'_, Arc<ConfigManager>>) -> AppConfig {
     trace!(target: "commands::config", "Frontend requested AppConfig");
-    config_manager.get_config()
+    // Clone the AppConfig from the Arc – the frontend needs an owned value.
+    let arc_cfg = config_manager.get_config();
+    (*arc_cfg).clone()
 }
 
 #[tauri::command]

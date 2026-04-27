@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::Arc;
+use arc_swap::ArcSwap;
 use tracing::{debug, error, info, trace, warn};
 
 // --- Configuration Structs ---
@@ -136,10 +137,10 @@ impl Default for AppConfig {
     }
 }
 
-// --- Manager ---
+// --- Manager (Lock‑Free via arc_swap) ---
 
 pub struct ConfigManager {
-    config: Mutex<AppConfig>,
+    config: ArcSwap<AppConfig>,
     file_path: PathBuf,
 }
 
@@ -169,7 +170,7 @@ impl ConfigManager {
         config.window.sanitize();
 
         let manager = Self {
-            config: Mutex::new(config),
+            config: ArcSwap::from_pointee(config),
             file_path,
         };
         
@@ -239,10 +240,10 @@ impl ConfigManager {
     }
 
     pub fn save(&self) -> Result<(), String> {
-        trace!(target: "config", "Attempting to acquire config lock for saving");
-        let config_guard = self.config.lock().unwrap();
+        trace!(target: "config", "Acquiring current config Arc for saving");
+        let config_arc = self.config.load_full();
         
-        let json = serde_json::to_string_pretty(&*config_guard)
+        let json = serde_json::to_string_pretty(&**config_arc)
             .map_err(|e| {
                 error!(target: "config", "Serialization error during save: {}", e);
                 format!("Serialization error: {}", e)
@@ -275,27 +276,33 @@ impl ConfigManager {
         Ok(())
     }
 
-    pub fn get_config(&self) -> AppConfig {
-        trace!(target: "config", "Cloning config state for frontend");
-        self.config.lock().unwrap().clone()
+    /// Returns an `Arc<AppConfig>` – cheap, lock‑free, and wait‑free.
+    pub fn get_config(&self) -> Arc<AppConfig> {
+        self.config.load_full()
     }
 
     pub fn update_general(&self, general: GeneralConfig) {
         debug!(target: "config", "Updating General Configuration");
-        let mut cfg = self.config.lock().unwrap();
-        cfg.general = general;
+        let current = self.config.load_full();
+        let mut new_cfg = (*current).clone();
+        new_cfg.general = general;
+        self.config.store(Arc::new(new_cfg));
     }
 
     pub fn update_preferences(&self, prefs: PreferenceConfig) {
         debug!(target: "config", "Updating Preference Configuration");
-        let mut cfg = self.config.lock().unwrap();
-        cfg.preferences = prefs;
+        let current = self.config.load_full();
+        let mut new_cfg = (*current).clone();
+        new_cfg.preferences = prefs;
+        self.config.store(Arc::new(new_cfg));
     }
 
     pub fn update_window(&self, mut window: WindowConfig) {
         trace!(target: "config", "Updating Window Configuration");
         window.sanitize(); 
-        let mut cfg = self.config.lock().unwrap();
-        cfg.window = window;
+        let current = self.config.load_full();
+        let mut new_cfg = (*current).clone();
+        new_cfg.window = window;
+        self.config.store(Arc::new(new_cfg));
     }
 }

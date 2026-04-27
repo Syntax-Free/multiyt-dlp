@@ -110,8 +110,6 @@ fn format_eta(seconds: u64) -> String {
     else { format!("{:02}:{:02}", m, s) }
 }
 
-/// Constructs a JobError message by converting the optimized ring buffer logs
-/// back into a flattened string for the frontend.
 fn construct_error(
     job_id: uuid::Uuid, 
     msg: String, 
@@ -121,7 +119,6 @@ fn construct_error(
 ) -> JobMessage {
     error!(target: "core::process", job_id = ?job_id, exit_code = ?exit_code, "Job failed: {}", msg);
     
-    // Flatten the Ring Buffer for persistence and UI display
     let flattened_logs = Vec::from(logs).join("\n");
 
     JobMessage::JobError {
@@ -202,7 +199,7 @@ pub async fn run_download_process(
         }
 
         info!(target: "core::process", job_id = ?job_id, "Preparing execution environment for URL (Fallback Level {})", fallback_level);
-        let general_config = config_manager.get_config().general;
+        let general_config = config_manager.get_config().general.clone();
         let bin_dir = crate::core::deps::get_common_bin_dir();
         
         let target_dir = if let Some(ref path) = job_data.download_path {
@@ -404,11 +401,9 @@ pub async fn run_download_process(
         let mut detected_output_path: Option<String> = None;
         let mut detected_filename_only: Option<String> = None;
         
-        // DEBOUNCE TRACKING
         let mut last_ipc_update = Instant::now();
         let mut last_emitted_phase = state_phase.clone();
         
-        // VecDeque for O(1) sliding window management
         let mut captured_logs = VecDeque::with_capacity(100);
         let mut captured_stderr = VecDeque::with_capacity(50);
         
@@ -427,7 +422,6 @@ pub async fn run_download_process(
             }
             
             if is_stderr {
-                // LOG SHEDDING: Downgraded from warn! to trace! to prevent blocking I/O layer
                 trace!(target: "core::process::stderr", job_id = ?job_id, "{}", trimmed);
                 captured_stderr.push_back(trimmed.to_string());
                 if captured_stderr.len() > 50 { 
@@ -538,7 +532,6 @@ pub async fn run_download_process(
                 }
             }
 
-            // IPC DEBOUNCE LOGIC 
             if emit_update {
                  let phase_changed = state_phase != last_emitted_phase;
                  let time_elapsed = last_ipc_update.elapsed().as_millis() >= 500;
@@ -562,7 +555,6 @@ pub async fn run_download_process(
 
         let status = child.wait().await.expect("Child process error");
 
-        // Fast-path exit if cancellation occurred during processing or waiting
         if cancel_flag.load(Ordering::Relaxed) {
             debug!(target: "core::process", job_id = ?job_id, "Job cancellation detected. Aborting outer process loop.");
             break;

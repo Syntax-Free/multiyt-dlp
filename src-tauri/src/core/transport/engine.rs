@@ -504,25 +504,35 @@ impl TransportEngine {
             let _ = fs::remove_file(&final_tmp_path).await;
         }
 
-        let raw_target_file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&final_tmp_path)
-            .await?;
+        // Clone parts for the blocking closure – they are needed by value.
+        let parts_clone = parts.to_vec();
+        let final_tmp_path_clone = final_tmp_path.clone();
 
-        let mut target_file = BufWriter::with_capacity(IO_BUFFER_SIZE, raw_target_file);
+        // Offload the heavy merge to a blocking thread to leverage kernel‑space copy.
+        tokio::task::spawn_blocking(move || -> Result<(), TransportError> {
+            use std::io::Write;
+            
+            let mut target_file = std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&final_tmp_path_clone)?;
 
-        for part_path in parts.iter() {
-            trace!(target: "core::transport", "Merging data from chunk part {:?}", part_path);
-            let mut part_file = fs::File::open(part_path).await?;
-            tokio::io::copy(&mut part_file, &mut target_file).await?;
-        }
-        
-        target_file.flush().await?;
+            for part in &parts_clone {
+                let mut source_file = std::fs::File::open(part)?;
+                // std::io::copy uses OS‑specific optimisations (e.g. sendfile on Linux)
+                std::io::copy(&mut source_file, &mut target_file)?;
+            }
+            
+            target_file.flush()?;
+            Ok(())
+        })
+        .await
+        .map_err(|_| TransportError::Validation("Blocking merge task panicked".into()))??;
 
-        for part_path in parts.iter() {
-            let _ = fs::remove_file(part_path).await;
+        // Clean up the chunk parts after successful merge.
+        for part in parts {
+            let _ = fs::remove_file(part).await;
         }
         
         self.finalize(&final_tmp_path).await

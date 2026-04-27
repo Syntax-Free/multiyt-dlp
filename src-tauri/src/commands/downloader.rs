@@ -29,7 +29,7 @@ async fn probe_url(url: &str, _app: &AppHandle, config_manager: &Arc<ConfigManag
     })?;
     trace!(target: "commands::downloader", "Probe semaphore permit acquired");
 
-    let config = config_manager.get_config().general;
+    let config = config_manager.get_config().general.clone();
     let bin_dir = crate::core::deps::get_common_bin_dir();
     
     let url_clone = url.to_string();
@@ -174,7 +174,7 @@ pub async fn start_download(
     }
 
     let config_manager = config.inner().clone();
-    let general_config = config_manager.get_config().general;
+    let general_config = config_manager.get_config().general.clone();
 
     let final_download_path = download_path
         .or(general_config.download_path)
