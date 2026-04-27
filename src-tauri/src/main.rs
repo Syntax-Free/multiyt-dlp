@@ -1,4 +1,3 @@
-// Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::sync::Arc;
@@ -33,7 +32,6 @@ fn main() {
 
     core::logging::register_panic_hook();
     
-    // Self-register in the SFS Common Registry map so other suite members can detect our presence
     core::deps::register_sfs_app();
 
     let home = dirs::home_dir().expect("Could not find home directory");
@@ -42,13 +40,11 @@ fn main() {
         let _ = fs::create_dir_all(&temp_dir);
     }
 
-    // --- SFS Common Dependencies Cleanup ---
     let common_bin_dir = core::deps::get_common_bin_dir();
     if let Ok(entries) = std::fs::read_dir(&common_bin_dir) {
         for entry in entries.flatten() {
             if let Some(name) = entry.path().file_name() {
                 if name.to_string_lossy().contains(".old.") {
-                    // Silently try to delete. Will fail gracefully if locked.
                     let _ = std::fs::remove_file(entry.path());
                 }
             }
@@ -140,11 +136,10 @@ fn main() {
                 
                 WindowEvent::Moved(pos) => {
                     if window_label == "main" && !window.is_minimized().unwrap_or(false) {
-                        let mut current_config = config_manager_event.get_config();
+                        let mut current_config = (*config_manager_event.get_config()).clone();
                         let is_max = window.is_maximized().unwrap_or(false);
                         current_config.window.is_maximized = is_max;
 
-                        // Only update coordinates if not maximized to preserve manual placement
                         if !is_max && pos.x > -10000 && pos.y > -10000 {
                             current_config.window.x = pos.x as f64;
                             current_config.window.y = pos.y as f64;
@@ -156,11 +151,10 @@ fn main() {
                 }
                 WindowEvent::Resized(size) => {
                     if window_label == "main" && !window.is_minimized().unwrap_or(false) {
-                        let mut current_config = config_manager_event.get_config();
+                        let mut current_config = (*config_manager_event.get_config()).clone();
                         let is_max = window.is_maximized().unwrap_or(false);
                         current_config.window.is_maximized = is_max;
 
-                        // Only update dimensions if not maximized to preserve manual sizing
                         if !is_max && size.width > 0 && size.height > 0 {
                             current_config.window.width = size.width as f64;
                             current_config.window.height = size.height as f64;
@@ -174,7 +168,6 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
-            // System Commands
             commands::system::check_local_deps,
             commands::system::check_ytdlp_update,
             commands::system::check_dependencies,
@@ -189,7 +182,6 @@ fn main() {
             commands::system::log_frontend_message, 
             commands::system::request_attention,
             
-            // Downloader Commands
             commands::downloader::start_download,
             commands::downloader::cancel_download,
             commands::downloader::resolve_file_conflict,
@@ -199,12 +191,10 @@ fn main() {
             commands::downloader::clear_pending_jobs,
             commands::downloader::sync_download_state,
             
-            // Config Commands
             commands::config::get_app_config,
             commands::config::save_general_config,
             commands::config::save_preference_config,
             
-            // History Commands
             commands::history::get_download_history,
             commands::history::save_download_history,
             commands::history::clear_download_history,

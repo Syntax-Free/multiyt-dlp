@@ -243,7 +243,7 @@ impl ConfigManager {
         trace!(target: "config", "Acquiring current config Arc for saving");
         let config_arc = self.config.load_full();
         
-        let json = serde_json::to_string_pretty(&**config_arc)
+        let json = serde_json::to_string_pretty(config_arc.as_ref())
             .map_err(|e| {
                 error!(target: "config", "Serialization error during save: {}", e);
                 format!("Serialization error: {}", e)
