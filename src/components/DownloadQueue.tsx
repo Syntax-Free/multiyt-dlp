@@ -1,8 +1,9 @@
+// src/components/DownloadQueue.tsx
 import { Download } from '@/types';
 import { DownloadItem } from './DownloadItem';
 import { DownloadGridItem } from './DownloadGridItem';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 
 interface DownloadQueueProps {
   downloads: Map<string, Download>;
@@ -10,21 +11,68 @@ interface DownloadQueueProps {
   viewMode: 'list' | 'grid';
 }
 
+/**
+ * Helper: determine column count for grid based on window width.
+ * matches the responsive classes originally used.
+ */
+function getColumnCount(): number {
+  if (typeof window === 'undefined') return 8; // SSR fallback
+  const w = window.innerWidth;
+  if (w < 640) return 4;   // sm
+  if (w < 768) return 5;   // md
+  if (w < 1024) return 6;  // lg
+  return 8;                // xl
+}
+
 export function DownloadQueue({ downloads, onCancel, viewMode }: DownloadQueueProps) {
   const downloadArray = Array.from(downloads.values());
   const [scrollEl, setScrollEl] = useState<Element | null>(null);
+  const [colCount, setColCount] = useState(getColumnCount);
 
+  // Capture scroll container once
   useEffect(() => {
-      // Find the scroll container established in Layout.tsx
-      setScrollEl(document.getElementById('scroll-container'));
+    const el = document.getElementById('scroll-container');
+    setScrollEl(el ?? null);
   }, []);
 
-  const rowVirtualizer = useVirtualizer({
-      count: viewMode === 'list' && scrollEl ? downloadArray.length : 0,
-      getScrollElement: () => scrollEl,
-      estimateSize: () => 140, // Height of list item + spacing
-      overscan: 5,
+  // Keep column count reactive for grid responsiveness
+  useEffect(() => {
+    const handleResize = () => setColCount(getColumnCount());
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  // ---- Virtualizer for LIST view (dynamic heights) ----
+  const listVirtualizer = useVirtualizer({
+    count: viewMode === 'list' && scrollEl ? downloadArray.length : 0,
+    getScrollElement: () => scrollEl,
+    estimateSize: () => 120,           // initial guess
+    measureElement: (el) => el.getBoundingClientRect().height,
+    getItemKey: (index: number) => downloadArray[index].jobId,
+    overscan: 5,
   });
+
+  // ---- Virtualizer for GRID view (row‑based) ----
+  const rowCount = viewMode === 'grid' ? Math.ceil(downloadArray.length / colCount) : 0;
+  const gridVirtualizer = useVirtualizer({
+    count: rowCount,
+    getScrollElement: () => scrollEl,
+    estimateSize: () => 180,           // approximate row height (aspect‑square items + gap)
+    measureElement: (el) => el.getBoundingClientRect().height,
+    getItemKey: (index: number) => `grid-row-${index}`,
+    overscan: 2,
+  });
+
+  // After downloads change (any property that may affect layout), recalc virtual sizes.
+  const prevDownloadsRef = useRef(downloads);
+  useEffect(() => {
+    if (viewMode === 'list' && listVirtualizer) {
+      listVirtualizer.measure();
+    } else if (viewMode === 'grid' && gridVirtualizer) {
+      gridVirtualizer.measure();
+    }
+    prevDownloadsRef.current = downloads;
+  }, [downloads, listVirtualizer, gridVirtualizer, viewMode]);
 
   if (downloadArray.length === 0) {
     return (
@@ -35,44 +83,77 @@ export function DownloadQueue({ downloads, onCancel, viewMode }: DownloadQueuePr
     );
   }
 
+  // ------------------------------------------------------------------
+  // GRID VIEW – virtualized rows
+  // ------------------------------------------------------------------
   if (viewMode === 'grid') {
-      // Grid view utilizes decoupled state, rendering 300+ items is lightweight since they never re-render
-      return (
-        <div className="grid grid-cols-4 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-8 gap-3 animate-fade-in">
-            {downloadArray.map((download) => (
-                <DownloadGridItem
+    return (
+      <div
+        className="relative w-full"
+        style={{ height: `${gridVirtualizer.getTotalSize()}px` }}
+      >
+        {gridVirtualizer.getVirtualItems().map((virtualRow) => {
+          const startIdx = virtualRow.index * colCount;
+          const rowItems = downloadArray.slice(startIdx, startIdx + colCount);
+
+          return (
+            <div
+              key={virtualRow.key}
+              data-index={virtualRow.index}
+              ref={gridVirtualizer.measureElement}
+              className="absolute top-0 left-0 w-full"
+              style={{
+                height: `${virtualRow.size}px`,
+                transform: `translateY(${virtualRow.start}px)`,
+              }}
+            >
+              <div
+                className="grid gap-3 h-full"
+                style={{
+                  gridTemplateColumns: `repeat(${colCount}, 1fr)`,
+                }}
+              >
+                {rowItems.map((download) => (
+                  <DownloadGridItem
                     key={download.jobId}
                     download={download}
                     onCancel={onCancel}
-                />
-            ))}
-        </div>
-      );
+                  />
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
   }
 
-  // Virtualized List View
+  // ------------------------------------------------------------------
+  // LIST VIEW – virtualized with dynamic measurement
+  // ------------------------------------------------------------------
   return (
-    <div 
-        className="relative w-full"
-        style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
+    <div
+      className="relative w-full"
+      style={{ height: `${listVirtualizer.getTotalSize()}px` }}
     >
-      {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-          const download = downloadArray[virtualRow.index];
-          return (
-              <div
-                  key={download.jobId}
-                  className="absolute top-0 left-0 w-full"
-                  style={{
-                      height: `${virtualRow.size}px`,
-                      transform: `translateY(${virtualRow.start}px)`,
-                  }}
-              >
-                  {/* Padding bottom replaces gap-2 */}
-                  <div className="pb-2">
-                      <DownloadItem download={download} onCancel={onCancel} />
-                  </div>
-              </div>
-          );
+      {listVirtualizer.getVirtualItems().map((virtualRow) => {
+        const download = downloadArray[virtualRow.index];
+        return (
+          <div
+            key={virtualRow.key}
+            data-index={virtualRow.index}
+            ref={listVirtualizer.measureElement}
+            className="absolute top-0 left-0 w-full"
+            style={{
+              transform: `translateY(${virtualRow.start}px)`,
+            }}
+          >
+            {/* margin-bottom provides spacing without breaking dynamic measurement */}
+            <div className="mb-3">
+              <DownloadItem download={download} onCancel={onCancel} />
+            </div>
+          </div>
+        );
       })}
     </div>
   );
