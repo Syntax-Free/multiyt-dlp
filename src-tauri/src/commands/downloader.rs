@@ -112,16 +112,25 @@ async fn probe_url(url: &str, _app: &AppHandle, config_manager: &Arc<ConfigManag
     if let Some(entries_arr) = parsed.get("entries").and_then(|e| e.as_array()) {
         debug!(target: "commands::downloader", "Parsed probe output as a playlist containing {} items", entries_arr.len());
         for entry in entries_arr {
+            let title = entry.get("title").and_then(|s| s.as_str()).unwrap_or("Unknown");
+            
+            // Explicitly filter out unavailable/deleted videos from playlists
+            if title == "[Deleted video]" || title == "[Private video]" {
+                trace!(target: "commands::downloader", "Skipping unavailable video in playlist: {}", title);
+                continue;
+            }
+
             if let Some(u) = entry.get("url").and_then(|s| s.as_str()) {
                 entries.push(PlaylistEntry {
                     id: entry.get("id").and_then(|s| s.as_str()).map(|s| s.to_string()),
                     url: u.to_string(),
-                    title: entry.get("title").and_then(|s| s.as_str()).unwrap_or("Unknown").to_string(),
+                    title: title.to_string(),
                 });
             }
         }
     } else {
         debug!(target: "commands::downloader", "Parsed probe output as a single video entity");
+        // For single entity direct inputs, we do not filter unavailable titles.
         entries.push(PlaylistEntry {
             id: parsed.get("id").and_then(|s| s.as_str()).map(|s| s.to_string()),
             url: parsed.get("webpage_url").and_then(|s| s.as_str()).unwrap_or(&url_clone).to_string(),
