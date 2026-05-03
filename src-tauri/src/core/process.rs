@@ -134,23 +134,47 @@ fn construct_error(
 }
 
 async fn robust_move_file(src: &Path, dest: &Path) -> Result<(), std::io::Error> {
+    // Prevent accidental overwrite
+    if dest.exists() {
+        warn!(target: "core::process", "Destination file already exists during robust move: {:?}", dest);
+        return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "Destination file already exists"));
+    }
+
     let mut attempts = 0;
     loop {
-        if dest.exists() {
-             warn!(target: "core::process", "Destination file already exists during robust move: {:?}", dest);
-             return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "Destination file already exists"));
-        }
-
         match fs::rename(src, dest) {
             Ok(_) => {
                 trace!(target: "core::process", "Successfully moved file {:?} -> {:?}", src, dest);
-                return Ok(())
+                return Ok(());
             },
             Err(e) => {
                 attempts += 1;
+
+                // --------------------------------------------
+                // IMMEDIATE FALLBACK FOR CROSS-DEVICE ERRORS
+                // --------------------------------------------
+                if e.kind() == std::io::ErrorKind::CrossesDevices {
+                    trace!(target: "core::process", "Cross-device move detected, using copy+delete fallback...");
+                    // Copy then delete – no need to retry, the error is permanent
+                    match fs::copy(src, dest) {
+                        Ok(_) => {
+                            let _ = fs::remove_file(src);
+                            trace!(target: "core::process", "Copy+delete succeeded for cross-device move");
+                            return Ok(());
+                        },
+                        Err(copy_err) => {
+                            error!(target: "core::process", "Copy+delete fallback failed: {}", copy_err);
+                            return Err(copy_err);
+                        }
+                    }
+                }
+
+                // Already handled above and never retried
                 if e.kind() == std::io::ErrorKind::AlreadyExists {
                     return Err(e);
                 }
+
+                // Transient errors – give them a few chances
                 warn!(target: "core::process", "Rename failed (Attempt {}). Error: {}. Retrying...", attempts, e);
                 if attempts > 3 {
                     warn!(target: "core::process", "Rename exhausted retries, falling back to copy+delete.");
