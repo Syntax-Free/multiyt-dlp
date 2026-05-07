@@ -62,7 +62,6 @@ export function PlaylistSelectionModal({ isOpen, onClose, entries, onConfirm, ti
 
     const handleConfirm = () => {
         onConfirm(Array.from(selectedIds));
-        onClose();
     };
 
     if (!isOpen) return null;

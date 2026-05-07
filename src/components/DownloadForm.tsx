@@ -200,6 +200,7 @@ export function DownloadForm({ onDownload }: DownloadFormProps) {
               if (result.entries.length > 1) {
                   setPlaylistEntries(result.entries);
                   setIsPlaylistModalOpen(true);
+                  setIsProcessing(false);
                   return;
               }
           }

@@ -206,15 +206,25 @@ pub async fn start_download(
     let url_clone = url.clone();
     let is_forced = force_download.unwrap_or(false);
 
-    let entries = probe_url(&url_clone, &app_handle, &config_manager).await?;
+    // OPTIMIZATION: Bypass probing entirely if we have a url_whitelist.
+    let (entries, total_found) = if let Some(ref wl) = url_whitelist {
+        debug!(target: "commands::downloader", "url_whitelist provided. Bypassing probe_url.");
+        let mut wl_entries = Vec::new();
+        for u in wl {
+            wl_entries.push(PlaylistEntry {
+                id: None,
+                url: u.clone(),
+                title: "Unknown".to_string(),
+            });
+        }
+        (wl_entries, wl.len() as u32)
+    } else {
+        let probed = probe_url(&url_clone, &app_handle, &config_manager).await?;
+        let len = probed.len() as u32;
+        (probed, len)
+    };
     
     let whitelist_set: Option<HashSet<String>> = url_whitelist.map(|list| list.into_iter().collect());
-    
-    let total_found = if let Some(ref wl) = whitelist_set {
-        wl.len() as u32
-    } else {
-        entries.len() as u32
-    };
 
     let mut created_job_ids = Vec::new();
     let mut skipped_urls = Vec::new();
